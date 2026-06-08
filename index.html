@@ -42,7 +42,7 @@
 const { useState, useEffect, useCallback } = React;
 
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwb3hMTcB1HYK_blQwojA52MQ145Eew8U2XgjxCcvkRicROHOsJHUvrH5lZZIBpZYCs/exec";
-const VERSION = "v1.6";
+const VERSION = "v2.10";
 
 // ── API via JSONP ──
 function jsonp(params) {
@@ -129,7 +129,7 @@ const PROJ_STATUTS=["en cours","démarrage","finition","retard","terminé","en p
 const STATUTS_TEAM=["chantier","atelier","bureau","congé","déplacement"];
 
 // ── UI atoms ──
-const Bd=({children,style})=><div style={{background:"#fff",border:"0.5px solid #DDDDDD",borderRadius:10,padding:14,...style}}>{children}</div>;
+const Bd=({children,style,onClick})=><div onClick={onClick} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderRadius:10,padding:14,...style}}>{children}</div>;
 
 const Badge=({label,bg,color})=><span style={{background:bg,color,fontSize:11,fontWeight:500,padding:"2px 8px",borderRadius:4,whiteSpace:"nowrap",fontFamily:"'DM Sans',sans-serif"}}>{label}</span>;
 
@@ -282,17 +282,62 @@ function statutBadge(s){
   return m[s]||{bg:"#F2F0ED",tx:"#3A3A3A"};
 }
 
+// Couleurs étendues pour statuts projets
+const STATUT_COLORS={
+  "en cours":  {bg:"#EBF3FF",tx:"#1A5DAB",dot:"#1A5DAB"},
+  "démarrage": {bg:"#F2F0ED",tx:"#3A3A3A",dot:"#3A3A3A"},
+  "finition":  {bg:"#F0FFF0",tx:"#2A7A2A",dot:"#2A7A2A"},
+  "retard":    {bg:"#FFF0F0",tx:"#CC2222",dot:"#CC2222"},
+  "terminé":   {bg:"#F0FFF0",tx:"#2A7A2A",dot:"#2A7A2A"},
+  "en pause":  {bg:"#F9F9F9",tx:"#7A7A7A",dot:"#7A7A7A"},
+};
+function statutColor(s){return STATUT_COLORS[s]||{bg:"#F2F0ED",tx:"#3A3A3A",dot:"#3A3A3A"};}
+
+// ── Calcul dépenses projet — fonction globale (utilisée par Dashboard ET Projets) ──
+// Compte TOUTES les commandes et prestations assignées au projet, quel que soit leur statut
+function calcDepensesProjet(p, orders, prestMissions){
+  const isBool=v=>v===true||v==="TRUE";
+  const projCmd=(orders?.rows||[]).filter(o=>o.projet===p.name||o.projet===String(p.id));
+  const cmdEngagees=projCmd.reduce((s,o)=>s+(+o.prix||0)*(+o.qty||0),0);
+  const cmdRecues=projCmd.filter(o=>isBool(o.recue)).reduce((s,o)=>s+(+o.prix||0)*(+o.qty||0),0);
+  const projPrest=(prestMissions?.rows||[]).filter(m=>m.projet===p.name||m.projet===String(p.id));
+  const prestTotal=projPrest.reduce((s,m)=>s+Number(m.prix||0),0);
+  const prestTerminees=projPrest.filter(m=>m.statut==="terminé").reduce((s,m)=>s+Number(m.prix||0),0);
+  return {
+    engagees: cmdEngagees,
+    recues: cmdRecues,
+    prest: prestTotal,
+    prestTerminees,
+    total: cmdEngagees + prestTotal,
+  };
+}
+
 // ══ DASHBOARD ══
 function Dashboard({sheets}){
-  const {projects,tasks,stocks,orders,events}=sheets;
+  const {projects,tasks,stocks,orders,events,prestMissions}=sheets;
   const pending=tasks.rows.filter(t=>!t.done&&t.done!=="TRUE");
   const isDone=t=>t.done===true||t.done==="TRUE";
+  const isBool=v=>v===true||v==="TRUE";
   async function toggleTask(t){await tasks.update(t.id,{...t,done:!isDone(t)});}
-  const urgentTasks=[...pending].filter(t=>["critique","high"].includes(autoUrgence(t.due,t.done))).slice(0,5);
+
+  // Séparation claire retard / urgent
+  const tachesRetard=[...pending].filter(t=>autoUrgence(t.due,t.done)==="critique")
+    .sort((a,b)=>toISO(a.due).localeCompare(toISO(b.due)));
+  const tachesUrgent=[...pending].filter(t=>autoUrgence(t.due,t.done)==="high")
+    .sort((a,b)=>toISO(a.due).localeCompare(toISO(b.due)));
+
   const stockAlerts=stocks.rows.filter(s=>Number(s.qty)<Number(s.min));
-  const retards=projects.rows.filter(p=>p.statut==="retard");
+  const retardsProjets=projects.rows.filter(p=>p.statut==="retard");
   const upcoming=[...events.rows].sort((a,b)=>toISO(a.date).localeCompare(toISO(b.date))).filter(e=>toISO(e.date)>=TODAY).slice(0,5);
   const loading=Object.values(sheets).some(s=>s.loading);
+
+  // ── Finances globales ──
+  const totalCA=projects.rows.reduce((s,p)=>s+Number(p.budget||0),0);
+  const allDep=projects.rows.map(p=>calcDepensesProjet(p,orders,prestMissions));
+  const totalEngagees=allDep.reduce((s,d)=>s+d.engagees,0);
+  const totalRecues=allDep.reduce((s,d)=>s+d.recues,0);
+  const totalPrest=allDep.reduce((s,d)=>s+d.prest,0);
+
   if(loading)return <Bd style={{textAlign:"center",padding:48}}><div style={{fontSize:22,marginBottom:8}} className="spin">⟳</div><div style={{fontSize:13,color:"#7A7A7A"}}>Chargement depuis Google Sheets...</div></Bd>;
   const empty=!projects.rows.length&&!tasks.rows.length&&!events.rows.length;
   if(empty)return(
@@ -304,40 +349,110 @@ function Dashboard({sheets}){
   );
   return(
     <div>
-      {(retards.length>0||stockAlerts.length>0)&&(
-        <div style={{background:"#FFF0F0",border:"0.5px solid #CC2222",borderLeft:"3px solid #CC2222",borderRadius:6,padding:"9px 12px",marginBottom:14,fontSize:13,color:"#CC2222"}}>
-          {retards.length>0&&`${retards.length} projet(s) en retard. `}{stockAlerts.length>0&&`${stockAlerts.length} référence(s) sous seuil.`}
+      {/* Bandeau alertes — tâches en retard */}
+      {(tachesRetard.length>0||retardsProjets.length>0)&&(
+        <div style={{background:"#FFF0F0",border:"1px solid #FFCCCC",borderLeft:"4px solid #CC2222",borderRadius:8,padding:"12px 16px",marginBottom:14}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:tachesRetard.length>0?10:0}}>
+            <span style={{fontSize:13,fontWeight:700,color:"#CC2222"}}>
+              {tachesRetard.length>0&&`${tachesRetard.length} tâche${tachesRetard.length>1?"s":""} en retard`}
+              {tachesRetard.length>0&&retardsProjets.length>0&&" · "}
+              {retardsProjets.length>0&&`${retardsProjets.length} projet${retardsProjets.length>1?"s":""} en retard`}
+            </span>
+          </div>
+          {tachesRetard.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {tachesRetard.slice(0,4).map(t=>(
+              <span key={t.id} style={{background:"#fff",border:"1px solid #FFAAAA",color:"#CC2222",fontSize:11,padding:"3px 10px",borderRadius:20,fontWeight:600,display:"flex",alignItems:"center",gap:5}}>
+                <span style={{width:6,height:6,borderRadius:"50%",background:"#CC2222",display:"inline-block",flexShrink:0}}/>
+                {t.text}{t.due&&<span style={{color:"#AA0000",fontWeight:700}}> · {Math.abs(diffDays(t.due))}j</span>}
+              </span>
+            ))}
+          </div>}
         </div>
       )}
+
+      {/* KPIs activité */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
         {[
-          {val:projects.rows.length,lbl:"Projets actifs"},
+          {val:projects.rows.filter(p=>p.statut!=="terminé").length,lbl:"Projets actifs"},
           {val:pending.length,lbl:"Tâches en attente"},
-          {val:stockAlerts.length,lbl:"Alertes stock",alert:stockAlerts.length>0},
-          {val:orders.rows.filter(o=>!o.recue&&o.recue!=="TRUE").length,lbl:"Commandes en cours"},
+          {val:tachesRetard.length,lbl:"Tâches en retard",alert:tachesRetard.length>0},
+          {val:orders.rows.filter(o=>!isBool(o.recue)).length,lbl:"Commandes en cours"},
         ].map((m,i)=>(
-          <div key={i} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderTop:m.alert?"3px solid #CC2222":"3px solid #F2F0ED",borderRadius:8,padding:"12px 14px"}}>
+          <div key={i} style={{
+            background:"#fff",
+            border:m.alert?"1px solid #FFCCCC":"0.5px solid #DDDDDD",
+            borderTop:m.alert?"3px solid #CC2222":"3px solid #F2F0ED",
+            borderRadius:8,padding:"12px 14px"
+          }}>
             <div style={{fontSize:22,fontWeight:700,color:m.alert?"#CC2222":"#1C1C1C"}}>{m.val}</div>
             <div style={{fontSize:12,color:"#7A7A7A",marginTop:2}}>{m.lbl}</div>
           </div>
         ))}
       </div>
+
+      {/* Zone finances globale */}
+      <Bd style={{marginBottom:14}}>
+        <SecTitle>Finances globales</SecTitle>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+          {[
+            {lbl:"Chiffre d'affaires",val:totalCA>0?totalCA.toLocaleString("fr-FR")+" €":"—",color:"#1C1C1C",bold:true},
+            {lbl:"Commandes engagées",val:totalEngagees>0?totalEngagees.toLocaleString("fr-FR")+" €":"—",color:"#3A3A3A"},
+            {lbl:"Commandes reçues",val:totalRecues>0?totalRecues.toLocaleString("fr-FR")+" €":"—",color:"#3A3A3A"},
+            {lbl:"Prestations",val:totalPrest>0?totalPrest.toLocaleString("fr-FR")+" €":"—",color:"#3A3A3A"},
+          ].map((m,i)=>(
+            <div key={i} style={{background:"#F9F9F9",borderRadius:6,padding:"10px 12px",border:"0.5px solid #EEEEEE"}}>
+              <div style={{fontSize:11,color:"#7A7A7A",marginBottom:4}}>{m.lbl}</div>
+              <div style={{fontSize:16,fontWeight:m.bold?700:600,color:m.color}}>{m.val}</div>
+            </div>
+          ))}
+        </div>
+      </Bd>
+
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-        <Bd>
-          <SecTitle>Tâches urgentes</SecTitle>
-          {!urgentTasks.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune tâche urgente.</div>}
-          {urgentTasks.map(t=>{
-            const urg=autoUrgence(t.due,t.done);
-            const u=UC[urg]||UC.med;
+
+        {/* Tâches en retard + urgentes */}
+        <Bd style={{
+          background:tachesRetard.length>0?"#FFF0F0":"#fff",
+          border:tachesRetard.length>0?"1px solid #FFCCCC":"0.5px solid #DDDDDD"
+        }}>
+          <div style={{borderLeft:"3px solid #CC2222",paddingLeft:8,marginBottom:12}}>
+            <span style={{fontSize:13,fontWeight:700,color:"#CC2222"}}>
+              Tâches en retard ({tachesRetard.length})
+            </span>
+          </div>
+          {!tachesRetard.length&&<div style={{fontSize:13,color:"#2A7A2A",fontWeight:500}}>✓ Aucune tâche en retard.</div>}
+          {tachesRetard.map(t=>{
+            const jours=Math.abs(diffDays(t.due));
             return(
-              <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
-                <Check checked={isDone(t)} onChange={()=>toggleTask(t)} color="#CC2222"/>
-                <div style={{flex:1}}><div style={{fontSize:13,color:"#1C1C1C",fontWeight:500,textDecoration:isDone(t)?"line-through":"none"}}>{t.text}</div><div style={{fontSize:11,color:"#7A7A7A"}}>{t.projet} · {fmt(t.due)}</div></div>
-                <Badge label={u.lbl} bg={u.bg} color={u.tx}/>
+              <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 0",borderBottom:"0.5px solid #FFCCCC"}}>
+                <Check checked={false} onChange={()=>toggleTask(t)} color="#CC2222"/>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,color:"#1C1C1C",fontWeight:600}}>{t.text}</div>
+                  <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{t.projet}</div>
+                </div>
+                <span style={{background:"#CC2222",color:"#fff",fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:4,whiteSpace:"nowrap"}}>
+                  {jours}j de retard
+                </span>
               </div>
             );
           })}
+          {tachesUrgent.length>0&&<>
+            <div style={{fontSize:11,fontWeight:700,color:"#7A7A7A",letterSpacing:"0.05em",marginTop:12,marginBottom:6}}>
+              URGENT — dans les 48h
+            </div>
+            {tachesUrgent.slice(0,3).map(t=>(
+              <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+                <Check checked={false} onChange={()=>toggleTask(t)} color="#CC2222"/>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,color:"#1C1C1C",fontWeight:500}}>{t.text}</div>
+                  <div style={{fontSize:11,color:"#7A7A7A"}}>{t.projet}</div>
+                </div>
+                <Badge label={`J-${diffDays(t.due)}`} bg="#FFF0F0" color="#CC2222"/>
+              </div>
+            ))}
+          </>}
         </Bd>
+
         <Bd>
           <SecTitle>Prochains événements</SecTitle>
           {!upcoming.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucun événement.</div>}
@@ -345,30 +460,40 @@ function Dashboard({sheets}){
             <div key={ev.id} style={{display:"flex",gap:8,padding:"8px 10px",borderRadius:6,background:"#F9F9F9",marginBottom:5,border:"0.5px solid #EEEEEE"}}>
               <div style={{width:3,background:EV_COLORS[ev.type]||"#7A7A7A",borderRadius:2,flexShrink:0}}/>
               <div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{ev.title}</div><div style={{fontSize:11,color:"#7A7A7A"}}>{ev.projet}</div></div>
-              <span style={{fontSize:11,color:"#7A7A7A",whiteSpace:"nowrap"}}>{d===0?"Aujourd'hui":d===1?"Demain":"J+"+d}</span>
+              <span style={{fontSize:11,color:"#7A7A7A",whiteSpace:"nowrap"}}>{d===0?"Aujourd'hui":d===1?"Demain":`J+${d}`}</span>
             </div>
           );})}
         </Bd>
+
         <Bd>
-          <SecTitle>Projets en cours</SecTitle>
-          {!projects.rows.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucun projet.</div>}
-          {projects.rows.map(p=>{const sc=statutBadge(p.statut);return(
-            <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
-              <div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{p.name}</div><PBar val={p.avancement}/><div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{p.avancement}%</div></div>
-              <Badge label={p.statut} bg={sc.bg} color={sc.tx}/>
-            </div>
-          );})}
+          <SecTitle>Projets actifs</SecTitle>
+          {!projects.rows.filter(p=>p.statut!=="terminé").length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucun projet.</div>}
+          {projects.rows.filter(p=>p.statut!=="terminé").map(p=>{
+            const sc=statutColor(p.statut);
+            return(
+              <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+                <div style={{width:8,height:8,borderRadius:"50%",background:sc.dot,flexShrink:0}}/>
+                <div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{p.name}</div><PBar val={p.avancement}/><div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{p.avancement}%</div></div>
+                <Badge label={p.statut} bg={sc.bg} color={sc.tx}/>
+              </div>
+            );
+          })}
         </Bd>
+
         <Bd>
-          <SecTitle>Alertes stock</SecTitle>
-          {!stockAlerts.length&&<div style={{fontSize:13,color:"#2A7A2A",fontWeight:500}}>Tous les stocks sont OK.</div>}
-          {stockAlerts.map(s=>{const r=Number(s.qty)/Number(s.min);return(
-            <div key={s.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
-              <div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{s.ref}</div><div style={{fontSize:11,color:"#7A7A7A"}}>{s.qty}/{s.min} {s.unit}</div></div>
-              <Badge label={r<0.7?"Critique":"Bas"} bg={r<0.7?"#FFF0F0":"#FFF8EC"} color={r<0.7?"#CC2222":"#CC8800"}/>
+          <SecTitle>Prochaines commandes</SecTitle>
+          {!orders.rows.filter(o=>!isBool(o.recue)).length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune commande en cours.</div>}
+          {orders.rows.filter(o=>!isBool(o.recue)).slice(0,5).map(o=>(
+            <div key={o.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{o.article}</div>
+                <div style={{fontSize:11,color:"#7A7A7A"}}>{o.fourn}{o.projet&&` · ${o.projet}`}</div>
+              </div>
+              {o.prix>0&&<span style={{fontSize:12,color:"#3A3A3A",fontWeight:500,whiteSpace:"nowrap"}}>{(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €</span>}
             </div>
-          );})}
+          ))}
         </Bd>
+
       </div>
     </div>
   );
@@ -376,33 +501,64 @@ function Dashboard({sheets}){
 
 // ══ PROJETS ══
 const EP={name:"",statut:"en cours",avancement:0,equipe:0,budget:"",depense:"",client:"",lieu:"",note:""};
-function Projets({sheet,notes,tasks,orders,stocks,events}){
+function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierChantier}){
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(EP);
   const [editing,setEditing]=useState(null);
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
-  const [detail,setDetail]=useState(null); // projet sélectionné pour vue détail
-  const [notesProjet,setNotesProjet]=useState(null);
+  const [detail,setDetail]=useState(null);
   const [noteForm,setNoteForm]=useState({titre:"",contenu:""});
   const [savingNote,setSavingNote]=useState(false);
   const [showHistorique,setShowHistorique]=useState(false);
+  const [editingOrder,setEditingOrder]=useState(null);
+  const [orderForm,setOrderForm]=useState({});
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
+  const isBool=v=>v===true||v==="TRUE";
+
+  function openDetail(id){
+    setOpen(false);
+    setEditing(null);
+    setEditingOrder(null);
+    setDetail(id);
+  }
+
+  function openEdit(p,e){
+    if(e)e.stopPropagation();
+    setDetail(null);
+    setEditing(p.id);
+    setForm({...p,budget:p.budget??"",depense:p.depense??""});
+    setErr("");
+    setOpen(true);
+  }
+
+  function openNew(){
+    setDetail(null);
+    setEditing(null);
+    setForm(EP);
+    setErr("");
+    setOpen(true);
+  }
 
   async function save(){
     if(!form.name.trim()){setErr("Nom obligatoire.");return;}
     setSaving(true);setErr("");
-    try{const item={...form,avancement:+form.avancement||0,equipe:+form.equipe||0,budget:+form.budget||0,depense:+form.depense||0};
+    try{
+      const item={...form,avancement:+form.avancement||0,equipe:+form.equipe||0,budget:+form.budget||0,depense:+form.depense||0};
       if(editing){await sheet.update(editing,item);}else{await sheet.add(item);}
-      setOpen(false);setEditing(null);}
-    catch(e){setErr(e.message);}setSaving(false);
+      setOpen(false);setEditing(null);
+    }catch(e){setErr(e.message);}
+    setSaving(false);
   }
 
-  async function saveNote(){
+  async function saveNote(projId){
     if(!noteForm.contenu.trim())return;
     setSavingNote(true);
-    try{await notes.add({projet_id:notesProjet.id,date:TODAY,titre:noteForm.titre,contenu:noteForm.contenu});setNoteForm({titre:"",contenu:""});}
-    catch(e){}setSavingNote(false);
+    try{
+      await notes.add({projet_id:projId,date:TODAY,titre:noteForm.titre,contenu:noteForm.contenu});
+      setNoteForm({titre:"",contenu:""});
+    }catch(e){}
+    setSavingNote(false);
   }
 
   async function finaliser(p){
@@ -411,83 +567,123 @@ function Projets({sheet,notes,tasks,orders,stocks,events}){
     setDetail(null);
   }
 
+  // Sauvegarde commande modifiée depuis vue détail
+  async function saveOrder(){
+    if(!editingOrder)return;
+    await orders.update(editingOrder,{...orderForm,qty:+orderForm.qty||0,prix:+orderForm.prix||0});
+    setEditingOrder(null);
+    setOrderForm({});
+  }
+
+  // Délègue à la fonction globale
+  function calcDepensesReelles(p){return calcDepensesProjet(p,orders,prestMissions);}
+
   const actifs=sheet.rows.filter(p=>p.statut!=="terminé");
   const historique=sheet.rows.filter(p=>p.statut==="terminé");
 
-  // ── Vue détail projet ──
+  // ── Panel latéral nouveau/modifier projet ──
+  const panel=open&&<SidePanel title={editing?"Modifier le projet":"Nouveau projet"} onClose={()=>{setOpen(false);setEditing(null);}}>
+    <FG label="Nom du projet *"><Inp value={form.name} onChange={e=>f("name",e.target.value)} placeholder="Ex: Façade ETFE Lyon"/></FG>
+    <FG label="Client / maître d'ouvrage"><Inp value={form.client||""} onChange={e=>f("client",e.target.value)} placeholder="Ex: Société ABC"/></FG>
+    <FG label="Lieu / chantier"><Inp value={form.lieu||""} onChange={e=>f("lieu",e.target.value)} placeholder="Ex: Lyon"/></FG>
+    <FG label="Statut"><Sel value={form.statut} onChange={e=>f("statut",e.target.value)}>{PROJ_STATUTS.map(s=><option key={s}>{s}</option>)}</Sel></FG>
+    <FG label="Avancement (%)"><Inp type="number" value={form.avancement} onChange={e=>f("avancement",e.target.value)}/></FG>
+    <FG label="Chiffre d'affaires (€)"><Inp type="number" value={form.budget} onChange={e=>f("budget",e.target.value)}/></FG>
+    <FG label="Dépenses saisies (€)"><Inp type="number" value={form.depense} onChange={e=>f("depense",e.target.value)}/></FG>
+    <FG label="Nb personnes"><Inp type="number" value={form.equipe} onChange={e=>f("equipe",e.target.value)}/></FG>
+    <FG label="Note"><Inp value={form.note||""} onChange={e=>f("note",e.target.value)} placeholder="Optionnel"/></FG>
+    <ErrMsg msg={err}/>
+    <PanelBtns onCancel={()=>{setOpen(false);setEditing(null);}} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Créer"}/>
+  </SidePanel>;
+
+  // ══ VUE DÉTAIL ══
   if(detail){
     const p=sheet.rows.find(x=>Number(x.id)===Number(detail));
     if(!p){setDetail(null);return null;}
+
     const projTasks=tasks.rows.filter(t=>t.projet===p.name);
     const projOrders=orders.rows.filter(o=>o.projet===p.name||o.projet===String(p.id));
     const projNotes=notes.rows.filter(n=>Number(n.projet_id)===Number(p.id)).sort((a,b)=>toISO(b.date).localeCompare(toISO(a.date)));
     const projEvents=events.rows.filter(e=>e.projet===p.name).sort((a,b)=>toISO(a.date).localeCompare(toISO(b.date)));
-    const sc=statutBadge(p.statut);
-    const budgetPct=p.budget>0?Math.round(p.depense/p.budget*100):0;
+    const projPrest=(prestMissions?.rows||[]).filter(m=>m.projet===p.name||m.projet===String(p.id));
+    const projAtelier=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name&&m.type==="atelier");
+    const projChantier=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name&&m.type==="chantier");
+    const projStocks=stocks.rows.filter(s=>projOrders.some(o=>o.article&&s.ref&&o.article.toLowerCase()===s.ref.toLowerCase()));
+
+    const sc=statutColor(p.statut);
+    const dep=calcDepensesReelles(p);
+    const caVal=Number(p.budget)||0;
+    const depSaisie=Number(p.depense)||0;
+    const depAff=dep.total>0?dep.total:depSaisie;
+    const pct=caVal>0?Math.round(depAff/caVal*100):0;
+
+    const sbMission=s=>({planifié:{bg:"#F2F0ED",tx:"#3A3A3A"},"en cours":{bg:"#FFF0F0",tx:"#CC2222"},terminé:{bg:"#F0FFF0",tx:"#2A7A2A"}}[s]||{bg:"#F2F0ED",tx:"#3A3A3A"});
+
     return(
-      <div>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+      <WithPanel panel={panel}>
+        {/* En-tête */}
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16,flexWrap:"wrap"}}>
           <button onClick={()=>setDetail(null)} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:12,padding:"4px 10px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>← Retour</button>
           <div style={{fontSize:16,fontWeight:700,color:"#1C1C1C",flex:1}}>{p.name}</div>
+          {p.client&&<span style={{fontSize:13,color:"#7A7A7A"}}>{p.client}</span>}
+          {p.lieu&&<span style={{fontSize:12,color:"#7A7A7A"}}>· {p.lieu}</span>}
           <Badge label={p.statut} bg={sc.bg} color={sc.tx}/>
-          {p.statut!=="terminé"&&<Btn primary onClick={()=>finaliser(p)}>Finaliser le projet</Btn>}
+          <Btn onClick={e=>openEdit(p,e)}>Modifier</Btn>
+          {p.statut!=="terminé"&&<Btn danger onClick={()=>finaliser(p)}>Finaliser</Btn>}
         </div>
 
-        {/* Infos générales */}
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:14}}>
+        {/* KPIs */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
           {[
-            {lbl:"Client",val:p.client||"—"},
-            {lbl:"Lieu",val:p.lieu||"—"},
-            {lbl:"Équipe",val:p.equipe?`${p.equipe} personne(s)`:"—"},
+            {lbl:"Avancement",val:p.avancement+"%"},
+            {lbl:"Chiffre d'affaires",val:caVal>0?caVal.toLocaleString("fr-FR")+" €":"—"},
+            {lbl:"Dépenses engagées",val:dep.total>0?dep.total.toLocaleString("fr-FR")+" €":depSaisie>0?depSaisie.toLocaleString("fr-FR")+" €":"—",
+             sub:dep.total>0?`cmd: ${dep.engagees.toLocaleString("fr-FR")} € · prest: ${dep.prest.toLocaleString("fr-FR")} €`:null},
+            {lbl:"Équipe",val:p.equipe?p.equipe+" pers.":"—"},
           ].map((m,i)=>(
-            <Bd key={i} style={{padding:"10px 14px"}}>
+            <div key={i} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderRadius:8,padding:"10px 14px"}}>
               <div style={{fontSize:11,color:"#7A7A7A",marginBottom:3}}>{m.lbl}</div>
-              <div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{m.val}</div>
-            </Bd>
+              <div style={{fontSize:16,fontWeight:700,color:"#1C1C1C"}}>{m.val}</div>
+              {m.sub&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:3}}>{m.sub}</div>}
+            </div>
           ))}
         </div>
 
-        {/* Budget + avancement */}
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-          <Bd>
-            <SecTitle>Avancement</SecTitle>
-            <div style={{fontSize:28,fontWeight:700,color:"#1C1C1C",marginBottom:4}}>{p.avancement}%</div>
-            <PBar val={p.avancement}/>
-            {p.note&&<div style={{fontSize:12,color:"#7A7A7A",marginTop:8,fontStyle:"italic"}}>{p.note}</div>}
-          </Bd>
-          <Bd>
-            <SecTitle>Budget</SecTitle>
-            {p.budget>0?<>
-              <div style={{fontSize:13,color:"#1C1C1C",marginBottom:4}}>
-                <span style={{fontWeight:700,fontSize:18}}>{Number(p.depense).toLocaleString("fr-FR")} €</span>
-                <span style={{color:"#7A7A7A"}}> / {Number(p.budget).toLocaleString("fr-FR")} €</span>
-              </div>
-              <PBar val={budgetPct}/>
-              <div style={{fontSize:12,color:budgetPct>90?"#CC2222":"#7A7A7A",marginTop:4}}>{budgetPct}% consommé</div>
-            </>:<div style={{fontSize:13,color:"#7A7A7A"}}>Aucun budget défini.</div>}
-          </Bd>
-        </div>
+        {/* Barre CA */}
+        {caVal>0&&<div style={{marginBottom:14}}>
+          <div style={{fontSize:12,color:"#7A7A7A",marginBottom:4}}>Consommation CA : {pct}%{dep.total>0&&<span style={{marginLeft:8,fontSize:11}}> · {dep.recues.toLocaleString("fr-FR")} € reçus · {dep.engagees.toLocaleString("fr-FR")} € engagés</span>}</div>
+          <div style={{height:5,borderRadius:3,background:"#EEEEEE",overflow:"hidden"}}>
+            <div style={{height:"100%",width:Math.min(pct,100)+"%",background:pct>90?"#CC2222":pct>60?"#CC8800":"#2A7A2A",borderRadius:3}}/>
+          </div>
+        </div>}
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
-          {/* Tâches liées */}
+        {p.note&&<div style={{fontSize:12,color:"#7A7A7A",fontStyle:"italic",marginBottom:14,padding:"8px 12px",background:"#F9F9F9",borderRadius:6,borderLeft:"3px solid #DDDDDD"}}>{p.note}</div>}
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+
+          {/* Tâches */}
           <Bd>
             <SecTitle>Tâches ({projTasks.length})</SecTitle>
             {!projTasks.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune tâche liée.</div>}
-            {projTasks.slice(0,5).map(t=>{const urg=autoUrgence(t.due,t.done);const u=UC[urg]||UC.med;const done=t.done===true||t.done==="TRUE";return(
-              <div key={t.id} style={{display:"flex",gap:8,padding:"6px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
-                <div style={{width:8,height:8,borderRadius:"50%",background:done?"#2A7A2A":u.tx,flexShrink:0}}/>
-                <div style={{flex:1,fontSize:12,color:done?"#7A7A7A":"#1C1C1C",textDecoration:done?"line-through":"none"}}>{t.text}</div>
-                <Badge label={u.lbl} bg={u.bg} color={u.tx}/>
-              </div>
-            );})}
+            {projTasks.map(t=>{
+              const urg=autoUrgence(t.due,t.done);const u=UC[urg]||UC.med;const done=isBool(t.done);
+              return(
+                <div key={t.id} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:done?"#2A7A2A":u.tx,flexShrink:0}}/>
+                  <div style={{flex:1,fontSize:12,color:done?"#7A7A7A":"#1C1C1C",textDecoration:done?"line-through":"none"}}>{t.text}</div>
+                  {t.due&&<span style={{fontSize:11,color:"#7A7A7A"}}>{fmt(t.due)}</span>}
+                  <Badge label={u.lbl} bg={u.bg} color={u.tx}/>
+                </div>
+              );
+            })}
           </Bd>
 
-          {/* Événements liés */}
+          {/* Calendrier */}
           <Bd>
-            <SecTitle>Planning ({projEvents.length})</SecTitle>
+            <SecTitle>Calendrier ({projEvents.length})</SecTitle>
             {!projEvents.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucun événement lié.</div>}
-            {projEvents.slice(0,5).map(ev=>(
-              <div key={ev.id} style={{display:"flex",gap:8,padding:"6px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
+            {projEvents.map(ev=>(
+              <div key={ev.id} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
                 <div style={{width:3,background:EV_COLORS[ev.type]||"#7A7A7A",borderRadius:2,alignSelf:"stretch",flexShrink:0}}/>
                 <div style={{flex:1}}>
                   <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{ev.title}</div>
@@ -498,99 +694,156 @@ function Projets({sheet,notes,tasks,orders,stocks,events}){
             ))}
           </Bd>
 
-          {/* Commandes liées */}
-          <Bd>
-            <SecTitle>Commandes ({projOrders.length})</SecTitle>
-            {!projOrders.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune commande liée.</div>}
-            {projOrders.slice(0,5).map(o=>(
-              <div key={o.id} style={{display:"flex",gap:8,padding:"6px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{o.article}</div>
-                  <div style={{fontSize:11,color:"#7A7A7A"}}>{o.fourn} · {fmt(o.date)}</div>
-                </div>
-                <Badge label={o.recue===true||o.recue==="TRUE"?"Reçue":"En cours"} bg={o.recue===true||o.recue==="TRUE"?"#F0FFF0":"#F2F0ED"} color={o.recue===true||o.recue==="TRUE"?"#2A7A2A":"#3A3A3A"}/>
-              </div>
-            ))}
-          </Bd>
-
-          {/* Notes */}
+          {/* Commandes */}
           <Bd>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <SecTitle>Notes ({projNotes.length})</SecTitle>
-              <Btn small onClick={()=>{setNotesProjet(p);setOpen(false);}}>+ Note</Btn>
+              <SecTitle>Commandes ({projOrders.length})</SecTitle>
+              {projOrders.filter(o=>isBool(o.recue)).length>0&&
+                <span style={{fontSize:12,color:"#2A7A2A",fontWeight:600}}>
+                  {projOrders.filter(o=>isBool(o.recue)).reduce((s,o)=>s+(+o.prix||0)*(+o.qty||0),0).toLocaleString("fr-FR")} € reçues
+                </span>}
             </div>
-            {notesProjet&&Number(notesProjet.id)===Number(p.id)&&(
-              <div style={{marginBottom:10,padding:"8px 10px",background:"#F2F0ED",borderRadius:6}}>
-                <FG label="Titre"><Inp value={noteForm.titre} onChange={e=>setNoteForm(x=>({...x,titre:e.target.value}))} placeholder="Titre optionnel"/></FG>
-                <FG label="Contenu *"><Inp value={noteForm.contenu} onChange={e=>setNoteForm(x=>({...x,contenu:e.target.value}))} rows={2} placeholder="Saisir une note..."/></FG>
-                <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
-                  <Btn small onClick={()=>setNotesProjet(null)}>Annuler</Btn>
-                  <Btn small primary onClick={saveNote}>{savingNote?"⟳":"+"} Ajouter</Btn>
+            {!projOrders.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune commande liée.</div>}
+            {projOrders.map(o=>{
+              if(editingOrder===o.id)return(
+                <div key={o.id} style={{padding:"8px 10px",background:"#F2F0ED",borderRadius:6,marginBottom:6}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:6}}>
+                    <FG label="Article"><Inp value={orderForm.article||""} onChange={e=>setOrderForm(x=>({...x,article:e.target.value}))}/></FG>
+                    <FG label="Fournisseur"><Inp value={orderForm.fourn||""} onChange={e=>setOrderForm(x=>({...x,fourn:e.target.value}))}/></FG>
+                    <FG label="Qté"><Inp type="number" value={orderForm.qty||""} onChange={e=>setOrderForm(x=>({...x,qty:e.target.value}))}/></FG>
+                    <FG label="Prix unit. €"><Inp type="number" value={orderForm.prix||""} onChange={e=>setOrderForm(x=>({...x,prix:e.target.value}))}/></FG>
+                  </div>
+                  <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+                    <Btn small onClick={()=>setEditingOrder(null)}>Annuler</Btn>
+                    <Btn small primary onClick={saveOrder}>✓ Sauvegarder</Btn>
+                  </div>
                 </div>
-              </div>
-            )}
-            {!projNotes.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune note.</div>}
-            {projNotes.slice(0,3).map(n=>(
-              <div key={n.id} style={{padding:"8px 10px",borderRadius:6,background:"#F9F9F9",marginBottom:6,border:"0.5px solid #EEEEEE"}}>
-                {n.titre&&<div style={{fontSize:12,fontWeight:700,color:"#1C1C1C",marginBottom:2}}>{n.titre}</div>}
-                <div style={{fontSize:11,color:"#7A7A7A",fontFamily:"'DM Mono',monospace",marginBottom:3}}>{fmt(n.date)}</div>
-                <div style={{fontSize:12,color:"#3A3A3A",whiteSpace:"pre-wrap"}}>{n.contenu}</div>
-              </div>
-            ))}
+              );
+              return(
+                <div key={o.id} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{o.article}</div>
+                    <div style={{fontSize:11,color:"#7A7A7A"}}>{o.fourn} · {o.qty} {o.unit}{o.prix>0&&` · ${(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €`}</div>
+                  </div>
+                  <Badge label={isBool(o.recue)?"Reçue":"En cours"} bg={isBool(o.recue)?"#F0FFF0":"#F2F0ED"} color={isBool(o.recue)?"#2A7A2A":"#3A3A3A"}/>
+                  <button onClick={()=>{setEditingOrder(o.id);setOrderForm({...o});}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
+                </div>
+              );
+            })}
           </Bd>
-        </div>
 
-        <div style={{display:"flex",gap:8,marginTop:6}}>
-          <Btn onClick={()=>{setNotesProjet(null);setEditing(p.id);setForm({...p,budget:p.budget??"",depense:p.depense??""});setErr("");setOpen(true);}}>Modifier le projet</Btn>
-          {p.statut!=="terminé"&&<Btn danger onClick={()=>finaliser(p)}>Finaliser et archiver</Btn>}
+          {/* Prestations */}
+          <Bd>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <SecTitle>Prestations ({projPrest.length})</SecTitle>
+              {projPrest.filter(m=>m.statut==="terminé").length>0&&
+                <span style={{fontSize:12,color:"#2A7A2A",fontWeight:600}}>
+                  {projPrest.filter(m=>m.statut==="terminé").reduce((s,m)=>s+Number(m.prix||0),0).toLocaleString("fr-FR")} € terminées
+                </span>}
+            </div>
+            {!projPrest.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune prestation.</div>}
+            {projPrest.map(m=>{
+              const sb=sbMission(m.statut);
+              return(
+                <div key={m.id} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{m.description}</div>
+                    <div style={{fontSize:11,color:"#7A7A7A"}}>{m.prestataire}{m.prix>0&&` · ${Number(m.prix).toLocaleString("fr-FR")} €`}</div>
+                  </div>
+                  <Badge label={m.statut} bg={sb.bg} color={sb.tx}/>
+                </div>
+              );
+            })}
+          </Bd>
+
+          {/* Atelier */}
+          {projAtelier.length>0&&<Bd>
+            <SecTitle>Atelier ({projAtelier.length})</SecTitle>
+            {projAtelier.map(m=>{
+              const sb=sbMission(m.statut);
+              return(
+                <div key={m.id} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{m.description}</div>
+                    {m.dateDebut&&<div style={{fontSize:11,color:"#7A7A7A"}}>{fmt(m.dateDebut)}{m.dateFin&&` → ${fmt(m.dateFin)}`}</div>}
+                  </div>
+                  <Badge label={m.statut} bg={sb.bg} color={sb.tx}/>
+                </div>
+              );
+            })}
+          </Bd>}
+
+          {/* Chantier */}
+          {projChantier.length>0&&<Bd>
+            <SecTitle>Chantier ({projChantier.length})</SecTitle>
+            {projChantier.map(m=>{
+              const sb=sbMission(m.statut);
+              return(
+                <div key={m.id} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{m.description}</div>
+                    {m.dateDebut&&<div style={{fontSize:11,color:"#7A7A7A"}}>{fmt(m.dateDebut)}{m.dateFin&&` → ${fmt(m.dateFin)}`}</div>}
+                  </div>
+                  <Badge label={m.statut} bg={sb.bg} color={sb.tx}/>
+                </div>
+              );
+            })}
+          </Bd>}
+
+          {/* Stocks liés */}
+          {projStocks.length>0&&<Bd>
+            <SecTitle>Stocks liés ({projStocks.length})</SecTitle>
+            {projStocks.map(s=>{
+              const r=Number(s.qty)/Math.max(Number(s.min),0.001);
+              const sb=r<0.7?{bg:"#FFF0F0",tx:"#CC2222",lbl:"Critique"}:r<1?{bg:"#FFF8EC",tx:"#CC8800",lbl:"Bas"}:{bg:"#F0FFF0",tx:"#2A7A2A",lbl:"OK"};
+              return(
+                <div key={s.id} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{s.ref}</div>
+                    <div style={{fontSize:11,color:"#7A7A7A"}}>{s.qty}/{s.min} {s.unit}</div>
+                  </div>
+                  <Badge label={sb.lbl} bg={sb.bg} color={sb.tx}/>
+                </div>
+              );
+            })}
+          </Bd>}
+
+          {/* Notes — pleine largeur */}
+          <Bd style={{gridColumn:"1/-1"}}>
+            <SecTitle>Notes ({projNotes.length})</SecTitle>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:10}}>
+              <FG label="Titre (optionnel)"><Inp value={noteForm.titre} onChange={e=>setNoteForm(x=>({...x,titre:e.target.value}))} placeholder="Ex: Point chantier"/></FG>
+              <FG label="Contenu *"><Inp value={noteForm.contenu} onChange={e=>setNoteForm(x=>({...x,contenu:e.target.value}))} placeholder="Saisir une note..."/></FG>
+            </div>
+            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:12}}>
+              <Btn primary onClick={()=>saveNote(p.id)}><span className={savingNote?"spin":""}>{savingNote?"⟳":"+"}</span> Ajouter une note</Btn>
+            </div>
+            {!projNotes.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune note.</div>}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {projNotes.map(n=>(
+                <div key={n.id} style={{padding:"10px 12px",borderRadius:6,background:"#F9F9F9",border:"0.5px solid #EEEEEE",position:"relative"}}>
+                  <button onClick={()=>notes.remove(n.id)} style={{position:"absolute",top:8,right:8,background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
+                  {n.titre&&<div style={{fontSize:12,fontWeight:700,color:"#1C1C1C",marginBottom:2,paddingRight:20}}>{n.titre}</div>}
+                  <div style={{fontSize:11,color:"#7A7A7A",fontFamily:"'DM Mono',monospace",marginBottom:4}}>{fmt(n.date)}</div>
+                  <div style={{fontSize:12,color:"#3A3A3A",whiteSpace:"pre-wrap",lineHeight:1.5}}>{n.contenu}</div>
+                </div>
+              ))}
+            </div>
+          </Bd>
+
         </div>
-      </div>
+      </WithPanel>
     );
   }
 
-  // ── Vue liste ──
-  let panel=null;
-  if(notesProjet&&!detail){
-    const projNotes=notes.rows.filter(n=>Number(n.projet_id)===Number(notesProjet.id)).sort((a,b)=>toISO(b.date).localeCompare(toISO(a.date)));
-    panel=<SidePanel title={`Notes — ${notesProjet.name}`} onClose={()=>setNotesProjet(null)}>
-      <FG label="Titre (optionnel)"><Inp value={noteForm.titre} onChange={e=>setNoteForm(x=>({...x,titre:e.target.value}))} placeholder="Ex: Point chantier"/></FG>
-      <FG label="Note *"><Inp value={noteForm.contenu} onChange={e=>setNoteForm(x=>({...x,contenu:e.target.value}))} rows={3} placeholder="Saisir une note..."/></FG>
-      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}>
-        <Btn primary onClick={saveNote}><span className={savingNote?"spin":""}>{savingNote?"⟳":"+"}</span> Ajouter</Btn>
-      </div>
-      {!projNotes.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune note pour ce projet.</div>}
-      {projNotes.map(n=>(
-        <div key={n.id} style={{padding:"10px 12px",borderRadius:6,background:"#F9F9F9",marginBottom:8,border:"0.5px solid #DDDDDD"}}>
-          <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-            <div>{n.titre&&<div style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{n.titre}</div>}<div style={{fontSize:11,color:"#7A7A7A",fontFamily:"'DM Mono',monospace"}}>{fmt(n.date)}</div></div>
-            <button onClick={()=>notes.remove(n.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
-          </div>
-          <div style={{fontSize:13,color:"#3A3A3A",whiteSpace:"pre-wrap",lineHeight:1.6}}>{n.contenu}</div>
-        </div>
-      ))}
-    </SidePanel>;
-  } else if(open){
-    panel=<SidePanel title={editing?"Modifier le projet":"Nouveau projet"} onClose={()=>{setOpen(false);setEditing(null);}}>
-      <FG label="Nom du projet *"><Inp value={form.name} onChange={e=>f("name",e.target.value)} placeholder="Ex: Façade ETFE Lyon"/></FG>
-      <FG label="Client / maître d'ouvrage"><Inp value={form.client||""} onChange={e=>f("client",e.target.value)} placeholder="Ex: Société ABC"/></FG>
-      <FG label="Lieu / chantier"><Inp value={form.lieu||""} onChange={e=>f("lieu",e.target.value)} placeholder="Ex: Lyon"/></FG>
-      <FG label="Statut"><Sel value={form.statut} onChange={e=>f("statut",e.target.value)}>{PROJ_STATUTS.map(s=><option key={s}>{s}</option>)}</Sel></FG>
-      <FG label="Avancement (%)"><Inp type="number" value={form.avancement} onChange={e=>f("avancement",e.target.value)}/></FG>
-      <FG label="Budget (€)"><Inp type="number" value={form.budget} onChange={e=>f("budget",e.target.value)}/></FG>
-      <FG label="Dépensé (€)"><Inp type="number" value={form.depense} onChange={e=>f("depense",e.target.value)}/></FG>
-      <FG label="Nb personnes"><Inp type="number" value={form.equipe} onChange={e=>f("equipe",e.target.value)}/></FG>
-      <FG label="Note"><Inp value={form.note||""} onChange={e=>f("note",e.target.value)} placeholder="Optionnel"/></FG>
-      <ErrMsg msg={err}/><PanelBtns onCancel={()=>{setOpen(false);setEditing(null);}} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Créer"}/>
-    </SidePanel>;
-  }
-
+  // ══ VUE LISTE ══
   return <WithPanel panel={panel}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
       <div style={{display:"flex",gap:8,alignItems:"center"}}>
         <div style={{fontSize:15,fontWeight:700,color:"#1C1C1C",borderLeft:"3px solid #CC2222",paddingLeft:8}}>Projets actifs ({actifs.length})</div>
         {historique.length>0&&<button onClick={()=>setShowHistorique(h=>!h)} style={{fontSize:12,color:"#7A7A7A",background:"none",border:"1px solid #DDDDDD",borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>{showHistorique?"Masquer":"Voir"} historique ({historique.length})</button>}
       </div>
-      <Btn primary onClick={()=>{setNotesProjet(null);setDetail(null);setEditing(null);setForm(EP);setErr("");setOpen(true);}}>+ Nouveau projet</Btn>
+      <Btn primary onClick={openNew}>+ Nouveau projet</Btn>
     </div>
 
     {sheet.loading&&<div style={{fontSize:13,color:"#7A7A7A",padding:12}}>Chargement...</div>}
@@ -598,44 +851,53 @@ function Projets({sheet,notes,tasks,orders,stocks,events}){
 
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
       {actifs.map(p=>{
-        const c=statutBadge(p.statut);const bp=p.budget>0?Math.round(p.depense/p.budget*100):0;
-        const nbNotes=notes.rows.filter(n=>Number(n.projet_id)===Number(p.id)).length;
+        const c=statutColor(p.statut);
+        const dep=calcDepensesReelles(p);
+        const caVal=Number(p.budget)||0;
+        const depAff=dep.total>0?dep.total:Number(p.depense)||0;
+        const bp=caVal>0?Math.round(depAff/caVal*100):0;
         return(
-          <Bd key={p.id} style={{cursor:"pointer"}} onClick={()=>{setNotesProjet(null);setOpen(false);setDetail(p.id);}}>
+          <div key={p.id} onClick={()=>openDetail(p.id)}
+            style={{background:"#fff",border:"0.5px solid #DDDDDD",borderRadius:10,padding:14,cursor:"pointer",position:"relative",transition:"box-shadow .15s"}}
+            onMouseEnter={e=>e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,0.08)"}
+            onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
             <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
-              <div>
+              <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>{p.name}</div>
                 {p.client&&<div style={{fontSize:12,color:"#7A7A7A"}}>{p.client}</div>}
                 {p.lieu&&<div style={{fontSize:12,color:"#7A7A7A"}}>{p.lieu}</div>}
               </div>
-              <div style={{display:"flex",gap:4,alignItems:"flex-start"}} onClick={e=>e.stopPropagation()}>
-                {nbNotes>0&&<span style={{background:"#CC2222",color:"#fff",borderRadius:10,fontSize:10,padding:"1px 6px",fontWeight:700}}>{nbNotes} note{nbNotes>1?"s":""}</span>}
-                <button onClick={e=>{e.stopPropagation();setNotesProjet(null);setEditing(p.id);setForm({...p,budget:p.budget??"",depense:p.depense??""});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Modifier</button>
+              <div style={{display:"flex",gap:4,alignItems:"flex-start",flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                <button onClick={e=>openEdit(p,e)} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Modifier</button>
                 <button onClick={e=>{e.stopPropagation();if(confirm("Supprimer ce projet ?"))sheet.remove(p.id);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#CC2222"}}>✕</button>
               </div>
             </div>
             <Badge label={p.statut} bg={c.bg} color={c.tx}/>
-            <div style={{fontSize:12,color:"#7A7A7A",marginTop:8}}>Avancement : {p.avancement}%</div><PBar val={p.avancement}/>
-            {p.budget>0&&<><div style={{fontSize:12,color:"#7A7A7A",marginTop:6}}>{Number(p.depense).toLocaleString("fr-FR")} € / {Number(p.budget).toLocaleString("fr-FR")} €</div><PBar val={bp}/></>}
-            <div style={{fontSize:11,color:"#CC2222",marginTop:8,fontWeight:500}}>Cliquer pour voir le détail →</div>
-          </Bd>
+            <div style={{fontSize:12,color:"#7A7A7A",marginTop:8}}>Avancement : {p.avancement}%</div>
+            <PBar val={p.avancement}/>
+            {caVal>0&&<>
+              <div style={{fontSize:12,color:"#7A7A7A",marginTop:6}}>{depAff.toLocaleString("fr-FR")} € / {caVal.toLocaleString("fr-FR")} € CA{dep.total>0&&<span style={{fontSize:10,color:"#7A7A7A",marginLeft:4}}>(engagé)</span>}</div>
+              <PBar val={bp}/>
+            </>}
+            <div style={{fontSize:11,color:"#CC2222",marginTop:8,fontWeight:500}}>→ Voir le détail complet</div>
+          </div>
         );
       })}
     </div>
 
-    {/* Historique */}
     {showHistorique&&historique.length>0&&(
       <div style={{marginTop:16}}>
         <div style={{fontSize:13,fontWeight:700,color:"#7A7A7A",borderLeft:"3px solid #DDDDDD",paddingLeft:8,marginBottom:10}}>Projets terminés ({historique.length})</div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
           {historique.map(p=>(
-            <Bd key={p.id} style={{opacity:.7,cursor:"pointer"}} onClick={()=>setDetail(p.id)}>
+            <div key={p.id} onClick={()=>openDetail(p.id)}
+              style={{background:"#fff",border:"0.5px solid #DDDDDD",borderRadius:10,padding:14,opacity:.7,cursor:"pointer"}}>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
                 <div><div style={{fontSize:13,fontWeight:700,color:"#3A3A3A",textDecoration:"line-through"}}>{p.name}</div>{p.client&&<div style={{fontSize:12,color:"#7A7A7A"}}>{p.client}</div>}</div>
                 <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
               </div>
-              {p.budget>0&&<div style={{fontSize:12,color:"#7A7A7A"}}>{Number(p.depense).toLocaleString("fr-FR")} € / {Number(p.budget).toLocaleString("fr-FR")} €</div>}
-            </Bd>
+              {p.budget>0&&<div style={{fontSize:12,color:"#7A7A7A"}}>{Number(p.depense).toLocaleString("fr-FR")} € / {Number(p.budget).toLocaleString("fr-FR")} € CA</div>}
+            </div>
           ))}
         </div>
       </div>
@@ -818,6 +1080,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks}){
   const [editing,setEditing]=useState(null);
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
+  const [vue,setVue]=useState("liste"); // "liste" | "planning"
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
 
   async function save(){
@@ -839,20 +1102,28 @@ function MissionModule({moduleType,sheet,projects,team,stocks}){
     await sheet.update(m.id,{...m,statut:"terminé"});
   }
 
-  const actives=sheet.rows.filter(m=>m.type===moduleType&&m.statut!=="terminé");
-  const terminees=sheet.rows.filter(m=>m.type===moduleType&&m.statut==="terminé");
+  const toutes=sheet.rows.filter(m=>m.type===moduleType);
+  const actives=toutes.filter(m=>m.statut!=="terminé");
+  const terminees=toutes.filter(m=>m.statut==="terminé");
   const sb=(s)=>({planifié:{bg:"#F2F0ED",tx:"#3A3A3A"},"en cours":{bg:"#FFF0F0",tx:"#CC2222"},terminé:{bg:"#F0FFF0",tx:"#2A7A2A"}}[s]||{bg:"#F2F0ED",tx:"#3A3A3A"});
 
-  // Membres sélection multiple
   const toggleMembre=(nom)=>{
     const current=Array.isArray(form.membres)?form.membres:(form.membres||"").split(",").filter(Boolean);
     const next=current.includes(nom)?current.filter(x=>x!==nom):[...current,nom];
     f("membres",next);
   };
-  const getMembres=(m)=>typeof m.membres==="string"?m.membres.split(",").filter(Boolean):m.membres||[];
+  const getMembres=(m)=>typeof m.membres==="string"?m.membres.split(",").filter(Boolean):Array.isArray(m.membres)?m.membres:[];
+
+  // Tous les membres impliqués dans au moins une mission active du module
+  const membresActifs=team.rows.filter(t=>
+    actives.some(m=>getMembres(m).includes(t.nom))
+  );
+
+  // Couleur de statut pour la barre de planning
+  const barColor=(s)=>s==="terminé"?"#2A7A2A":s==="en cours"?"#CC2222":"#AAAAAA";
 
   const panel=open&&<SidePanel title={editing?`Modifier la mission`:`Nouvelle mission ${label}`} onClose={()=>{setOpen(false);setEditing(null);}}>
-    <FG label="Description *"><Inp value={form.description} onChange={e=>f("description",e.target.value)} placeholder={`Ex: Découpe membranes ETFE`}/></FG>
+    <FG label="Description *"><Inp value={form.description} onChange={e=>f("description",e.target.value)} placeholder="Ex: Découpe membranes ETFE"/></FG>
     <FG label="Projet"><Sel value={form.projet} onChange={e=>f("projet",e.target.value)}>
       <option value="">— Aucun —</option>{projects.rows.map(p=><option key={p.id}>{p.name}</option>)}
     </Sel></FG>
@@ -879,53 +1150,198 @@ function MissionModule({moduleType,sheet,projects,team,stocks}){
   </SidePanel>;
 
   return <WithPanel panel={panel}>
+    {/* Header avec toggle vue */}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-      <div style={{fontSize:15,fontWeight:700,color:"#1C1C1C",borderLeft:"3px solid #CC2222",paddingLeft:8}}>Missions {label} ({actives.length} actives)</div>
+      <div style={{display:"flex",alignItems:"center",gap:12}}>
+        <div style={{fontSize:15,fontWeight:700,color:"#1C1C1C",borderLeft:"3px solid #CC2222",paddingLeft:8}}>
+          Missions {label} ({actives.length} actives)
+        </div>
+        {/* Toggle liste / planning */}
+        <div style={{display:"flex",border:"1px solid #DDDDDD",borderRadius:6,overflow:"hidden"}}>
+          {[["liste","≡ Liste"],["planning","▦ Planning"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setVue(v)} style={{
+              padding:"4px 12px",fontSize:12,cursor:"pointer",border:"none",
+              background:vue===v?"#CC2222":"#fff",
+              color:vue===v?"#fff":"#3A3A3A",
+              fontFamily:"'DM Sans',sans-serif",fontWeight:vue===v?700:400
+            }}>{l}</button>
+          ))}
+        </div>
+      </div>
       <Btn primary onClick={()=>{setEditing(null);setForm({...EMISSION,type:moduleType});setErr("");setOpen(true);}}>+ Nouvelle mission</Btn>
     </div>
 
-    {!actives.length&&<Bd style={{textAlign:"center",padding:20,color:"#7A7A7A",fontSize:13,marginBottom:12}}>Aucune mission {label.toLowerCase()} en cours.</Bd>}
-
-    {actives.map(m=>{
-      const s=sb(m.statut);
-      const membres=getMembres(m);
-      return(
-        <Bd key={m.id} style={{marginBottom:8}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-            <div style={{flex:1}}>
-              <div style={{fontSize:13,fontWeight:700,color:"#1C1C1C",marginBottom:2}}>{m.description}</div>
-              {m.projet&&<div style={{fontSize:12,color:"#7A7A7A",marginBottom:3}}>{m.projet}</div>}
-              <div style={{fontSize:12,color:"#7A7A7A"}}>{m.dateDebut&&`Du ${fmt(m.dateDebut)}`}{m.dateFin&&` au ${fmt(m.dateFin)}`}</div>
-              {membres.length>0&&(
-                <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:6}}>
-                  {membres.map(mb=><span key={mb} style={{background:"#F2F0ED",color:"#3A3A3A",fontSize:11,padding:"2px 8px",borderRadius:4}}>{mb}</span>)}
-                </div>
-              )}
-              {m.stockRef&&<div style={{fontSize:12,color:"#7A7A7A",marginTop:4}}>Pièce : {m.stockRef} × {m.stockQty}</div>}
-              {m.note&&<div style={{fontSize:12,color:"#7A7A7A",marginTop:4,fontStyle:"italic"}}>{m.note}</div>}
+    {/* ══ VUE LISTE ══ */}
+    {vue==="liste"&&<>
+      {!actives.length&&<Bd style={{textAlign:"center",padding:20,color:"#7A7A7A",fontSize:13,marginBottom:12}}>Aucune mission {label.toLowerCase()} en cours.</Bd>}
+      {actives.map(m=>{
+        const s=sb(m.statut);
+        const membres=getMembres(m);
+        return(
+          <Bd key={m.id} style={{marginBottom:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#1C1C1C",marginBottom:2}}>{m.description}</div>
+                {m.projet&&<div style={{fontSize:12,color:"#7A7A7A",marginBottom:3}}>{m.projet}</div>}
+                <div style={{fontSize:12,color:"#7A7A7A"}}>{m.dateDebut&&`Du ${fmt(m.dateDebut)}`}{m.dateFin&&` au ${fmt(m.dateFin)}`}</div>
+                {membres.length>0&&(
+                  <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:6}}>
+                    {membres.map(mb=><span key={mb} style={{background:"#F2F0ED",color:"#3A3A3A",fontSize:11,padding:"2px 8px",borderRadius:4}}>{mb}</span>)}
+                  </div>
+                )}
+                {m.stockRef&&<div style={{fontSize:12,color:"#7A7A7A",marginTop:4}}>Pièce : {m.stockRef} × {m.stockQty}</div>}
+                {m.note&&<div style={{fontSize:12,color:"#7A7A7A",marginTop:4,fontStyle:"italic"}}>{m.note}</div>}
+              </div>
+              <Badge label={m.statut} bg={s.bg} color={s.tx}/>
             </div>
-            <Badge label={m.statut} bg={s.bg} color={s.tx}/>
+            <div style={{display:"flex",gap:6}}>
+              <Btn small onClick={()=>{setEditing(m.id);setForm({...m,stockQty:String(m.stockQty),membres:getMembres(m)});setErr("");setOpen(true);}}>Modifier</Btn>
+              {m.statut!=="terminé"&&<Btn small primary onClick={()=>terminer(m)}>Marquer terminé</Btn>}
+              <Btn small danger onClick={()=>sheet.remove(m.id)}>Suppr.</Btn>
+            </div>
+          </Bd>
+        );
+      })}
+      {terminees.length>0&&<>
+        <div style={{fontSize:13,fontWeight:700,color:"#7A7A7A",borderLeft:"3px solid #DDDDDD",paddingLeft:8,margin:"16px 0 10px"}}>Historique — missions terminées ({terminees.length})</div>
+        {terminees.map(m=>(
+          <div key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:6,background:"#F9F9F9",border:"0.5px solid #EEEEEE",marginBottom:6,opacity:.7}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,color:"#3A3A3A",textDecoration:"line-through"}}>{m.description}</div>
+              <div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet} · {getMembres(m).join(", ")}</div>
+            </div>
+            <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
           </div>
-          <div style={{display:"flex",gap:6}}>
-            <Btn small onClick={()=>{setEditing(m.id);setForm({...m,stockQty:String(m.stockQty),membres:getMembres(m)});setErr("");setOpen(true);}}>Modifier</Btn>
-            {m.statut!=="terminé"&&<Btn small primary onClick={()=>terminer(m)}>Marquer terminé</Btn>}
-            <Btn small danger onClick={()=>sheet.remove(m.id)}>Suppr.</Btn>
-          </div>
-        </Bd>
-      );
-    })}
+        ))}
+      </>}
+    </>}
 
-    {terminees.length>0&&<>
-      <div style={{fontSize:13,fontWeight:700,color:"#7A7A7A",borderLeft:"3px solid #DDDDDD",paddingLeft:8,margin:"16px 0 10px"}}>Historique — missions terminées ({terminees.length})</div>
-      {terminees.map(m=>(
-        <div key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:6,background:"#F9F9F9",border:"0.5px solid #EEEEEE",marginBottom:6,opacity:.7}}>
-          <div style={{flex:1}}>
-            <div style={{fontSize:13,color:"#3A3A3A",textDecoration:"line-through"}}>{m.description}</div>
-            <div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet} · {getMembres(m).join(", ")}</div>
+    {/* ══ VUE PLANNING ══ */}
+    {vue==="planning"&&<>
+      {!membresActifs.length&&(
+        <Bd style={{textAlign:"center",padding:24,color:"#7A7A7A",fontSize:13}}>
+          Aucun membre assigné aux missions actives. Assigne des membres depuis la vue Liste.
+        </Bd>
+      )}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        {membresActifs.map(membre=>{
+          const missionsPersonne=actives.filter(m=>getMembres(m).includes(membre.nom));
+          const nTerminees=terminees.filter(m=>getMembres(m).includes(membre.nom)).length;
+          const nTotal=missionsPersonne.length+nTerminees;
+          const pct=nTotal>0?Math.round(nTerminees/nTotal*100):0;
+          const enCours=missionsPersonne.filter(m=>m.statut==="en cours").length;
+          const planifiees=missionsPersonne.filter(m=>m.statut==="planifié").length;
+
+          return(
+            <Bd key={membre.id}>
+              {/* En-tête membre */}
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,paddingBottom:10,borderBottom:"1px solid #EEEEEE"}}>
+                <div style={{width:36,height:36,borderRadius:"50%",background:"#CC2222",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                  <span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{initials(membre.nom)}</span>
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{membre.nom}</div>
+                  {membre.role&&<div style={{fontSize:11,color:"#7A7A7A"}}>{membre.role}</div>}
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:11,color:"#7A7A7A"}}>{missionsPersonne.length} mission{missionsPersonne.length>1?"s":""} active{missionsPersonne.length>1?"s":""}</div>
+                  {enCours>0&&<div style={{fontSize:11,color:"#CC2222",fontWeight:600}}>{enCours} en cours</div>}
+                </div>
+              </div>
+
+              {/* Barre de progression globale */}
+              {nTotal>0&&<div style={{marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#7A7A7A",marginBottom:4}}>
+                  <span>Avancement global</span>
+                  <span style={{fontWeight:600,color:"#1C1C1C"}}>{pct}%</span>
+                </div>
+                <div style={{height:4,borderRadius:2,background:"#EEEEEE",overflow:"hidden"}}>
+                  <div style={{height:"100%",width:pct+"%",background:pct===100?"#2A7A2A":"#CC2222",borderRadius:2,transition:"width .3s"}}/>
+                </div>
+                <div style={{display:"flex",gap:10,marginTop:5,fontSize:10,color:"#7A7A7A"}}>
+                  {planifiees>0&&<span style={{color:"#7A7A7A"}}>● {planifiees} planifiée{planifiees>1?"s":""}</span>}
+                  {enCours>0&&<span style={{color:"#CC2222"}}>● {enCours} en cours</span>}
+                  {nTerminees>0&&<span style={{color:"#2A7A2A"}}>● {nTerminees} terminée{nTerminees>1?"s":""}</span>}
+                </div>
+              </div>}
+
+              {/* Liste des missions */}
+              {missionsPersonne.map(m=>{
+                const s=sb(m.statut);
+                const autresMembres=getMembres(m).filter(x=>x!==membre.nom);
+                return(
+                  <div key={m.id} style={{padding:"9px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+                    <div style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:4}}>
+                      <div style={{width:3,background:barColor(m.statut),borderRadius:2,alignSelf:"stretch",flexShrink:0,minHeight:16}}/>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C",marginBottom:2}}>{m.description}</div>
+                        {m.projet&&<div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet}</div>}
+                        {(m.dateDebut||m.dateFin)&&(
+                          <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>
+                            {m.dateDebut&&fmt(m.dateDebut)}{m.dateFin&&` → ${fmt(m.dateFin)}`}
+                          </div>
+                        )}
+                        {autresMembres.length>0&&(
+                          <div style={{fontSize:10,color:"#AAAAAA",marginTop:3}}>
+                            avec {autresMembres.join(", ")}
+                          </div>
+                        )}
+                      </div>
+                      <Badge label={m.statut} bg={s.bg} color={s.tx}/>
+                    </div>
+                    {/* Actions rapides */}
+                    {m.statut!=="terminé"&&(
+                      <div style={{display:"flex",gap:6,paddingLeft:11,marginTop:4}}>
+                        <button onClick={()=>sheet.update(m.id,{...m,statut:"en cours",membres:getMembres(m).join(",")})}
+                          style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"1px solid #DDDDDD",background:m.statut==="en cours"?"#FFF0F0":"#fff",color:m.statut==="en cours"?"#CC2222":"#3A3A3A",cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>
+                          En cours
+                        </button>
+                        <button onClick={()=>terminer(m)}
+                          style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"1px solid #2A7A2A",background:"#F0FFF0",color:"#2A7A2A",cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>
+                          ✓ Terminé
+                        </button>
+                      </div>
+                    )}
+                    {m.statut==="terminé"&&(
+                      <div style={{paddingLeft:11,marginTop:3,fontSize:10,color:"#2A7A2A",fontWeight:600}}>✓ Mission terminée</div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Si toutes terminées pour cette personne */}
+              {missionsPersonne.length===0&&(
+                <div style={{fontSize:12,color:"#2A7A2A",fontWeight:500,padding:"8px 0"}}>✓ Toutes les missions sont terminées.</div>
+              )}
+            </Bd>
+          );
+        })}
+      </div>
+
+      {/* Membres sans mission active mais avec historique */}
+      {team.rows.filter(t=>!membresActifs.find(m=>m.id===t.id)&&terminees.some(m=>getMembres(m).includes(t.nom))).length>0&&(
+        <div style={{marginTop:16}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#7A7A7A",borderLeft:"3px solid #DDDDDD",paddingLeft:8,marginBottom:10}}>
+            Membres sans mission active
           </div>
-          <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {team.rows.filter(t=>!membresActifs.find(m=>m.id===t.id)&&terminees.some(m=>getMembres(m).includes(t.nom))).map(t=>{
+              const n=terminees.filter(m=>getMembres(m).includes(t.nom)).length;
+              return(
+                <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",background:"#F9F9F9",borderRadius:8,border:"0.5px solid #EEEEEE"}}>
+                  <div style={{width:28,height:28,borderRadius:"50%",background:"#DDDDDD",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    <span style={{fontSize:11,fontWeight:700,color:"#7A7A7A"}}>{initials(t.nom)}</span>
+                  </div>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:600,color:"#3A3A3A"}}>{t.nom}</div>
+                    <div style={{fontSize:11,color:"#7A7A7A"}}>{n} mission{n>1?"s":""} terminée{n>1?"s":""}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
-      ))}
+      )}
     </>}
   </WithPanel>;
 }
@@ -974,10 +1390,11 @@ function Taches({sheet,projects}){
 
   return <WithPanel panel={panel}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-      <div style={{display:"flex",gap:4}}>
+      <div style={{display:"flex",gap:4,alignItems:"center"}}>
         {[["pending","En cours"],["done","Terminées"],["all","Toutes"]].map(([v,l])=>(
           <button key={v} onClick={()=>setFilter(v)} style={{padding:"5px 12px",borderRadius:4,fontSize:12,cursor:"pointer",border:"1px solid #DDDDDD",background:filter===v?"#CC2222":"#fff",color:filter===v?"#fff":"#3A3A3A",fontFamily:"'DM Sans',sans-serif",fontWeight:filter===v?700:400}}>{l}</button>
         ))}
+        <span style={{fontSize:11,color:"#7A7A7A",marginLeft:8,fontFamily:"'DM Mono',monospace"}}>{sheet.rows.length} tâches chargées</span>
       </div>
       <Btn primary onClick={()=>{setEditing(null);setForm(ET);setErr("");setOpen(true);}}>+ Nouvelle tâche</Btn>
     </div>
@@ -1055,8 +1472,14 @@ function Calendrier({sheet,projects}){
     setOpen(true);
   }
 
-  // Événements d'un jour donné
-  const eventsForDay=(day)=>sheet.rows.filter(e=>toISO(e.date)===day).sort((a,b)=>(a.heure||"").localeCompare(b.heure||""));
+  // DEBUG temporaire — à supprimer une fois le problème résolu
+  const [showDebug,setShowDebug]=useState(false);
+
+  // Événements d'un jour donné — comparaison robuste multi-format
+  const eventsForDay=(day)=>sheet.rows.filter(e=>{
+    if(e.date===undefined||e.date===null||e.date==="")return false;
+    return toISO(e.date)===day;
+  }).sort((a,b)=>(a.heure||"").localeCompare(b.heure||""));
 
   // ── Vue MOIS ──
   const firstDow=(()=>{let d=new Date(year,month,1).getDay();return d===0?6:d-1;})();
@@ -1109,6 +1532,13 @@ function Calendrier({sheet,projects}){
 
   return <WithPanel panel={panel}>
     <NavBar/>
+    {/* DEBUG TEMPORAIRE */}
+    <div style={{marginBottom:10}}>
+      <button onClick={()=>setShowDebug(d=>!d)} style={{fontSize:11,color:"#7A7A7A",background:"none",border:"1px solid #DDDDDD",borderRadius:4,padding:"2px 8px",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>🔍 Debug données ({sheet.rows.length} événements)</button>
+      {showDebug&&<div style={{marginTop:8,padding:"10px 12px",background:"#1C1C1C",borderRadius:6,fontSize:11,color:"#F0F0F0",fontFamily:"'DM Mono',monospace",maxHeight:200,overflowY:"auto",whiteSpace:"pre-wrap"}}>
+        {sheet.rows.length===0?"⚠ Aucune ligne reçue de Google Sheets":sheet.rows.slice(0,5).map(e=>`id:${e.id} | date:"${e.date}" | type:${typeof e.date} | toISO:"${toISO(e.date)}" | title:"${e.title}"`).join("\n")}
+      </div>}
+    </div>
 
     {/* ── VUE MOIS ── */}
     {view==="mois"&&<>
@@ -1369,30 +1799,61 @@ function Stocks({sheet,fournisseurs}){
 }
 
 // ══ COMMANDES ══
-const EO={ref:"",fourn:"",article:"",qty:"",unit:"pcs",prix:"",cat:"",loc:"",date:TODAY};
-function Commandes({sheet,stocks,fournisseurs}){
+const EO={ref:"",fourn:"",article:"",qty:"",unit:"pcs",prix:"",cat:"",loc:"",date:TODAY,projet:""};
+function Commandes({sheet,stocks,fournisseurs,projects}){
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(EO);
+  const [editing,setEditing]=useState(null);
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
   const isBool=v=>v===true||v==="TRUE";
-  async function toggle(o,field){
-    const next={...o,[field]:!isBool(o[field])};
-    if(field==="recue"&&next.recue){next.passee=true;await addToStock(next);}
-    if(field==="factureCompta"&&next.factureCompta)next.passee=true;
+
+  // Marquer comme reçue
+  async function toggleRecue(o){
+    const wasRecue=isBool(o.recue);
+    const next={...o,recue:!wasRecue};
+    if(!wasRecue){
+      await addToStock(o);
+    } else {
+      if(!isBool(o.factureCompta)){
+        const idx=stocks.rows.findIndex(s=>s.ref.toLowerCase()===o.article.toLowerCase());
+        if(idx>=0){const s=stocks.rows[idx];await stocks.update(s.id,{...s,qty:Math.max(0,Number(s.qty)-(+o.qty||0))});}
+      }
+      next.factureCompta=false;
+    }
     await sheet.update(o.id,next);
   }
+
+  async function toggleFacture(o){
+    await sheet.update(o.id,{...o,factureCompta:!isBool(o.factureCompta)});
+  }
+
   async function addToStock(ord){
     const idx=stocks.rows.findIndex(s=>s.ref.toLowerCase()===ord.article.toLowerCase());
     if(idx>=0){const s=stocks.rows[idx];await stocks.update(s.id,{...s,qty:Number(s.qty)+(+ord.qty||0)});}
     else{await stocks.add({ref:ord.article,cat:ord.cat||"",qty:+ord.qty||0,min:0,unit:ord.unit||"pcs",prix:+ord.prix||0,loc:ord.loc||"",fourn:ord.fourn||""});}
   }
-  async function save(){if(!form.article.trim()){setErr("Article obligatoire.");return;}if(!form.fourn.trim()){setErr("Fournisseur obligatoire.");return;}setSaving(true);setErr("");try{await sheet.add({...form,qty:+form.qty||0,prix:+form.prix||0,passee:false,recue:false,factureCompta:false});setOpen(false);setForm(EO);}catch(e){setErr(e.message);}setSaving(false);}
+
+  async function save(){
+    if(!form.article.trim()){setErr("Article obligatoire.");return;}
+    if(!form.fourn.trim()){setErr("Fournisseur obligatoire.");return;}
+    setSaving(true);setErr("");
+    try{
+      if(editing){
+        await sheet.update(editing,{...form,qty:+form.qty||0,prix:+form.prix||0});
+      } else {
+        await sheet.add({...form,qty:+form.qty||0,prix:+form.prix||0,recue:false,factureCompta:false});
+      }
+      setOpen(false);setEditing(null);setForm(EO);
+    }catch(e){setErr(e.message);}setSaving(false);
+  }
+
   const encours=sheet.rows.filter(o=>!isBool(o.recue));
-  const recues=sheet.rows.filter(o=>isBool(o.recue));
-  const alerteCompta=recues.filter(o=>!isBool(o.factureCompta));
-  const panel=open&&<SidePanel title="Nouvelle commande" onClose={()=>setOpen(false)}>
+  const attenteFacture=sheet.rows.filter(o=>isBool(o.recue)&&!isBool(o.factureCompta));
+  const historique=sheet.rows.filter(o=>isBool(o.recue)&&isBool(o.factureCompta));
+
+  const panel=open&&<SidePanel title={editing?"Modifier la commande":"Nouvelle commande"} onClose={()=>{setOpen(false);setEditing(null);setForm(EO);}}>
     <FG label="Référence commande"><Inp value={form.ref} onChange={e=>f("ref",e.target.value)} placeholder="CMD-001"/></FG>
     <FG label="Date"><Inp type="date" value={form.date} onChange={e=>f("date",e.target.value)}/></FG>
     <FG label="Article / désignation *"><Inp value={form.article} onChange={e=>f("article",e.target.value)} placeholder="Ex: Profilés keder 2m"/></FG>
@@ -1401,50 +1862,99 @@ function Commandes({sheet,stocks,fournisseurs}){
     <FG label="Unité"><Sel value={form.unit} onChange={e=>f("unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</Sel></FG>
     <FG label="Prix unitaire (€)"><Inp type="number" value={form.prix} onChange={e=>f("prix",e.target.value)} placeholder="0.00"/></FG>
     <FG label="Catégorie stock"><Sel value={form.cat} onChange={e=>f("cat",e.target.value)}><option value="">— Choisir —</option>{CATS.map(c=><option key={c}>{c}</option>)}</Sel></FG>
+    <FG label="Projet lié"><Sel value={form.projet||""} onChange={e=>f("projet",e.target.value)}>
+      <option value="">— Aucun —</option>
+      {(projects?.rows||[]).map(p=><option key={p.id} value={p.name}>{p.name}</option>)}
+    </Sel></FG>
     <FG label="Emplacement"><Inp value={form.loc} onChange={e=>f("loc",e.target.value)} placeholder="Ex: Rack B2"/></FG>
-    <ErrMsg msg={err}/><PanelBtns onCancel={()=>setOpen(false)} onSave={save} saving={saving} saveLabel="Créer la commande"/>
+    <ErrMsg msg={err}/><PanelBtns onCancel={()=>{setOpen(false);setEditing(null);setForm(EO);}} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Créer la commande"}/>
   </SidePanel>;
+
   return <WithPanel panel={panel}>
+    {/* KPIs */}
     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
-      {[{val:encours.length,lbl:"Commandes en cours"},{val:recues.length,lbl:"Commandes reçues"},{val:alerteCompta.length,lbl:"Factures en attente",alert:alerteCompta.length>0}].map((m,i)=>(
-        <div key={i} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderTop:m.alert?"3px solid #CC2222":"3px solid #F2F0ED",borderRadius:8,padding:"12px 14px"}}>
-          <div style={{fontSize:18,fontWeight:700,color:m.alert?"#CC2222":"#1C1C1C"}}>{m.val}</div>
+      {[
+        {val:encours.length,lbl:"En cours"},
+        {val:attenteFacture.length,lbl:"En attente de facture",alert:attenteFacture.length>0},
+        {val:historique.length,lbl:"Archivées"},
+      ].map((m,i)=>(
+        <div key={i} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderTop:m.alert?"3px solid #CC8800":"3px solid #F2F0ED",borderRadius:8,padding:"12px 14px"}}>
+          <div style={{fontSize:18,fontWeight:700,color:m.alert?"#CC8800":"#1C1C1C"}}>{m.val}</div>
           <div style={{fontSize:12,color:"#7A7A7A",marginTop:2}}>{m.lbl}</div>
         </div>
       ))}
     </div>
-    {alerteCompta.length>0&&<div style={{background:"#FFF8EC",border:"0.5px solid #CC8800",borderLeft:"3px solid #CC8800",borderRadius:6,padding:"8px 12px",marginBottom:12,fontSize:13,color:"#CC8800"}}>{alerteCompta.length} facture(s) non transmise(s) à la comptabilité</div>}
+
+    {attenteFacture.length>0&&<div style={{background:"#FFF8EC",border:"0.5px solid #CC8800",borderLeft:"3px solid #CC8800",borderRadius:6,padding:"8px 12px",marginBottom:12,fontSize:13,color:"#CC8800"}}>
+      {attenteFacture.length} facture(s) en attente de transmission à la comptabilité
+    </div>}
+
+    {/* ── ZONE 1 : En cours ── */}
     <Bd style={{marginBottom:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <SecTitle>Commandes en cours</SecTitle>
-        <Btn primary onClick={()=>{setErr("");setForm(EO);setOpen(true);}}>+ Nouvelle commande</Btn>
+        <Btn primary onClick={()=>{setErr("");setEditing(null);setForm(EO);setOpen(true);}}>+ Nouvelle commande</Btn>
       </div>
       {!encours.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune commande en cours.</div>}
       {encours.map(o=>(
         <div key={o.id} style={{padding:"12px 0",borderBottom:"0.5px solid #EEEEEE"}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-            <div><span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{o.article}</span>{o.ref&&<span style={{fontSize:11,color:"#7A7A7A",marginLeft:8,fontFamily:"'DM Mono',monospace"}}>{o.ref}</span>}</div>
-            <button onClick={()=>sheet.remove(o.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
+            <div>
+              <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{o.article}</span>
+              {o.ref&&<span style={{fontSize:11,color:"#7A7A7A",marginLeft:8,fontFamily:"'DM Mono',monospace"}}>{o.ref}</span>}
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>{setEditing(o.id);setForm({...o,qty:String(o.qty),prix:String(o.prix),date:toISO(o.date)||o.date});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Modifier</button>
+              <button onClick={()=>sheet.remove(o.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
+            </div>
           </div>
-          <div style={{fontSize:12,color:"#7A7A7A",marginBottom:8}}>{o.fourn} · {o.qty} {o.unit} · {fmt(o.date)}</div>
-          <div style={{display:"flex",gap:20}}>
-            <Check checked={isBool(o.passee)} onChange={()=>toggle(o,"passee")} label="Commande passée" color="#3A3A3A"/>
-            <Check checked={isBool(o.recue)} onChange={()=>toggle(o,"recue")} label="Reçue" color="#2A7A2A"/>
-            <Check checked={isBool(o.factureCompta)} onChange={()=>toggle(o,"factureCompta")} label="Facture transmise" color="#CC2222"/>
+          <div style={{fontSize:12,color:"#7A7A7A",marginBottom:8,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+            <span>{o.fourn} · {o.qty} {o.unit}{o.prix>0&&` · ${(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €`} · {fmt(o.date)}</span>
+            {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
           </div>
+          <Check checked={isBool(o.recue)} onChange={()=>toggleRecue(o)} label="Marquer comme reçue → ajout au stock" color="#2A7A2A"/>
         </div>
       ))}
     </Bd>
-    {recues.length>0&&<Bd>
-      <SecTitle>Historique — commandes reçues ({recues.length})</SecTitle>
-      {recues.map(o=>(
+
+    {/* ── ZONE 2 : Reçues, facture en attente ── */}
+    {attenteFacture.length>0&&<Bd style={{marginBottom:12,borderLeft:"3px solid #CC8800"}}>
+      <SecTitle>Reçues — facture en attente ({attenteFacture.length})</SecTitle>
+      {attenteFacture.map(o=>(
+        <div key={o.id} style={{padding:"10px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4}}>
+            <div>
+              <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{o.article}</span>
+              {o.ref&&<span style={{fontSize:11,color:"#7A7A7A",marginLeft:8,fontFamily:"'DM Mono',monospace"}}>{o.ref}</span>}
+            </div>
+            <Badge label="Reçue" bg="#F0FFF0" color="#2A7A2A"/>
+          </div>
+          <div style={{fontSize:12,color:"#7A7A7A",marginBottom:8,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+            <span>{o.fourn} · {o.qty} {o.unit}{o.prix>0&&` · ${(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €`} · {fmt(o.date)}</span>
+            {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
+          </div>
+          <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+            <Check checked={false} onChange={()=>toggleRecue(o)} label="Annuler réception (retour en cours)" color="#CC2222"/>
+            <Check checked={isBool(o.factureCompta)} onChange={()=>toggleFacture(o)} label="Facture transmise → archiver" color="#CC2222"/>
+          </div>
+        </div>
+      ))}
+    </Bd>}
+
+    {/* ── ZONE 3 : Historique archivé ── */}
+    {historique.length>0&&<Bd>
+      <SecTitle>Historique — archivées ({historique.length})</SecTitle>
+      {historique.map(o=>(
         <div key={o.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
           <div style={{flex:1}}>
             <div style={{fontSize:13,color:"#7A7A7A",textDecoration:"line-through"}}>{o.article}</div>
-            <div style={{fontSize:11,color:"#7A7A7A",fontFamily:"'DM Mono',monospace"}}>{o.fourn} · {fmt(o.date)}</div>
+            <div style={{fontSize:11,color:"#7A7A7A",fontFamily:"'DM Mono',monospace",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+              <span>{o.fourn} · {fmt(o.date)}{o.prix>0&&` · ${(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €`}</span>
+              {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>{o.projet}</span>}
+            </div>
           </div>
           <Badge label="Reçue" bg="#F0FFF0" color="#2A7A2A"/>
-          {isBool(o.factureCompta)?<Badge label="Compta OK" bg="#F0FFF0" color="#2A7A2A"/>:<Badge label="Facture en attente" bg="#FFF8EC" color="#CC8800"/>}
+          <Badge label="Compta ✓" bg="#F0FFF0" color="#2A7A2A"/>
         </div>
       ))}
     </Bd>}
@@ -1540,7 +2050,7 @@ function App(){
       {/* Content */}
       <div style={{flex:1,padding:20}}>
         {panel==="dashboard"      &&<Dashboard sheets={sheets}/>}
-        {panel==="projets"        &&<Projets sheet={projects} notes={notes} tasks={tasks} orders={orders} stocks={stocks} events={events}/>}
+        {panel==="projets"        &&<Projets sheet={projects} notes={notes} tasks={tasks} orders={orders} stocks={stocks} events={events} prestMissions={prestMissions} atelierChantier={atelierChantier}/>}
         {panel==="taches"         &&<Taches sheet={tasks} projects={projects}/>}
         {panel==="calendrier"     &&<Calendrier sheet={events} projects={projects}/>}
         {panel==="equipes"        &&<Equipes sheet={team} journal={journal}/>}
@@ -1549,7 +2059,7 @@ function App(){
         {panel==="prestataires"   &&<Prestataires sheet={prestataires} missions={prestMissions} projects={projects} stocks={stocks}/>}
         {panel==="fournisseurs"   &&<Fournisseurs sheet={fournisseurs}/>}
         {panel==="stocks"         &&<Stocks sheet={stocks} fournisseurs={fournisseurs}/>}
-        {panel==="commandes"      &&<Commandes sheet={orders} stocks={stocks} fournisseurs={fournisseurs}/>}
+        {panel==="commandes"      &&<Commandes sheet={orders} stocks={stocks} fournisseurs={fournisseurs} projects={projects}/>}
       </div>
       {/* Footer */}
       <div style={{textAlign:"center",padding:"10px 20px",fontSize:10,color:"#7A7A7A",borderTop:"0.5px solid #DDDDDD",background:"#fff",fontFamily:"'DM Sans',sans-serif"}}>
