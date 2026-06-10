@@ -41,45 +41,10 @@
 <script type="text/babel">
 const { useState, useEffect, useCallback } = React;
 
-const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec"; // Ne pas exposer de secrets ici
-const VERSION = "v2.4.4i-secure";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwb3hMTcB1HYK_blQwojA52MQ145Eew8U2XgjxCcvkRicROHOsJHUvrH5lZZIBpZYCs/exec";
+const VERSION = "v2.4.4k";
 
-// ═══════════════════════════════════════════════════
-// SYSTÈME D'AUTHENTIFICATION
-// ═══════════════════════════════════════════════════
-// Le token est obtenu depuis Apps Script via Session.getActiveUser()
-// Il est stocké en mémoire uniquement (jamais dans localStorage/sessionStorage)
-// Il expire automatiquement après 5 minutes (renouvelé automatiquement)
-let _authEmail = null;
-let _authToken = null;
-let _tokenExpiry = 0;
-
-// Demander à l'utilisateur de s'identifier
-async function ensureAuth() {
-  const now = Date.now();
-  // Token encore valide (marge de 30s)
-  if (_authToken && _authEmail && now < _tokenExpiry - 30000) {
-    return { email: _authEmail, token: _authToken };
-  }
-  // Obtenir l'email de l'utilisateur (il doit être connecté à Google)
-  // Le Apps Script vérifie que c'est bien Session.getActiveUser()
-  if (!_authEmail) {
-    const email = prompt("Entrez votre email Google autorisé :");
-    if (!email) throw new Error("Authentification annulée");
-    _authEmail = email.trim().toLowerCase();
-  }
-  // Obtenir un nouveau token depuis Apps Script
-  const token = await jsonp({ action: "auth", email: _authEmail });
-  if (!token.ok) {
-    _authEmail = null;
-    throw new Error(token.msg || "Authentification échouée");
-  }
-  _authToken = token.token;
-  _tokenExpiry = now + 5 * 60 * 1000; // 5 minutes
-  return { email: _authEmail, token: _authToken };
-}
-
-// ── API via JSONP (GET — lectures uniquement) ──
+// ── API via JSONP ──
 function jsonp(params) {
   return new Promise((resolve, reject) => {
     const cb = "cb_" + Math.random().toString(36).slice(2);
@@ -94,52 +59,12 @@ function jsonp(params) {
     document.head.appendChild(script);
   });
 }
-
-// ── API via fetch POST (écriture — add/update/delete) ──
-async function gasPost(action, key, data, id) {
-  const auth = await ensureAuth();
-  const body = { action, key, email: auth.email, token: auth.token };
-  if (data !== undefined && data !== null) body.data = data;
-  if (id !== undefined) body.id = id;
-  const resp = await fetch(GAS_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    mode: "no-cors" // Apps Script CORS
-  });
-  // no-cors retourne une opaque response — utiliser JSONP pour les retours
-  // Pour la confirmation, on relit via GET après chaque mutation
-  return { ok: true };
-}
-
-// ── Lectures (GET + auth) ──
-async function gasGet(key) {
-  const auth = await ensureAuth();
-  const r = await jsonp({ action: "get", key, email: auth.email, token: auth.token });
-  if (!r.ok) throw new Error(r.msg);
-  return r.data;
-}
-
-// ── Écritures (POST + auth) ──
-async function gasAction(action, key, data, id) {
-  const auth = await ensureAuth();
-  // Utiliser JSONP pour récupérer le résultat des mutations aussi
-  const p = { action, key, email: auth.email, token: auth.token };
-  if (data !== undefined && data !== null) p.data = JSON.stringify(data);
-  if (id !== undefined) p.id = id;
-  const r = await jsonp(p);
-  if (!r.ok) {
-    // Token expiré → forcer renouvellement
-    if (r.msg && r.msg.includes("Token")) { _authToken = null; _tokenExpiry = 0; }
-    throw new Error(r.msg);
-  }
-  return r.data ?? r;
-}
-
-const gasAdd    = (key, data)     => gasAction("add",    key, data);
-const gasUpdate = (key, id, data) => gasAction("update", key, data, id);
-const gasDelete = (key, id)       => gasAction("delete", key, null, id);
-const gasInit   = async ()        => { const a = await ensureAuth(); return jsonp({ action:"init", email:a.email, token:a.token }); };
+async function gasGet(key){const r=await jsonp({action:"get",key});if(!r.ok)throw new Error(r.msg);return r.data;}
+async function gasAction(action,key,data,id){const p={action,key};if(data!==undefined&&data!==null)p.data=JSON.stringify(data);if(id!==undefined)p.id=id;const r=await jsonp(p);if(!r.ok)throw new Error(r.msg);return r.data??r;}
+const gasAdd=(key,data)=>gasAction("add",key,data);
+const gasUpdate=(key,id,data)=>gasAction("update",key,data,id);
+const gasDelete=(key,id)=>gasAction("delete",key,null,id);
+const gasInit=()=>jsonp({action:"init"});
 
 const TODAY=new Date().toISOString().split("T")[0];
 const todayDate=new Date(TODAY+"T00:00:00");
@@ -1826,6 +1751,24 @@ function Prestataires({sheet,missions,projects,stocks,events}){
     try{
       const item={...missionForm,prix:+missionForm.prix||0,stockQty:+missionForm.stockQty||0};
       if(missionEditing){
+        // Si la mission est déjà terminée et qu'on ajoute/modifie une pièce stock → déduire du stock
+        const ancienne=missions.rows.find(x=>Number(x.id)===Number(missionEditing));
+        if(ancienne&&ancienne.statut==="terminé"){
+          const ancRef=ancienne.stockRef||"";
+          const ancQty=Number(ancienne.stockQty)||0;
+          const newRef=missionForm.stockRef||"";
+          const newQty=Number(missionForm.stockQty)||0;
+          // Remettre l'ancienne pièce si elle existait
+          if(ancRef&&ancQty>0){
+            const sAnc=stocks.rows.find(x=>x.ref===ancRef);
+            if(sAnc)await stocks.update(sAnc.id,{...sAnc,qty:Number(sAnc.qty)+ancQty});
+          }
+          // Déduire la nouvelle pièce
+          if(newRef&&newQty>0){
+            const sNew=stocks.rows.find(x=>x.ref===newRef);
+            if(sNew)await stocks.update(sNew.id,{...sNew,qty:Math.max(0,Number(sNew.qty)-newQty)});
+          }
+        }
         await missions.update(missionEditing,item);
       } else {
         await missions.add(item);
@@ -1913,7 +1856,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
     if(filterTag){const t=(m.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
     return true;
   });
-  const mTerminees=missions.rows.filter(m=>m.statut==="terminé");
+  const mTerminees=missions.rows.filter(m=>m.statut==="terminé").sort((a,b)=>toISO(b.dateFin||b.dateDebut||"").localeCompare(toISO(a.dateFin||a.dateDebut||"")));
 
   // ── Finances globales prestations — filtrées si projet actif ──
   const norm=s=>String(s||"").trim().toLowerCase();
@@ -3282,8 +3225,6 @@ function Stocks({sheet,fournisseurs,projects,orders}){
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
   async function save(){if(!form.ref.trim()){setErr("Désignation obligatoire.");return;}if(form.qty===""||form.min===""){setErr("Quantité et seuil obligatoires.");return;}setSaving(true);setErr("");try{const item={...form,qty:+form.qty||0,min:+form.min||0,prix:+form.prix||0};if(editing){await sheet.update(editing,item);}else{await sheet.add(item);}setOpen(false);}catch(e){setErr(e.message);}setSaving(false);}
-  const alerts=sheet.rows.filter(s=>Number(s.qty)<Number(s.min));
-  const valeur=sheet.rows.reduce((s,i)=>s+Number(i.qty)*(Number(i.prix)||0),0);
   const panel=open&&<SidePanel title={editing?"Modifier l'article":"Nouvel article"} onClose={()=>setOpen(false)}>
     <FG label="Désignation *"><Inp value={form.ref} onChange={e=>f("ref",e.target.value)} placeholder="Ex: Visserie ETFE M12 inox"/></FG>
     <FG label="Catégorie"><Sel value={form.cat} onChange={e=>f("cat",e.target.value)}><option value="">— Choisir —</option>{CATS.map(c=><option key={c}>{c}</option>)}</Sel></FG>
@@ -3314,10 +3255,12 @@ function Stocks({sheet,fournisseurs,projects,orders}){
     if(filterTag){const t=(s.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
     return true;
   });
+  const alerts=filteredStock.filter(s=>Number(s.qty)<Number(s.min));
+  const valeur=filteredStock.reduce((s,i)=>s+Number(i.qty)*(Number(i.prix)||0),0);
   return <WithPanel panel={panel}>
     <FiltreProjetTag projects={projects} filterProjet={filterProjet} setFilterProjet={setFilterProjet} filterTag={filterTag} setFilterTag={setFilterTag}/>
     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
-      {[{val:sheet.rows.length,lbl:"Références"},{val:alerts.length,lbl:"Sous seuil d'alerte",alert:alerts.length>0},{val:valeur.toLocaleString("fr-FR")+" €",lbl:"Valeur totale estimée"}].map((m,i)=>(
+      {[{val:filteredStock.length+(filteredStock.length!==sheet.rows.length?` / ${sheet.rows.length} total`:""),lbl:"Références"},{val:alerts.length,lbl:"Sous seuil d'alerte",alert:alerts.length>0},{val:valeur.toLocaleString("fr-FR")+" €",lbl:"Valeur totale estimée"}].map((m,i)=>(
         <div key={i} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderTop:m.alert?"3px solid #CC2222":"3px solid #F2F0ED",borderRadius:8,padding:"12px 14px"}}>
           <div style={{fontSize:18,fontWeight:700,color:m.alert?"#CC2222":"#1C1C1C"}}>{m.val}</div>
           <div style={{fontSize:12,color:"#7A7A7A",marginTop:2}}>{m.lbl}</div>
@@ -3580,8 +3523,8 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
   };
   const livraisonsRetard=sheet.rows.filter(o=>!isBool(o.recue)&&o.dateLivraison&&toISO(o.dateLivraison)<TODAY&&!isProjetTermine(o)&&applyFiltre(o));
   const encours=sheet.rows.filter(o=>!isBool(o.recue)&&!isProjetTermine(o)&&applyFiltre(o));
-  const attenteFacture=sheet.rows.filter(o=>isBool(o.recue)&&!isBool(o.factureCompta)&&!isProjetTermine(o)&&applyFiltre(o));
-  const historique=sheet.rows.filter(o=>isBool(o.recue)&&isBool(o.factureCompta)&&applyFiltre(o));
+  const attenteFacture=sheet.rows.filter(o=>isBool(o.recue)&&!isBool(o.factureCompta)&&!isProjetTermine(o)&&applyFiltre(o)).sort((a,b)=>toISO(b.date||"").localeCompare(toISO(a.date||"")));
+  const historique=sheet.rows.filter(o=>isBool(o.recue)&&isBool(o.factureCompta)&&applyFiltre(o)).sort((a,b)=>toISO(b.date||"").localeCompare(toISO(a.date||"")));
 
   const panel=open&&<SidePanel title={editing?"Modifier la commande":"Nouvelle commande"} onClose={()=>{setOpen(false);setEditing(null);setForm(EO);setLignesForm([{...EL}]);}}>    <FG label="Référence commande"><Inp value={form.ref} onChange={e=>f("ref",e.target.value)} placeholder="CMD-001"/></FG>
     <FG label="Date de commande"><Inp type="date" value={form.date} onChange={e=>f("date",e.target.value)}/></FG>
