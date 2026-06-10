@@ -41,8 +41,34 @@
 <script type="text/babel">
 const { useState, useEffect, useCallback } = React;
 
-const GAS_URL = "https://script.google.com/macros/s/AKfycbwb3hMTcB1HYK_blQwojA52MQ145Eew8U2XgjxCcvkRicROHOsJHUvrH5lZZIBpZYCs/exec";
-const VERSION = "v2.4.4k";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
+const VERSION = "v2.4.5-secure";
+
+// ── Système d'authentification ──
+// Token stocké en mémoire uniquement, expire toutes les 5 minutes
+let _authEmail = null;
+let _authToken = null;
+let _tokenExpiry = 0;
+
+async function ensureAuth() {
+  const now = Date.now();
+  if (_authToken && _authEmail && now < _tokenExpiry - 30000) {
+    return { email: _authEmail, token: _authToken };
+  }
+  if (!_authEmail) {
+    const email = window.prompt("Entrez votre email Google autorisé :");
+    if (!email) throw new Error("Authentification annulée");
+    _authEmail = email.trim().toLowerCase();
+  }
+  const token = await jsonp({ action: "auth", email: _authEmail });
+  if (!token.ok) {
+    _authEmail = null;
+    throw new Error(token.msg || "Authentification échouée — vérifiez votre email");
+  }
+  _authToken = token.token;
+  _tokenExpiry = now + 5 * 60 * 1000;
+  return { email: _authEmail, token: _authToken };
+}
 
 // ── API via JSONP ──
 function jsonp(params) {
@@ -59,12 +85,31 @@ function jsonp(params) {
     document.head.appendChild(script);
   });
 }
-async function gasGet(key){const r=await jsonp({action:"get",key});if(!r.ok)throw new Error(r.msg);return r.data;}
-async function gasAction(action,key,data,id){const p={action,key};if(data!==undefined&&data!==null)p.data=JSON.stringify(data);if(id!==undefined)p.id=id;const r=await jsonp(p);if(!r.ok)throw new Error(r.msg);return r.data??r;}
+
+async function gasGet(key){
+  const auth = await ensureAuth();
+  const r = await jsonp({action:"get", key, email:auth.email, token:auth.token});
+  if(!r.ok) throw new Error(r.msg);
+  return r.data;
+}
+
+async function gasAction(action,key,data,id){
+  const auth = await ensureAuth();
+  const p = {action, key, email:auth.email, token:auth.token};
+  if(data!==undefined&&data!==null) p.data=JSON.stringify(data);
+  if(id!==undefined) p.id=id;
+  const r = await jsonp(p);
+  if(!r.ok){
+    if(r.msg&&r.msg.includes("Token")){ _authToken=null; _tokenExpiry=0; }
+    throw new Error(r.msg);
+  }
+  return r.data??r;
+}
+
 const gasAdd=(key,data)=>gasAction("add",key,data);
 const gasUpdate=(key,id,data)=>gasAction("update",key,data,id);
 const gasDelete=(key,id)=>gasAction("delete",key,null,id);
-const gasInit=()=>jsonp({action:"init"});
+const gasInit=async()=>{const a=await ensureAuth();return jsonp({action:"init",email:a.email,token:a.token});};
 
 const TODAY=new Date().toISOString().split("T")[0];
 const todayDate=new Date(TODAY+"T00:00:00");
