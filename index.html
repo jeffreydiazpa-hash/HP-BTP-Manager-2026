@@ -41,10 +41,45 @@
 <script type="text/babel">
 const { useState, useEffect, useCallback } = React;
 
-const GAS_URL = "https://script.google.com/macros/s/AKfycbwb3hMTcB1HYK_blQwojA52MQ145Eew8U2XgjxCcvkRicROHOsJHUvrH5lZZIBpZYCs/exec";
-const VERSION = "v2.3.0";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec"; // Ne pas exposer de secrets ici
+const VERSION = "v2.4.4i-secure";
 
-// ── API via JSONP ──
+// ═══════════════════════════════════════════════════
+// SYSTÈME D'AUTHENTIFICATION
+// ═══════════════════════════════════════════════════
+// Le token est obtenu depuis Apps Script via Session.getActiveUser()
+// Il est stocké en mémoire uniquement (jamais dans localStorage/sessionStorage)
+// Il expire automatiquement après 5 minutes (renouvelé automatiquement)
+let _authEmail = null;
+let _authToken = null;
+let _tokenExpiry = 0;
+
+// Demander à l'utilisateur de s'identifier
+async function ensureAuth() {
+  const now = Date.now();
+  // Token encore valide (marge de 30s)
+  if (_authToken && _authEmail && now < _tokenExpiry - 30000) {
+    return { email: _authEmail, token: _authToken };
+  }
+  // Obtenir l'email de l'utilisateur (il doit être connecté à Google)
+  // Le Apps Script vérifie que c'est bien Session.getActiveUser()
+  if (!_authEmail) {
+    const email = prompt("Entrez votre email Google autorisé :");
+    if (!email) throw new Error("Authentification annulée");
+    _authEmail = email.trim().toLowerCase();
+  }
+  // Obtenir un nouveau token depuis Apps Script
+  const token = await jsonp({ action: "auth", email: _authEmail });
+  if (!token.ok) {
+    _authEmail = null;
+    throw new Error(token.msg || "Authentification échouée");
+  }
+  _authToken = token.token;
+  _tokenExpiry = now + 5 * 60 * 1000; // 5 minutes
+  return { email: _authEmail, token: _authToken };
+}
+
+// ── API via JSONP (GET — lectures uniquement) ──
 function jsonp(params) {
   return new Promise((resolve, reject) => {
     const cb = "cb_" + Math.random().toString(36).slice(2);
@@ -59,12 +94,52 @@ function jsonp(params) {
     document.head.appendChild(script);
   });
 }
-async function gasGet(key){const r=await jsonp({action:"get",key});if(!r.ok)throw new Error(r.msg);return r.data;}
-async function gasAction(action,key,data,id){const p={action,key};if(data!==undefined&&data!==null)p.data=JSON.stringify(data);if(id!==undefined)p.id=id;const r=await jsonp(p);if(!r.ok)throw new Error(r.msg);return r.data??r;}
-const gasAdd=(key,data)=>gasAction("add",key,data);
-const gasUpdate=(key,id,data)=>gasAction("update",key,data,id);
-const gasDelete=(key,id)=>gasAction("delete",key,null,id);
-const gasInit=()=>jsonp({action:"init"});
+
+// ── API via fetch POST (écriture — add/update/delete) ──
+async function gasPost(action, key, data, id) {
+  const auth = await ensureAuth();
+  const body = { action, key, email: auth.email, token: auth.token };
+  if (data !== undefined && data !== null) body.data = data;
+  if (id !== undefined) body.id = id;
+  const resp = await fetch(GAS_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    mode: "no-cors" // Apps Script CORS
+  });
+  // no-cors retourne une opaque response — utiliser JSONP pour les retours
+  // Pour la confirmation, on relit via GET après chaque mutation
+  return { ok: true };
+}
+
+// ── Lectures (GET + auth) ──
+async function gasGet(key) {
+  const auth = await ensureAuth();
+  const r = await jsonp({ action: "get", key, email: auth.email, token: auth.token });
+  if (!r.ok) throw new Error(r.msg);
+  return r.data;
+}
+
+// ── Écritures (POST + auth) ──
+async function gasAction(action, key, data, id) {
+  const auth = await ensureAuth();
+  // Utiliser JSONP pour récupérer le résultat des mutations aussi
+  const p = { action, key, email: auth.email, token: auth.token };
+  if (data !== undefined && data !== null) p.data = JSON.stringify(data);
+  if (id !== undefined) p.id = id;
+  const r = await jsonp(p);
+  if (!r.ok) {
+    // Token expiré → forcer renouvellement
+    if (r.msg && r.msg.includes("Token")) { _authToken = null; _tokenExpiry = 0; }
+    throw new Error(r.msg);
+  }
+  return r.data ?? r;
+}
+
+const gasAdd    = (key, data)     => gasAction("add",    key, data);
+const gasUpdate = (key, id, data) => gasAction("update", key, data, id);
+const gasDelete = (key, id)       => gasAction("delete", key, null, id);
+const gasInit   = async ()        => { const a = await ensureAuth(); return jsonp({ action:"init", email:a.email, token:a.token }); };
 
 const TODAY=new Date().toISOString().split("T")[0];
 const todayDate=new Date(TODAY+"T00:00:00");
@@ -178,10 +253,11 @@ const UC={
   high:{bg:"#FFF0F0",tx:"#CC2222",lbl:"Urgent"},
   med:{bg:"#F2F0ED",tx:"#3A3A3A",lbl:"Normal"},
   low:{bg:"#F0FFF0",tx:"#2A7A2A",lbl:"Faible"},
+  done:{bg:"#EBF3FF",tx:"#1A5DAB",lbl:"Terminée"},
 };
 const EV_COLORS={rdv:"#2A7A2A",deadline:"#CC2222",chantier:"#1A5DAB",livraison:"#7A4A00",deplacement:"#7A2A7A",prestation:"#CC6600"};
 const EV_LABELS={rdv:"RDV",deadline:"Deadline",chantier:"Chantier",livraison:"Livraison",deplacement:"Déplacement",prestation:"Prestation"};
-const CATS=["Visserie & fixations","Profilés aluminium","Membranes ETFE","Acier structure","Étanchéité & joints","Outillage","EPI & sécurité","Autre"];
+const CATS=["Visserie & fixations","Profilés aluminium","Membranes ETFE","Acier structure","Structure bois","Étanchéité & joints","Câblerie & électricité","Plomberie & fluides","Revêtements & finitions","Matériaux isolants","Consommables atelier","Outillage","EPI & sécurité","Fournitures de bureau","Transport & logistique","Autre"];
 const UNITS=["pcs","m²","ml","barres","kg","rouleaux","cartouches","boîtes"];
 const PROJ_STATUTS=["en cours","démarrage","finition","retard","terminé","en pause"];
 const STATUTS_TEAM=["chantier","atelier","bureau","congé","déplacement"];
@@ -351,6 +427,30 @@ const STATUT_COLORS={
 };
 function statutColor(s){return STATUT_COLORS[s]||{bg:"#F2F0ED",tx:"#3A3A3A",dot:"#3A3A3A"};}
 
+
+// ── Calcul avancement composite ──
+function calcAvancement(p, atelierChantier){
+  const missions=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name);
+  const missAtelier=missions.filter(m=>m.type==="atelier");
+  const missChantier=missions.filter(m=>m.type==="chantier");
+  const avEtudes=Math.min(100,Math.max(0,Number(p.avancement)||0));
+  let avAtelier=null;
+  if(missAtelier.length>0){
+    avAtelier=Math.round(missAtelier.filter(m=>m.statut==="terminé").length/missAtelier.length*100);
+  }
+  let avChantier=null;
+  if(missChantier.length>0){
+    const totalPoids=missChantier.reduce((s,m)=>s+Math.max(1,Number(m.importance)||1),0);
+    const donePoids=missChantier.filter(m=>m.statut==="terminé").reduce((s,m)=>s+Math.max(1,Number(m.importance)||1),0);
+    avChantier=Math.round(donePoids/totalPoids*100);
+  }
+  const facteurs=[{val:avEtudes,lbl:"Études"}];
+  if(avAtelier!==null)facteurs.push({val:avAtelier,lbl:"Atelier"});
+  if(avChantier!==null)facteurs.push({val:avChantier,lbl:"Chantier"});
+  const poids=100/facteurs.length;
+  const global=Math.round(facteurs.reduce((s,f)=>s+f.val*poids/100,0));
+  return{global,facteurs};
+}
 // ── Calcul dépenses projet — fonction globale (utilisée par Dashboard ET Projets) ──
 // Compte TOUTES les commandes et prestations assignées au projet
 // Ne PAS filtrer ici par statut projet — chaque appelant applique sa propre règle
@@ -506,13 +606,11 @@ function Dashboard({sheets}){
 
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
 
-                {/* Graphique par projet */}
+                {/* Graphique CA vs Dépenses par projet */}
                 <Bd>
                   <SecTitle>CA vs Dépenses par projet</SecTitle>
                   {!projData.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucun projet avec budget défini.</div>}
                   {projData.map((p,i)=>{
-                    const wCA=totalCA>0?Math.round(p.ca/maxVal*barW):0;
-                    const wDep=Math.round(p.dep/maxVal*barW);
                     const pct=p.ca>0?Math.round(p.dep/p.ca*100):0;
                     return(
                       <div key={i} style={{marginBottom:12}}>
@@ -520,75 +618,141 @@ function Dashboard({sheets}){
                           <span style={{fontSize:12,fontWeight:500,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"60%"}}>{p.name}</span>
                           <span style={{fontSize:11,color:pct>90?"#CC2222":"#7A7A7A",flexShrink:0}}>{pct}%</span>
                         </div>
-                        {/* Barre CA */}
                         <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
                           <span style={{fontSize:10,color:"#7A7A7A",width:28,flexShrink:0}}>CA</span>
                           <div style={{flex:1,height:8,background:"#EEEEEE",borderRadius:4,overflow:"hidden"}}>
                             <div style={{height:"100%",width:`${p.ca/maxVal*100}%`,background:"#1A5DAB",borderRadius:4}}/>
                           </div>
-                          <span style={{fontSize:10,color:"#7A7A7A",width:60,textAlign:"right",flexShrink:0}}>{p.ca.toLocaleString("fr-FR")} €</span>
+                          <span style={{fontSize:10,color:"#7A7A7A",width:64,textAlign:"right",flexShrink:0}}>{p.ca.toLocaleString("fr-FR")} €</span>
                         </div>
-                        {/* Barre dépenses */}
                         <div style={{display:"flex",alignItems:"center",gap:6}}>
                           <span style={{fontSize:10,color:"#7A7A7A",width:28,flexShrink:0}}>Dep.</span>
                           <div style={{flex:1,height:8,background:"#EEEEEE",borderRadius:4,overflow:"hidden"}}>
                             <div style={{height:"100%",width:`${p.dep/maxVal*100}%`,background:pct>90?"#CC2222":pct>60?"#CC8800":"#2A7A2A",borderRadius:4}}/>
                           </div>
-                          <span style={{fontSize:10,color:"#7A7A7A",width:60,textAlign:"right",flexShrink:0}}>{p.dep.toLocaleString("fr-FR")} €</span>
+                          <span style={{fontSize:10,color:"#7A7A7A",width:64,textAlign:"right",flexShrink:0}}>{p.dep.toLocaleString("fr-FR")} €</span>
                         </div>
                       </div>
                     );
                   })}
                 </Bd>
 
-                {/* Répartition dépenses + donut SVG */}
+                {/* Donut répartition dépenses — corrigé */}
                 <Bd>
                   <SecTitle>Répartition des dépenses</SecTitle>
                   {totalDepenses>0?(()=>{
-                    // Donut SVG
-                    const r=54,cx=70,cy=70,circ=2*Math.PI*r;
-                    const cmdAngle=totalEngagees/totalDepenses*circ;
-                    const prestAngle=totalPrest/totalDepenses*circ;
+                    // Donut SVG — formule correcte
+                    // SVG circle commence à 3h, on veut démarrer à 12h → offset = circ/4
+                    // Arc 1 (commandes) : offset = circ/4 (recule de 25% pour démarrer à 12h)
+                    // Arc 2 (prest) : offset = circ/4 - cmdArc (décalé après le 1er)
+                    const r=52,cx=68,cy=68,circ=2*Math.PI*r;
+                    const cmdArc=totalEngagees/totalDepenses*circ;
+                    const prestArc=totalPrest/totalDepenses*circ;
                     return(
-                      <div style={{display:"flex",alignItems:"center",gap:20}}>
-                        <svg width="140" height="140" viewBox="0 0 140 140">
-                          {/* Fond */}
-                          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEEEEE" strokeWidth="18"/>
-                          {/* Commandes */}
-                          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#CC2222" strokeWidth="18"
-                            strokeDasharray={`${cmdAngle} ${circ}`}
-                            strokeDashoffset={circ/4} strokeLinecap="butt"/>
-                          {/* Prestations */}
-                          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#CC8800" strokeWidth="18"
-                            strokeDasharray={`${prestAngle} ${circ}`}
-                            strokeDashoffset={circ/4-cmdAngle} strokeLinecap="butt"/>
-                          {/* Centre */}
-                          <text x={cx} y={cy-6} textAnchor="middle" fontSize="13" fontWeight="700" fill="#1C1C1C" fontFamily="DM Sans,sans-serif">{pctDep}%</text>
-                          <text x={cx} y={cy+10} textAnchor="middle" fontSize="9" fill="#7A7A7A" fontFamily="DM Sans,sans-serif">consommé</text>
+                      <div style={{display:"flex",alignItems:"center",gap:16}}>
+                        <svg width="136" height="136" viewBox="0 0 136 136" style={{flexShrink:0}}>
+                          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEEEEE" strokeWidth="20"/>
+                          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#CC2222" strokeWidth="20"
+                            strokeDasharray={`${cmdArc} ${circ-cmdArc}`}
+                            strokeDashoffset={circ/4}
+                            style={{transformOrigin:"68px 68px"}}/>
+                          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#CC8800" strokeWidth="20"
+                            strokeDasharray={`${prestArc} ${circ-prestArc}`}
+                            strokeDashoffset={circ/4-cmdArc}
+                            style={{transformOrigin:"68px 68px"}}/>
+                          <text x={cx} y={cy-5} textAnchor="middle" fontSize="14" fontWeight="700" fill="#1C1C1C" fontFamily="DM Sans,sans-serif">{pctDep}%</text>
+                          <text x={cx} y={cx+12} textAnchor="middle" fontSize="9" fill="#7A7A7A" fontFamily="DM Sans,sans-serif">consommé</text>
                         </svg>
-                        <div>
-                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                            <div style={{width:12,height:12,borderRadius:2,background:"#CC2222",flexShrink:0}}/>
-                            <div>
-                              <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C"}}>Commandes</div>
-                              <div style={{fontSize:11,color:"#7A7A7A"}}>{totalEngagees.toLocaleString("fr-FR")} € · {partCmd}%</div>
+                        <div style={{flex:1}}>
+                          {[
+                            {color:"#CC2222",lbl:"Commandes",val:totalEngagees,pct:partCmd},
+                            {color:"#CC8800",lbl:"Prestations",val:totalPrest,pct:partPrest},
+                          ].map((x,i)=>(
+                            <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                              <div style={{width:10,height:10,borderRadius:2,background:x.color,flexShrink:0}}/>
+                              <div>
+                                <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C"}}>{x.lbl}</div>
+                                <div style={{fontSize:11,color:"#7A7A7A"}}>{x.val.toLocaleString("fr-FR")} € · {x.pct}%</div>
+                              </div>
                             </div>
-                          </div>
-                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                            <div style={{width:12,height:12,borderRadius:2,background:"#CC8800",flexShrink:0}}/>
-                            <div>
-                              <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C"}}>Prestations</div>
-                              <div style={{fontSize:11,color:"#7A7A7A"}}>{totalPrest.toLocaleString("fr-FR")} € · {partPrest}%</div>
-                            </div>
-                          </div>
-                          <div style={{borderTop:"0.5px solid #EEEEEE",paddingTop:8,marginTop:4}}>
-                            <div style={{fontSize:11,color:"#7A7A7A"}}>Total dépenses</div>
+                          ))}
+                          <div style={{borderTop:"0.5px solid #EEEEEE",paddingTop:8}}>
+                            <div style={{fontSize:10,color:"#7A7A7A"}}>Total dépenses</div>
                             <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>{totalDepenses.toLocaleString("fr-FR")} €</div>
                           </div>
                         </div>
                       </div>
                     );
                   })():<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune dépense enregistrée.</div>}
+                </Bd>
+              </div>
+
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+
+                {/* CA brut par projet — camembert horizontal */}
+                <Bd>
+                  <SecTitle>CA brut par projet</SecTitle>
+                  {!projData.filter(p=>p.ca>0).length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucun CA défini.</div>}
+                  {(()=>{
+                    const colors=["#1A5DAB","#CC2222","#2A7A2A","#CC8800","#7A2A7A","#3A3A3A","#CC6600","#2A7A7A"];
+                    const projCA=projData.filter(p=>p.ca>0);
+                    return projCA.map((p,i)=>{
+                      const pct=totalCA>0?Math.round(p.ca/totalCA*100):0;
+                      return(
+                        <div key={i} style={{marginBottom:8}}>
+                          <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                            <div style={{display:"flex",alignItems:"center",gap:6}}>
+                              <div style={{width:8,height:8,borderRadius:"50%",background:colors[i%colors.length],flexShrink:0}}/>
+                              <span style={{fontSize:12,fontWeight:500,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:140}}>{p.name}</span>
+                            </div>
+                            <span style={{fontSize:11,color:"#7A7A7A",flexShrink:0}}>{pct}% · {p.ca.toLocaleString("fr-FR")} €</span>
+                          </div>
+                          <div style={{height:6,background:"#EEEEEE",borderRadius:3,overflow:"hidden"}}>
+                            <div style={{height:"100%",width:pct+"%",background:colors[i%colors.length],borderRadius:3}}/>
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                  <div style={{borderTop:"0.5px solid #EEEEEE",paddingTop:8,marginTop:4,display:"flex",justifyContent:"space-between"}}>
+                    <span style={{fontSize:11,color:"#7A7A7A"}}>CA total</span>
+                    <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{totalCA.toLocaleString("fr-FR")} €</span>
+                  </div>
+                </Bd>
+
+                {/* CA net par projet (CA - dépenses) */}
+                <Bd>
+                  <SecTitle>CA net par projet (CA − dépenses)</SecTitle>
+                  {!projData.filter(p=>p.ca>0).length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucun CA défini.</div>}
+                  {(()=>{
+                    const projNet=projData.filter(p=>p.ca>0).map(p=>({...p,net:p.ca-p.dep})).sort((a,b)=>b.net-a.net);
+                    const maxAbs=Math.max(...projNet.map(p=>Math.abs(p.net)),1);
+                    return projNet.map((p,i)=>{
+                      const pct=Math.round(p.net/p.ca*100);
+                      const isNeg=p.net<0;
+                      const barW=Math.round(Math.abs(p.net)/maxAbs*100);
+                      return(
+                        <div key={i} style={{marginBottom:8}}>
+                          <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                            <span style={{fontSize:12,fontWeight:500,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"55%"}}>{p.name}</span>
+                            <span style={{fontSize:11,color:isNeg?"#CC2222":"#2A7A2A",fontWeight:600,flexShrink:0}}>
+                              {isNeg?"-":"+"}
+                              {Math.abs(p.net).toLocaleString("fr-FR")} € ({Math.abs(pct)}%)
+                            </span>
+                          </div>
+                          <div style={{height:6,background:"#EEEEEE",borderRadius:3,overflow:"hidden"}}>
+                            <div style={{height:"100%",width:barW+"%",background:isNeg?"#CC2222":"#2A7A2A",borderRadius:3}}/>
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                  <div style={{borderTop:"0.5px solid #EEEEEE",paddingTop:8,marginTop:4,display:"flex",justifyContent:"space-between"}}>
+                    <span style={{fontSize:11,color:"#7A7A7A"}}>Solde global</span>
+                    <span style={{fontSize:13,fontWeight:700,color:solde>=0?"#2A7A2A":"#CC2222"}}>
+                      {solde>=0?"+":""}{solde.toLocaleString("fr-FR")} €
+                    </span>
+                  </div>
                 </Bd>
               </div>
 
@@ -730,7 +894,7 @@ function Dashboard({sheets}){
             return(
               <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
                 <div style={{width:8,height:8,borderRadius:"50%",background:sc.dot,flexShrink:0}}/>
-                <div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{p.name}</div><PBar val={p.avancement}/><div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{p.avancement}%</div></div>
+                <div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{p.name}</div><PBar val={calcAvancement(p,atelierChantier).global}/><div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{calcAvancement(p,atelierChantier).global}%</div></div>
                 <Badge label={p.statut} bg={sc.bg} color={sc.tx}/>
               </div>
             );
@@ -829,7 +993,121 @@ function Dashboard({sheets}){
 }
 
 // ══ PROJETS ══
-const EP={name:"",statut:"en cours",avancement:0,equipe:0,budget:"",depense:"",client:"",lieu:"",note:"",ingenieur:""};
+// Composant slider avancement études — état local pour l'affichage, save au relâchement
+function SliderEtudes({val,onSave}){
+  const [localVal,setLocalVal]=useState(val);
+  return(
+    <div>
+      <input type="range" min="0" max="100" value={localVal}
+        onChange={e=>setLocalVal(Number(e.target.value))}
+        onPointerUp={e=>onSave(Number(e.target.value))}
+        style={{width:"100%",accentColor:"#1A5DAB",cursor:"pointer",marginTop:4}}/>
+      <div style={{fontSize:10,color:"#7A7A7A",textAlign:"center",marginTop:1}}>{localVal}% — Glisser pour modifier</div>
+    </div>
+  );
+}
+
+// Composant champ tag avec état local
+function TagInput({tags,onChange}){
+  const [val,setVal]=useState("");
+  function addTag(){
+    const v=val.trim();
+    if(!v)return;
+    const cur=tags.split(",").filter(Boolean).map(t=>t.trim());
+    if(!cur.includes(v))onChange([...cur,v].join(","));
+    setVal("");
+  }
+  return(
+    <div>
+      <div style={{marginBottom:6,display:"flex",flexWrap:"wrap",gap:4}}>
+        {tags.split(",").filter(Boolean).map((tag,i)=>(
+          <span key={i} style={{display:"inline-flex",alignItems:"center",gap:3,background:"#EBF3FF",color:"#1A5DAB",fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:12}}>
+            {tag.trim()}
+            <button onClick={()=>{const t=tags.split(",").filter(Boolean).filter((_,j)=>j!==i).join(",");onChange(t);}} style={{background:"none",border:"none",cursor:"pointer",color:"#1A5DAB",fontSize:12,padding:0,lineHeight:1}}>×</button>
+          </span>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        <Inp value={val} onChange={e=>setVal(e.target.value)} placeholder="Nouveau tag..."
+          onKeyDown={e=>{if(e.key==="Enter"){addTag();e.preventDefault();}}}/>
+        <button onClick={addTag} style={{padding:"6px 12px",borderRadius:4,border:"1px solid #1A5DAB",background:"#EBF3FF",cursor:"pointer",fontSize:12,color:"#1A5DAB",fontFamily:"'DM Sans',sans-serif",flexShrink:0,fontWeight:600}}>+</button>
+      </div>
+      <div style={{fontSize:10,color:"#7A7A7A",marginTop:3}}>Entrée ou + pour ajouter</div>
+    </div>
+  );
+}
+
+// Retourne les tags d'un projet donné
+function getTagsProjet(projetNom, projects){
+  if(!projetNom||!projects)return[];
+  const p=projects.rows.find(x=>x.name===projetNom);
+  return(p?.tags||"").split(",").map(t=>t.trim()).filter(Boolean);
+}
+
+// Sélecteur de tags (tags disponibles du projet + tags libres)
+function TagSelector({tags,onChange,projetNom,projects}){
+  const [val,setVal]=useState("");
+  const tagsProjet=getTagsProjet(projetNom,projects);
+  const current=tags.split(",").map(t=>t.trim()).filter(Boolean);
+  function toggle(tag){
+    const has=current.includes(tag);
+    onChange(has?current.filter(t=>t!==tag).join(","):[...current,tag].join(","));
+  }
+  function addCustom(){
+    const v=val.trim();
+    if(!v)return;
+    if(!current.includes(v))onChange([...current,v].join(","));
+    setVal("");
+  }
+  return(
+    <div>
+      {tagsProjet.length>0&&<div style={{marginBottom:6}}>
+        <div style={{fontSize:10,color:"#7A7A7A",marginBottom:4}}>Tags du projet :</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+          {tagsProjet.map((tag,i)=>{
+            const active=current.includes(tag);
+            return<button key={i} onClick={()=>toggle(tag)} style={{padding:"2px 8px",borderRadius:10,fontSize:11,fontWeight:600,cursor:"pointer",border:`1px solid ${active?"#1A5DAB":"#DDDDDD"}`,background:active?"#1A5DAB":"#fff",color:active?"#fff":"#7A7A7A",fontFamily:"'DM Sans',sans-serif"}}>{tag}</button>;
+          })}
+        </div>
+      </div>}
+      {current.filter(t=>!tagsProjet.includes(t)).length>0&&<div style={{marginBottom:6,display:"flex",flexWrap:"wrap",gap:4}}>
+        {current.filter(t=>!tagsProjet.includes(t)).map((tag,i)=>(
+          <span key={i} style={{display:"inline-flex",alignItems:"center",gap:3,background:"#F2F0ED",color:"#3A3A3A",fontSize:11,fontWeight:500,padding:"2px 8px",borderRadius:10}}>
+            {tag}
+            <button onClick={()=>toggle(tag)} style={{background:"none",border:"none",cursor:"pointer",color:"#3A3A3A",fontSize:12,padding:0}}>×</button>
+          </span>
+        ))}
+      </div>}
+      <div style={{display:"flex",gap:6}}>
+        <Inp value={val} onChange={e=>setVal(e.target.value)} placeholder="Tag libre..."
+          onKeyDown={e=>{if(e.key==="Enter"){addCustom();e.preventDefault();}}}/>
+        <button onClick={addCustom} style={{padding:"6px 10px",borderRadius:4,border:"1px solid #DDDDDD",background:"#F9F9F9",cursor:"pointer",fontSize:12,color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif",flexShrink:0}}>+</button>
+      </div>
+    </div>
+  );
+}
+
+// Barre de filtre projet + tag
+function FiltreProjetTag({projects,filterProjet,setFilterProjet,filterTag,setFilterTag}){
+  const tagsDispos=getTagsProjet(filterProjet,projects);
+  return(
+    <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
+      <Sel value={filterProjet} onChange={e=>{setFilterProjet(e.target.value);setFilterTag("");}}>
+        <option value="">Tous les projets</option>
+        {projects.rows.map(p=><option key={p.id} value={p.name}>{p.name}</option>)}
+      </Sel>
+      {filterProjet&&tagsDispos.length>0&&<>
+        <Sel value={filterTag} onChange={e=>setFilterTag(e.target.value)}>
+          <option value="">Tous les tags</option>
+          {tagsDispos.map((t,i)=><option key={i} value={t}>{t}</option>)}
+        </Sel>
+      </>}
+      {(filterProjet||filterTag)&&<button onClick={()=>{setFilterProjet("");setFilterTag("");}} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #DDDDDD",background:"none",cursor:"pointer",fontSize:11,color:"#7A7A7A",fontFamily:"'DM Sans',sans-serif"}}>✕ Réinitialiser</button>}
+    </div>
+  );
+}
+
+const EP={name:"",statut:"en cours",avancement:0,equipe:0,budget:"",depense:"",client:"",lieu:"",note:"",ingenieur:"",tags:""};
 function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierChantier,team}){
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(EP);
@@ -933,7 +1211,7 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
     <FG label="Client / maître d'ouvrage"><Inp value={form.client||""} onChange={e=>f("client",e.target.value)} placeholder="Ex: Société ABC"/></FG>
     <FG label="Lieu / chantier"><Inp value={form.lieu||""} onChange={e=>f("lieu",e.target.value)} placeholder="Ex: Lyon"/></FG>
     <FG label="Statut"><Sel value={form.statut} onChange={e=>f("statut",e.target.value)}>{PROJ_STATUTS.map(s=><option key={s}>{s}</option>)}</Sel></FG>
-    <FG label="Avancement (%)"><Inp type="number" value={form.avancement} onChange={e=>f("avancement",e.target.value)}/></FG>
+    <FG label="Avancement études (%)"><Inp type="number" value={form.avancement} onChange={e=>f("avancement",e.target.value)} placeholder="0-100"/></FG>
     <FG label="Chiffre d'affaires (€)"><Inp type="number" value={form.budget} onChange={e=>f("budget",e.target.value)}/></FG>
     <FG label="Dépenses saisies (€)"><Inp type="number" value={form.depense} onChange={e=>f("depense",e.target.value)}/></FG>
     <FG label="Ingénieur responsable">
@@ -945,6 +1223,9 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
       </Sel>
     </FG>
     <FG label="Note"><Inp value={form.note||""} onChange={e=>f("note",e.target.value)} placeholder="Optionnel"/></FG>
+    <FG label="Tags projet">
+      <TagInput tags={form.tags||""} onChange={v=>f("tags",v)}/>
+    </FG>
     <ErrMsg msg={err}/>
     <PanelBtns onCancel={()=>{setOpen(false);setEditing(null);}} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Créer"}/>
   </SidePanel>;
@@ -957,10 +1238,19 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
     const projTasks=tasks.rows.filter(t=>t.projet===p.name);
     const projOrders=orders.rows.filter(o=>o.projet===p.name||o.projet===String(p.id));
     const projNotes=notes.rows.filter(n=>Number(n.projet_id)===Number(p.id)).sort((a,b)=>toISO(b.date).localeCompare(toISO(a.date)));
-    const projEvents=events.rows.filter(e=>e.projet===p.name).sort((a,b)=>toISO(a.date).localeCompare(toISO(b.date)));
+    const projEvents=events.rows.filter(e=>{
+      if(e.projet!==p.name)return false;
+      const iso=toISO(e.date);
+      if(!iso)return false;
+      // Garder si date >= aujourd'hui (ou si dateFin couvre encore aujourd'hui)
+      const fin=e.dateFin?toISO(e.dateFin):iso;
+      return fin>=TODAY;
+    }).sort((a,b)=>toISO(a.date).localeCompare(toISO(b.date)));
     const projPrest=(prestMissions?.rows||[]).filter(m=>m.projet===p.name||m.projet===String(p.id));
-    const projAtelier=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name&&m.type==="atelier");
-    const projChantier=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name&&m.type==="chantier");
+    const projAtelier=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name&&m.type==="atelier")
+      .sort((a,b)=>toISO(a.dateDebut||"").localeCompare(toISO(b.dateDebut||"")));
+    const projChantier=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name&&m.type==="chantier")
+      .sort((a,b)=>toISO(a.dateDebut||"").localeCompare(toISO(b.dateDebut||"")));
     const projStocks=stocks.rows.filter(s=>projOrders.some(o=>o.article&&s.ref&&o.article.toLowerCase()===s.ref.toLowerCase()));
 
     const sc=statutColor(p.statut);
@@ -1157,6 +1447,9 @@ ${sections}
           {p.client&&<span style={{fontSize:13,color:"#7A7A7A"}}>{p.client}</span>}
           {p.lieu&&<span style={{fontSize:12,color:"#7A7A7A"}}>· {p.lieu}</span>}
           <Badge label={p.statut} bg={sc.bg} color={sc.tx}/>
+          {(p.tags||"").split(",").filter(Boolean).map((tag,i)=>(
+            <span key={i} style={{background:"#F2F0ED",color:"#3A3A3A",fontSize:11,fontWeight:500,padding:"2px 8px",borderRadius:10}}>{tag.trim()}</span>
+          ))}
           <Btn onClick={()=>exportPDF()}>↓ PDF</Btn>
           <Btn onClick={e=>openEdit(p,e)}>Modifier</Btn>
           {p.statut!=="terminé"&&<Btn danger onClick={()=>finaliser(p)}>Finaliser</Btn>}
@@ -1167,7 +1460,7 @@ ${sections}
           {(()=>{
             const equipeAuto=calcEquipeAuto(p);
             return[
-              {lbl:"Avancement",val:p.avancement+"%"},
+              {lbl:"Avancement",val:calcAvancement(p,atelierChantier).global+"%"},
               {lbl:"Chiffre d'affaires",val:caVal>0?caVal.toLocaleString("fr-FR")+" €":"—"},
               {lbl:"Dépenses engagées",val:dep.total>0?dep.total.toLocaleString("fr-FR")+" €":depSaisie>0?depSaisie.toLocaleString("fr-FR")+" €":"—",
                sub:dep.total>0?`cmd: ${dep.engagees.toLocaleString("fr-FR")} € · prest: ${dep.prest.toLocaleString("fr-FR")} €`:null},
@@ -1182,6 +1475,40 @@ ${sections}
             ));
           })()}
         </div>
+        {/* Avancement composite */}
+        {(()=>{
+          const av2=calcAvancement(p,atelierChantier);
+          if(av2.facteurs.length<=1&&av2.facteurs[0]?.lbl==="Études")return null;
+          const cols=["#1A5DAB","#CC8800","#2A7A2A"];
+          return(
+            <Bd style={{marginBottom:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <SecTitle>Avancement composite</SecTitle>
+                <span style={{fontSize:18,fontWeight:700,color:"#1C1C1C"}}>{av2.global}%</span>
+              </div>
+              <div style={{height:6,borderRadius:3,background:"#EEEEEE",overflow:"hidden",marginBottom:10}}>
+                <div style={{height:"100%",width:av2.global+"%",background:av2.global>=80?"#2A7A2A":av2.global>=40?"#1A5DAB":"#CC2222",borderRadius:3}}/>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+                {av2.facteurs.map((fac,i)=>(
+                  <div key={i} style={{background:"#F9F9F9",borderRadius:6,padding:"8px 10px",border:"0.5px solid #EEEEEE"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                      <span style={{fontSize:11,color:"#7A7A7A"}}>{fac.lbl}</span>
+                      <span style={{fontSize:12,fontWeight:700,color:cols[i]}}>{fac.val}%</span>
+                    </div>
+                    {fac.lbl==="Études"
+                      ? <SliderEtudes val={fac.val} onSave={async v=>{await sheet.update(p.id,{...p,avancement:v});}}/>
+                      : <div style={{height:3,background:"#EEEEEE",borderRadius:2,overflow:"hidden"}}>
+                          <div style={{height:"100%",width:fac.val+"%",background:cols[i],borderRadius:2}}/>
+                        </div>
+                    }
+                    {fac.lbl==="Études"&&false&&<div/>}
+                  </div>
+                ))}
+              </div>
+            </Bd>
+          );
+        })()}
         {/* Tag ingénieur */}
         {p.ingenieur&&<div style={{marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:11,color:"#7A7A7A"}}>Ingénieur responsable :</span>
@@ -1205,7 +1532,7 @@ ${sections}
             <SecTitle>Tâches ({projTasks.length})</SecTitle>
             {!projTasks.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune tâche liée.</div>}
             {projTasks.map(t=>{
-              const urg=autoUrgence(t.due,t.done);const u=UC[urg]||UC.med;const done=isBool(t.done);
+              const urg=autoUrgence(t.due,t.done);const u=UC[isBool(t.done)?"done":urg]||UC.med;const done=isBool(t.done);
               return(
                 <div key={t.id} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
                   <div style={{width:8,height:8,borderRadius:"50%",background:done?"#2A7A2A":u.tx,flexShrink:0}}/>
@@ -1409,6 +1736,9 @@ ${sections}
                 {p.client&&<div style={{fontSize:12,color:"#7A7A7A"}}>{p.client}</div>}
                 {p.lieu&&<div style={{fontSize:12,color:"#7A7A7A"}}>{p.lieu}</div>}
                 {p.ingenieur&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:3,display:"inline-block",marginTop:3}}>{p.ingenieur}</span>}
+                {(p.tags||"").split(",").filter(Boolean).map((tag,i)=>(
+                  <span key={i} style={{display:"inline-block",background:"#F2F0ED",color:"#3A3A3A",fontSize:10,fontWeight:500,padding:"1px 6px",borderRadius:10,marginRight:3,marginTop:3}}>{tag.trim()}</span>
+                ))}
               </div>
               <div style={{display:"flex",gap:4,alignItems:"flex-start",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <button onClick={e=>openEdit(p,e)} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Modifier</button>
@@ -1416,8 +1746,7 @@ ${sections}
               </div>
             </div>
             <Badge label={p.statut} bg={c.bg} color={c.tx}/>
-            <div style={{fontSize:12,color:"#7A7A7A",marginTop:8}}>Avancement : {p.avancement}%</div>
-            <PBar val={p.avancement}/>
+            {(()=>{const av=calcAvancement(p,atelierChantier);return(<><div style={{fontSize:12,color:"#7A7A7A",marginTop:8}}>Avancement : {av.global}%</div><PBar val={av.global}/></>);})()}
             {caVal>0&&<>
               <div style={{fontSize:12,color:"#7A7A7A",marginTop:6}}>{depAff.toLocaleString("fr-FR")} € / {caVal.toLocaleString("fr-FR")} € CA{dep.total>0&&<span style={{fontSize:10,color:"#7A7A7A",marginLeft:4}}>(engagé)</span>}</div>
               <PBar val={bp}/>
@@ -1450,9 +1779,11 @@ ${sections}
 
 // ══ PRESTATAIRES ══
 const EPREST={nom:"",specialite:"",contact:"",tel:"",note:""};
-const EPREST_MISSION={prestataire:"",projet:"",description:"",dateDebut:"",dateFin:"",prix:"",statut:"planifié",stockRef:"",stockQty:""};
+const EPREST_MISSION={prestataire:"",projet:"",description:"",dateDebut:"",dateFin:"",prix:"",statut:"planifié",stockRef:"",stockQty:"",tags:""};
 
 function Prestataires({sheet,missions,projects,stocks,events}){
+  const [filterProjet,setFilterProjet]=useState("");
+  const [filterTag,setFilterTag]=useState("");
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(EPREST);
   const [editing,setEditing]=useState(null);
@@ -1463,7 +1794,22 @@ function Prestataires({sheet,missions,projects,stocks,events}){
   const [missionEditing,setMissionEditing]=useState(null);
   const [savingM,setSavingM]=useState(false);
   const [errM,setErrM]=useState("");
-  const [detail,setDetail]=useState(null); // id du prestataire sélectionné
+  const [detail,setDetail]=useState(null);
+  const [partageId,setPartageId]=useState(null);
+  const [copied,setCopied]=useState(false);
+  const [showAllTerminees,setShowAllTerminees]=useState(false);
+  const [showAllMTerminees,setShowAllMTerminees]=useState(false);
+
+  function textPartagePrest(x){
+    const lines=[
+      `🔧 ${x.nom}`,
+      x.specialite&&`Spécialité : ${x.specialite}`,
+      x.contact&&`Contact : ${x.contact}`,
+      x.tel&&`Tél : ${x.tel}`,
+      x.note&&`Note : ${x.note}`,
+    ].filter(Boolean);
+    return lines.join("\n");
+  }
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
   const fm=(k,v)=>setMissionForm(x=>({...x,[k]:v}));
 
@@ -1548,6 +1894,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
     <FG label="Statut"><Sel value={missionForm.statut} onChange={e=>fm("statut",e.target.value)}>
       <option value="planifié">Planifié</option><option value="en cours">En cours</option><option value="terminé">Terminé</option>
     </Sel></FG>
+    <FG label="Tags"><TagSelector tags={missionForm.tags||""} onChange={v=>fm("tags",v)} projetNom={missionForm.projet} projects={projects}/></FG>
     <ErrMsg msg={errM}/><PanelBtns onCancel={()=>{setMissionOpen(false);setMissionEditing(null);}} onSave={saveMission} saving={savingM} saveLabel={missionEditing?"Mettre à jour":"Créer"}/>
   </SidePanel>;
 
@@ -1561,14 +1908,19 @@ function Prestataires({sheet,missions,projects,stocks,events}){
   </SidePanel>;
 
   const activePanel=missionOpen?missionPanel:prestPanel;
-  const mActives=missions.rows.filter(m=>m.statut!=="terminé");
+  const mActives=missions.rows.filter(m=>m.statut!=="terminé").filter(m=>{
+    if(filterProjet&&m.projet!==filterProjet)return false;
+    if(filterTag){const t=(m.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
+    return true;
+  });
   const mTerminees=missions.rows.filter(m=>m.statut==="terminé");
 
-  // ── Finances globales prestations — toutes missions (pas de filtre projet) ──
+  // ── Finances globales prestations — filtrées si projet actif ──
   const norm=s=>String(s||"").trim().toLowerCase();
-  const totalPrest=missions.rows.reduce((s,m)=>s+Number(m.prix||0),0);
+  const missionsFin=filterProjet?missions.rows.filter(m=>norm(m.projet)===norm(filterProjet)):missions.rows;
+  const totalPrest=missionsFin.reduce((s,m)=>s+Number(m.prix||0),0);
   const parPrest=sheet.rows.map(p=>{
-    const pmiss=missions.rows.filter(m=>norm(m.prestataire)===norm(p.nom));
+    const pmiss=missionsFin.filter(m=>norm(m.prestataire)===norm(p.nom));
     const total=pmiss.reduce((s,m)=>s+Number(m.prix||0),0);
     const nb=pmiss.length;
     const pct=totalPrest>0&&total>0?Math.round(total/totalPrest*100):0;
@@ -1630,7 +1982,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
         {/* Historique */}
         {terminees.length>0&&<Bd>
           <SecTitle>Historique — {terminees.length} prestation{terminees.length>1?"s":""} terminée{terminees.length>1?"s":""}</SecTitle>
-          {terminees.map(m=>(
+          {(showAllTerminees?terminees:terminees.slice(0,5)).map(m=>(
             <div key={m.id} style={{display:"flex",gap:8,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,color:"#3A3A3A"}}>{m.description}</div>
@@ -1640,6 +1992,16 @@ function Prestataires({sheet,missions,projects,stocks,events}){
               <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
             </div>
           ))}
+          {!showAllTerminees&&terminees.length>5&&(
+            <div onClick={()=>setShowAllTerminees(true)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#1A5DAB",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+              ↓ Voir les {terminees.length-5} autres ({terminees.length} au total)
+            </div>
+          )}
+          {showAllTerminees&&terminees.length>5&&(
+            <div onClick={()=>setShowAllTerminees(false)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#7A7A7A",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+              ↑ Réduire
+            </div>
+          )}
           <div style={{display:"flex",justifyContent:"flex-end",marginTop:8,paddingTop:8,borderTop:"1px solid #EEEEEE"}}>
             <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>Total : {totalD.toLocaleString("fr-FR")} €</span>
           </div>
@@ -1649,6 +2011,23 @@ function Prestataires({sheet,missions,projects,stocks,events}){
   }
 
   return <WithPanel panel={activePanel}>
+    {/* Modal partage prestataire */}
+    {partageId&&(()=>{const px=sheet.rows.find(x=>x.id===partageId);return px&&(
+      <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.4)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget){setPartageId(null);setCopied(false);}}}>
+        <div style={{background:"#fff",borderRadius:12,padding:24,width:400,maxWidth:"90vw",boxShadow:"0 8px 32px rgba(0,0,0,0.18)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>Partager le contact</div>
+            <button onClick={()=>{setPartageId(null);setCopied(false);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:"#7A7A7A"}}>✕</button>
+          </div>
+          <pre style={{background:"#F9F9F9",border:"1px solid #EEEEEE",borderRadius:8,padding:14,fontSize:12,fontFamily:"'DM Mono',monospace",whiteSpace:"pre-wrap",marginBottom:14,color:"#1C1C1C",lineHeight:1.7}}>{textPartagePrest(px)}</pre>
+          <button onClick={()=>{navigator.clipboard.writeText(textPartagePrest(px));setCopied(true);setTimeout(()=>setCopied(false),2000);}}
+            style={{width:"100%",padding:"9px",borderRadius:6,border:"none",background:copied?"#2A7A2A":"#CC2222",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>
+            {copied?"✓ Copié !":"📋 Copier le contact"}
+          </button>
+        </div>
+      </div>
+    );})()}
+    <FiltreProjetTag projects={projects} filterProjet={filterProjet} setFilterProjet={setFilterProjet} filterTag={filterTag} setFilterTag={setFilterTag}/>
     {/* ── Bloc finances global ── */}
     {parPrest.length>0&&<Bd style={{marginBottom:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -1706,7 +2085,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
     {/* Historique prestations */}
     {mTerminees.length>0&&<>
       <div style={{fontSize:13,fontWeight:700,color:"#7A7A7A",borderLeft:"3px solid #DDDDDD",paddingLeft:8,margin:"16px 0 10px"}}>Historique — prestations terminées ({mTerminees.length})</div>
-      {mTerminees.map(m=>(
+      {(showAllMTerminees?mTerminees:mTerminees.slice(0,5)).map(m=>(
         <Bd key={m.id} style={{marginBottom:6,opacity:.85}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
             <div style={{flex:1}}>
@@ -1726,6 +2105,16 @@ function Prestataires({sheet,missions,projects,stocks,events}){
           </div>
         </Bd>
       ))}
+      {!showAllMTerminees&&mTerminees.length>5&&(
+        <div onClick={()=>setShowAllMTerminees(true)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#1A5DAB",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+          ↓ Voir les {mTerminees.length-5} autres ({mTerminees.length} au total)
+        </div>
+      )}
+      {showAllMTerminees&&mTerminees.length>5&&(
+        <div onClick={()=>setShowAllMTerminees(false)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#7A7A7A",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+          ↑ Réduire
+        </div>
+      )}
     </>}
 
     {/* Liste prestataires — cliquables */}
@@ -1751,6 +2140,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
                   {p.contact&&<div style={{fontSize:11,color:"#7A7A7A"}}>{p.contact}</div>}
                 </div>
                 <div style={{display:"flex",gap:4,alignSelf:"flex-start"}} onClick={e=>e.stopPropagation()}>
+                  <button onClick={e=>{e.stopPropagation();setPartageId(p.id);setCopied(false);}} style={{background:"none",border:"1px solid #1A5DAB",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#1A5DAB",fontFamily:"'DM Sans',sans-serif"}}>↗</button>
                   <button onClick={e=>{e.stopPropagation();setMissionOpen(false);setEditing(p.id);setForm({...p});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
                   <button onClick={e=>{e.stopPropagation();sheet.remove(p.id);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
                 </div>
@@ -1766,7 +2156,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
 }
 
 // ══ ATELIER / CHANTIER (module générique) ══
-const EMISSION={type:"",projet:"",description:"",membres:[],stockRef:"",stockQty:"",dateDebut:"",dateFin:"",statut:"planifié",note:""};
+const EMISSION={type:"",projet:"",description:"",membres:[],stockRef:"",stockQty:"",dateDebut:"",dateFin:"",statut:"planifié",note:"",tags:""};
 
 // Parse les dépendances stockées en JSON dans le champ note
 function parseDeps(note){
@@ -1780,6 +2170,9 @@ function serializeDeps(deps,noteTexte){
 }
 
 function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
+  const [filterProjet,setFilterProjet]=useState("");
+  const [filterTag,setFilterTag]=useState("");
+  const [showAllTerminees,setShowAllTerminees]=useState(false);
   const label=moduleType==="atelier"?"Atelier":"Chantier";
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState({...EMISSION,type:moduleType});
@@ -1874,8 +2267,10 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
   }
 
   const toutes=sheet.rows.filter(m=>m.type===moduleType);
-  const actives=toutes.filter(m=>m.statut!=="terminé");
-  const terminees=toutes.filter(m=>m.statut==="terminé");
+  const actives=toutes.filter(m=>m.statut!=="terminé")
+    .sort((a,b)=>toISO(a.dateDebut||"").localeCompare(toISO(b.dateDebut||"")));
+  const terminees=toutes.filter(m=>m.statut==="terminé")
+    .sort((a,b)=>toISO(b.dateDebut||"").localeCompare(toISO(a.dateDebut||"")));
   const sb=(s)=>({planifié:{bg:"#F2F0ED",tx:"#3A3A3A"},"en cours":{bg:"#FFF0F0",tx:"#CC2222"},terminé:{bg:"#F0FFF0",tx:"#2A7A2A"}}[s]||{bg:"#F2F0ED",tx:"#3A3A3A"});
 
   const toggleMembre=(nom)=>{
@@ -2038,14 +2433,31 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
     <FG label="Statut"><Sel value={form.statut} onChange={e=>f("statut",e.target.value)}>
       <option value="planifié">Planifié</option><option value="en cours">En cours</option><option value="terminé">Terminé</option>
     </Sel></FG>
+    {moduleType==="chantier"&&<FG label="Importance (pour calcul avancement)"><Sel value={form.importance||"2"} onChange={e=>f("importance",e.target.value)}>
+      <option value="1">1 — Faible</option><option value="2">2 — Normale</option><option value="3">3 — Critique</option>
+    </Sel></FG>}
+    <FG label="Tags"><TagSelector tags={form.tags||""} onChange={v=>f("tags",v)} projetNom={form.projet} projects={projects}/></FG>
     <ErrMsg msg={err}/><PanelBtns onCancel={()=>{setOpen(false);setEditing(null);}} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Créer"}/>
   </SidePanel>;
 
+  // Filtrage par projet/tag
+  const fActives=actives.filter(m=>{
+    if(filterProjet&&m.projet!==filterProjet)return false;
+    if(filterTag){const t=(m.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
+    return true;
+  });
+  const fTerminees=terminees.filter(m=>{
+    if(filterProjet&&m.projet!==filterProjet)return false;
+    if(filterTag){const t=(m.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
+    return true;
+  });
+
   return <WithPanel panel={panel}>
+    <FiltreProjetTag projects={projects} filterProjet={filterProjet} setFilterProjet={setFilterProjet} filterTag={filterTag} setFilterTag={setFilterTag}/>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>
         <div style={{fontSize:15,fontWeight:700,color:"#1C1C1C",borderLeft:"3px solid #CC2222",paddingLeft:8}}>
-          Missions {label} ({actives.length} actives)
+          Missions {label} ({fActives.length} actives)
         </div>
         <div style={{display:"flex",border:"1px solid #DDDDDD",borderRadius:6,overflow:"hidden"}}>
           {[["liste","≡ Liste"],["planning","▦ Planning"]].map(([v,l])=>(
@@ -2082,7 +2494,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
     {/* ══ VUE LISTE ══ */}
     {vue==="liste"&&<>
       {!actives.length&&<Bd style={{textAlign:"center",padding:20,color:"#7A7A7A",fontSize:13,marginBottom:12}}>Aucune mission {label.toLowerCase()} en cours.</Bd>}
-      {actives.map(m=>{
+      {fActives.map(m=>{
         const s=sb(m.statut);
         const membres=getMembres(m);
         return(
@@ -2095,6 +2507,13 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
                 {membres.length>0&&(
                   <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:6}}>
                     {membres.map(mb=><span key={mb} style={{background:"#F2F0ED",color:"#3A3A3A",fontSize:11,padding:"2px 8px",borderRadius:4}}>{mb}</span>)}
+                  </div>
+                )}
+                {(m.tags||"").split(",").filter(Boolean).length>0&&(
+                  <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:4}}>
+                    {(m.tags||"").split(",").filter(Boolean).map((tag,i)=>(
+                      <span key={i} style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:10,fontWeight:600,padding:"1px 7px",borderRadius:10}}>{tag.trim()}</span>
+                    ))}
                   </div>
                 )}
                 {m.note&&!parseDeps(m.note).deps?.length&&<div style={{fontSize:12,color:"#7A7A7A",marginTop:4,fontStyle:"italic"}}>{m.note}</div>}
@@ -2141,9 +2560,9 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
           </Bd>
         );
       })}
-      {terminees.length>0&&<>
-        <div style={{fontSize:13,fontWeight:700,color:"#7A7A7A",borderLeft:"3px solid #DDDDDD",paddingLeft:8,margin:"16px 0 10px"}}>Historique — missions terminées ({terminees.length})</div>
-        {terminees.map(m=>(
+      {fTerminees.length>0&&<>
+        <div style={{fontSize:13,fontWeight:700,color:"#7A7A7A",borderLeft:"3px solid #DDDDDD",paddingLeft:8,margin:"16px 0 10px"}}>Historique — missions terminées ({fTerminees.length})</div>
+        {(showAllTerminees?fTerminees:fTerminees.slice(0,5)).map(m=>(
           <Bd key={m.id} style={{marginBottom:6,opacity:.85}}>
             <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
               <div style={{flex:1}}>
@@ -2159,6 +2578,16 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
             </div>
           </Bd>
         ))}
+        {!showAllTerminees&&fTerminees.length>5&&(
+          <div onClick={()=>setShowAllTerminees(true)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#1A5DAB",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+            ↓ Voir les {fTerminees.length-5} autres ({fTerminees.length} au total)
+          </div>
+        )}
+        {showAllTerminees&&fTerminees.length>5&&(
+          <div onClick={()=>setShowAllTerminees(false)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#7A7A7A",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+            ↑ Réduire
+          </div>
+        )}
       </>}
     </>}
 
@@ -2313,12 +2742,14 @@ function Taches({sheet,projects}){
   }
   async function toggle(t){await sheet.update(t.id,{...t,done:!isDone(t)});}
 
-  // Tri : en retard → urgent → normal → faible → terminées, puis par date
+  // Tri : En retard → Urgent → Normal → Faible → Terminées, puis par date
+  const urgOrder={critique:0,high:1,med:2,low:3,done:4};
   const sorted=[...sheet.rows].sort((a,b)=>{
-    const order={critique:0,high:1,med:2,low:3};
+    const da=isDone(a), db=isDone(b);
+    if(da!==db)return da?1:-1;
     const ua=autoUrgence(a.due,a.done), ub=autoUrgence(b.due,b.done);
-    if(isDone(a)!==isDone(b))return isDone(a)?1:-1;
-    if(ua!==ub)return(order[ua]||2)-(order[ub]||2);
+    const oa=urgOrder[ua]??3, ob=urgOrder[ub]??3;
+    if(oa!==ob)return oa-ob;
     return toISO(a.due).localeCompare(toISO(b.due));
   });
   const filtered=sorted.filter(t=>filter==="all"||(filter==="pending"&&!isDone(t))||(filter==="done"&&isDone(t)));
@@ -2348,8 +2779,8 @@ function Taches({sheet,projects}){
       {!filtered.length&&<div style={{fontSize:13,color:"#7A7A7A",padding:"10px 0"}}>Aucune tâche.</div>}
       {filtered.map(t=>{
         const done=isDone(t);
-        const urg=autoUrgence(t.due,t.done);
-        const u=UC[urg]||UC.med;
+        const urg=done?"done":autoUrgence(t.due,t.done);
+        const u=UC[urg]||UC.low;
         const d=diffDays(t.due);
         const dueLbl=t.due?(d<0?`${Math.abs(d)}j de retard`:d===0?"Aujourd'hui":d===1?"Demain":`${fmt(t.due)}`):null;
         return(
@@ -2380,6 +2811,7 @@ function Calendrier({sheet,projects,atelierChantier}){
   const [selectedDay,setSelectedDay]=useState(TODAY);
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState({title:"",date:"",heure:"",type:"rdv",projet:"",note:"",dateFin:""});
+  const [recurrence,setRecurrence]=useState({active:false,jusqu:""}); // récurrence hebdo
   const [editing,setEditing]=useState(null);
   const [saving,setSaving]=useState(false);
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
@@ -2410,36 +2842,47 @@ function Calendrier({sheet,projects,atelierChantier}){
       if(editing){
         await sheet.update(editing,form);
       } else {
-        await sheet.add(form);
-        // Si type chantier → créer automatiquement une mission chantier liée
+        // Créer les occurrences (récurrence hebdo ou événement unique)
+        const dates=[];
+        if(recurrence.active&&recurrence.jusqu&&recurrence.jusqu>form.date){
+          // Générer toutes les dates hebdomadaires jusqu'à la date de fin
+          let cur=new Date(form.date+"T00:00:00");
+          const fin=new Date(recurrence.jusqu+"T00:00:00");
+          while(cur<=fin){
+            const iso=`${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}-${String(cur.getDate()).padStart(2,"0")}`;
+            dates.push(iso);
+            cur.setDate(cur.getDate()+7);
+          }
+        } else {
+          dates.push(form.date);
+        }
+        for(const d of dates){
+          await sheet.add({...form,date:d});
+        }
+        // Sync mission chantier uniquement pour la première occurrence
         if(form.type==="chantier"&&atelierChantier){
-          // Vérifie qu'une mission identique n'existe pas déjà (même titre + même date)
           const existe=atelierChantier.rows.some(m=>
             m.type==="chantier"&&m.description===form.title&&toISO(m.dateDebut)===toISO(form.date)
           );
           if(!existe){
             await atelierChantier.add({
-              type:"chantier",
-              projet:form.projet||"",
-              description:form.title,
-              membres:"",
-              stockRef:"",
-              stockQty:0,
-              dateDebut:form.date,
-              dateFin:form.dateFin||form.date,
-              statut:"planifié",
-              note:`Créé automatiquement depuis le calendrier`,
+              type:"chantier",projet:form.projet||"",description:form.title,
+              membres:"",stockRef:"",stockQty:0,
+              dateDebut:form.date,dateFin:form.dateFin||form.date,
+              statut:"planifié",note:"Créé automatiquement depuis le calendrier",
             });
           }
         }
       }
       setOpen(false);
+      setRecurrence({active:false,jusqu:""});
     }catch(e){}setSaving(false);
   }
 
   function openNew(date=""){
     setEditing(null);
     setForm({title:"",date:date||TODAY,heure:"",type:"rdv",projet:"",note:"",dateFin:""});
+    setRecurrence({active:false,jusqu:""});
     setOpen(true);
   }
 
@@ -2478,6 +2921,24 @@ function Calendrier({sheet,projects,atelierChantier}){
       {projects.rows.map(p=><option key={p.id}>{p.name}</option>)}
     </Sel></FG>
     <FG label="Note"><Inp value={form.note} onChange={e=>f("note",e.target.value)} placeholder="Optionnel"/></FG>
+
+    {/* Récurrence — uniquement à la création */}
+    {!editing&&<div style={{background:"#F9F9F9",borderRadius:6,padding:"10px 12px",marginBottom:8,border:"0.5px solid #EEEEEE"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:recurrence.active?8:0}}>
+        <input type="checkbox" checked={recurrence.active} onChange={e=>setRecurrence(r=>({...r,active:e.target.checked}))} id="recur-check" style={{accentColor:"#CC2222",cursor:"pointer"}}/>
+        <label htmlFor="recur-check" style={{fontSize:12,fontWeight:600,color:"#1C1C1C",cursor:"pointer"}}>Répéter chaque semaine</label>
+      </div>
+      {recurrence.active&&<>
+        <FG label="Jusqu'au">
+          <Inp type="date" value={recurrence.jusqu} onChange={e=>setRecurrence(r=>({...r,jusqu:e.target.value}))}/>
+        </FG>
+        {recurrence.jusqu&&recurrence.jusqu>form.date&&(()=>{
+          let n=0,cur=new Date(form.date+"T00:00:00"),fin=new Date(recurrence.jusqu+"T00:00:00");
+          while(cur<=fin){n++;cur.setDate(cur.getDate()+7);}
+          return<div style={{fontSize:11,color:"#CC6600",marginTop:4}}>→ {n} occurrence{n>1?"s":""} seront créées</div>;
+        })()}
+      </>}
+    </div>}
     <PanelBtns onCancel={()=>setOpen(false)} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Enregistrer"}/>
   </SidePanel>;
 
@@ -2557,7 +3018,7 @@ function Calendrier({sheet,projects,atelierChantier}){
             const isT=dStr===TODAY;
             return(
               <div key={i} onClick={()=>{if(c.cur&&!isWeekend&&!isFerie){setSelectedDay(dStr);setView("jour");}}}
-                style={{minHeight:72,borderRadius:6,padding:"4px 5px",fontSize:12,
+                style={{minHeight:100,borderRadius:6,padding:"4px 5px",fontSize:12,
                   color:c.cur?"#1C1C1C":"#CCCCCC",
                   background:isT?"#FFF0F0":isWeekend&&c.cur?"#F7F7F7":isFerie?"#FFF8EC":"#fff",
                   border:isT?"1px solid #CC2222":"1px solid #EEEEEE",
@@ -2567,8 +3028,8 @@ function Calendrier({sheet,projects,atelierChantier}){
                 <div style={{fontWeight:isT?700:500,color:isT?"#CC2222":isWeekend?"#AAAAAA":isFerie?"#CC8800":"#1C1C1C",marginBottom:2,fontSize:isWeekend?10:12}}>
                   {c.day}{isFerie&&<span style={{fontSize:9,color:"#CC8800",marginLeft:2}}>●</span>}
                 </div>
-                {!isWeekend&&!isFerie&&evs.slice(0,2).map(ev=><EvChip key={ev.id+dStr} ev={ev} span={ev._span}/>)}
-                {!isWeekend&&!isFerie&&evs.length>2&&<div style={{fontSize:10,color:"#7A7A7A"}}>+{evs.length-2}</div>}
+                {!isWeekend&&!isFerie&&evs.slice(0,5).map(ev=><EvChip key={ev.id+dStr} ev={ev} span={ev._span}/>)}
+                {!isWeekend&&!isFerie&&evs.length>5&&<div style={{fontSize:9,color:"#7A7A7A"}}>+{evs.length-5}</div>}
               </div>
             );
           })}
@@ -2736,8 +3197,25 @@ function Fournisseurs({sheet}){
   const [editing,setEditing]=useState(null);
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
+  const [partageId,setPartageId]=useState(null); // id fournisseur dont on affiche la fiche
+  const [copied,setCopied]=useState(false);
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
   async function save(){if(!form.nom.trim()){setErr("Nom obligatoire.");return;}setSaving(true);setErr("");try{const item={...form,note:+form.note||3};if(editing){await sheet.update(editing,item);}else{await sheet.add(item);}setOpen(false);}catch(e){setErr(e.message);}setSaving(false);}
+
+  function textPartage(x){
+    const lines=[
+      `📦 ${x.nom}`,
+      x.specialite&&`Spécialité : ${x.specialite}`,
+      x.contact&&`Email : ${x.contact}`,
+      x.tel&&`Tél : ${x.tel}`,
+      x.adresse&&`Adresse : ${x.adresse}`,
+      x.delai&&`Délai livraison : ${x.delai}`,
+      x.note&&`Évaluation : ${"★".repeat(x.note)}`,
+    ].filter(Boolean);
+    return lines.join("\n");
+  }
+
+  const partageItem=partageId?sheet.rows.find(x=>x.id===partageId):null;
   const panel=open&&<SidePanel title={editing?"Modifier le fournisseur":"Nouveau fournisseur"} onClose={()=>setOpen(false)}>
     <FG label="Nom *"><Inp value={form.nom} onChange={e=>f("nom",e.target.value)} placeholder="Ex: Nowofol GmbH"/></FG>
     <FG label="Spécialité"><Inp value={form.specialite} onChange={e=>f("specialite",e.target.value)} placeholder="Ex: Films ETFE"/></FG>
@@ -2749,6 +3227,20 @@ function Fournisseurs({sheet}){
     <ErrMsg msg={err}/><PanelBtns onCancel={()=>setOpen(false)} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Ajouter"}/>
   </SidePanel>;
   return <WithPanel panel={panel}>
+    {/* Modal partage */}
+    {partageItem&&<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.4)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget){setPartageId(null);setCopied(false);}}}>
+      <div style={{background:"#fff",borderRadius:12,padding:24,width:400,maxWidth:"90vw",boxShadow:"0 8px 32px rgba(0,0,0,0.18)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>Partager le contact</div>
+          <button onClick={()=>{setPartageId(null);setCopied(false);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:"#7A7A7A"}}>✕</button>
+        </div>
+        <pre style={{background:"#F9F9F9",border:"1px solid #EEEEEE",borderRadius:8,padding:14,fontSize:12,fontFamily:"'DM Mono',monospace",whiteSpace:"pre-wrap",marginBottom:14,color:"#1C1C1C",lineHeight:1.7}}>{textPartage(partageItem)}</pre>
+        <button onClick={()=>{navigator.clipboard.writeText(textPartage(partageItem));setCopied(true);setTimeout(()=>setCopied(false),2000);}}
+          style={{width:"100%",padding:"9px",borderRadius:6,border:"none",background:copied?"#2A7A2A":"#CC2222",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700,transition:"background .2s"}}>
+          {copied?"✓ Copié !":"📋 Copier le contact"}
+        </button>
+      </div>
+    </div>}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
       <div style={{fontSize:15,fontWeight:700,color:"#1C1C1C",borderLeft:"3px solid #CC2222",paddingLeft:8}}>Fournisseurs ({sheet.rows.length})</div>
       <Btn primary onClick={()=>{setEditing(null);setForm(EF);setErr("");setOpen(true);}}>+ Ajouter</Btn>
@@ -2767,6 +3259,7 @@ function Fournisseurs({sheet}){
               {x.tel&&<div style={{fontSize:12,color:"#7A7A7A",fontFamily:"'DM Mono',monospace"}}>{x.tel}</div>}
             </div>
             <div style={{display:"flex",gap:4,flexDirection:"column",alignItems:"flex-end"}}>
+              <button onClick={()=>{setPartageId(x.id);setCopied(false);}} style={{background:"none",border:"1px solid #1A5DAB",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#1A5DAB",fontFamily:"'DM Sans',sans-serif"}}>↗ Partager</button>
               <button onClick={()=>{setEditing(x.id);setForm({...x});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Modifier</button>
               <button onClick={()=>sheet.remove(x.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
             </div>
@@ -2778,8 +3271,10 @@ function Fournisseurs({sheet}){
 }
 
 // ══ STOCKS ══
-const ES={ref:"",cat:"",fourn:"",qty:"",min:"",unit:"pcs",prix:"",loc:"",note:""};
-function Stocks({sheet,fournisseurs}){
+const ES={ref:"",cat:"",fourn:"",qty:"",min:"",unit:"pcs",prix:"",loc:"",note:"",tags:""};
+function Stocks({sheet,fournisseurs,projects,orders}){
+  const [filterProjet,setFilterProjet]=useState("");
+  const [filterTag,setFilterTag]=useState("");
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(ES);
   const [editing,setEditing]=useState(null);
@@ -2798,9 +3293,29 @@ function Stocks({sheet,fournisseurs}){
     <FG label="Unité"><Sel value={form.unit} onChange={e=>f("unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</Sel></FG>
     <FG label="Prix unitaire (€)"><Inp type="number" value={form.prix} onChange={e=>f("prix",e.target.value)} placeholder="0.00"/></FG>
     <FG label="Emplacement"><Inp value={form.loc} onChange={e=>f("loc",e.target.value)} placeholder="Ex: Étagère A3"/></FG>
+    <FG label="Tags"><TagSelector tags={form.tags||""} onChange={v=>f("tags",v)} projetNom={""} projects={projects}/></FG>
     <ErrMsg msg={err}/><PanelBtns onCancel={()=>setOpen(false)} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Enregistrer"}/>
   </SidePanel>;
+  const filteredStock=sheet.rows.filter(s=>{
+    if(filterProjet){
+      const norm=x=>String(x||"").trim().toLowerCase();
+      // Méthode 1 : tags communs entre le stock et le projet
+      const sTags=(s.tags||"").split(",").map(x=>x.trim()).filter(Boolean);
+      const projRow=(projects?.rows||[]).find(p=>p.name===filterProjet);
+      const projTags=(projRow?.tags||"").split(",").map(x=>x.trim()).filter(Boolean);
+      const hasTagMatch=projTags.length>0&&sTags.some(st=>projTags.includes(st));
+      // Méthode 2 : au moins une commande du projet contient cet article dans ses lignes
+      const hasOrderMatch=(orders?.rows||[]).some(o=>
+        norm(o.projet)===norm(filterProjet)&&
+        getLignes(o).some(l=>norm(l.article)===norm(s.ref))
+      );
+      if(!hasTagMatch&&!hasOrderMatch)return false;
+    }
+    if(filterTag){const t=(s.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
+    return true;
+  });
   return <WithPanel panel={panel}>
+    <FiltreProjetTag projects={projects} filterProjet={filterProjet} setFilterProjet={setFilterProjet} filterTag={filterTag} setFilterTag={setFilterTag}/>
     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
       {[{val:sheet.rows.length,lbl:"Références"},{val:alerts.length,lbl:"Sous seuil d'alerte",alert:alerts.length>0},{val:valeur.toLocaleString("fr-FR")+" €",lbl:"Valeur totale estimée"}].map((m,i)=>(
         <div key={i} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderTop:m.alert?"3px solid #CC2222":"3px solid #F2F0ED",borderRadius:8,padding:"12px 14px"}}>
@@ -2819,32 +3334,70 @@ function Stocks({sheet,fournisseurs}){
       <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 80px 80px",gap:8,padding:"6px 0",borderBottom:"0.5px solid #DDDDDD",marginBottom:4}}>
         {["Référence","Qté / Seuil","Emplacement","État",""].map((h,i)=><span key={i} style={{fontSize:11,fontWeight:700,color:"#7A7A7A"}}>{h}</span>)}
       </div>
-      {sheet.rows.map(s=>{const r=Number(s.qty)/Math.max(Number(s.min),0.001);const sb=r<0.7?{bg:"#FFF0F0",tx:"#CC2222",lbl:"Critique"}:r<1?{bg:"#FFF8EC",tx:"#CC8800",lbl:"Bas"}:{bg:"#F0FFF0",tx:"#2A7A2A",lbl:"OK"};return(
+      
+      {filteredStock.map(s=>{const r=Number(s.qty)/Math.max(Number(s.min),0.001);const sb=r<0.7?{bg:"#FFF0F0",tx:"#CC2222",lbl:"Critique"}:r<1?{bg:"#FFF8EC",tx:"#CC8800",lbl:"Bas"}:{bg:"#F0FFF0",tx:"#2A7A2A",lbl:"OK"};return(
         <div key={s.id} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 80px 80px",gap:8,alignItems:"center",padding:"9px 0",borderBottom:"0.5px solid #EEEEEE"}}>
-          <div><div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{s.ref}</div><div style={{fontSize:11,color:"#7A7A7A"}}>{s.cat}</div></div>
+          <div><div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{s.ref}</div>
+            <div style={{fontSize:11,color:"#7A7A7A"}}>{s.cat}</div>
+            {(s.tags||"").split(",").filter(Boolean).length>0&&(
+              <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:3}}>
+                {(s.tags||"").split(",").filter(Boolean).map((tag,i)=>(
+                  <span key={i} style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:10}}>{tag.trim()}</span>
+                ))}
+              </div>
+            )}
+          </div>
           <span style={{fontSize:12,color:"#3A3A3A",fontFamily:"'DM Mono',monospace"}}>{s.qty}/{s.min} {s.unit}</span>
           <span style={{fontSize:12,color:"#7A7A7A"}}>{s.loc||"—"}</span>
           <Badge label={sb.lbl} bg={sb.bg} color={sb.tx}/>
           <div style={{display:"flex",gap:4}}>
-            <button onClick={()=>{setEditing(s.id);setForm({...s,qty:String(s.qty),min:String(s.min),prix:String(s.prix)});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
+            <button onClick={()=>{setEditing(s.id);setForm({...s,qty:String(s.qty),min:String(s.min),prix:String(s.prix),tags:s.tags||""});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
             <button onClick={()=>sheet.remove(s.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
           </div>
         </div>
       );})}
+      
     </Bd>
   </WithPanel>;
 }
 
+// Helpers commandes globaux (utilisés par Commandes ET Stocks)
+function getLignes(o){
+  if(o.lignes){try{const p=JSON.parse(o.lignes);if(Array.isArray(p)&&p.length)return p;}catch(e){}}
+  return [{article:o.article||"",qty:String(o.qty||""),unit:o.unit||"pcs",prix:String(o.prix||""),cat:o.cat||""}];
+}
+function totalCommande(o){
+  return getLignes(o).reduce((s,l)=>s+(+l.prix||0)*(+l.qty||0),0);
+}
+
 // ══ COMMANDES ══
-const EO={ref:"",fourn:"",article:"",qty:"",unit:"pcs",prix:"",cat:"",loc:"",date:TODAY,dateLivraison:"",lieuLivraison:"La Rochelle",projet:""};
+const EO={ref:"",fourn:"",article:"",qty:"",unit:"pcs",prix:"",cat:"",loc:"",date:TODAY,dateLivraison:"",lieuLivraison:"La Rochelle",projet:"",lignes:"",tags:""};
+// Ligne d'article vide
+const EL={article:"",qty:"",unit:"pcs",prix:"",cat:""};
 function Commandes({sheet,stocks,fournisseurs,projects,events}){
+  const [filterProjet,setFilterProjet]=useState("");
+  const [filterTag,setFilterTag]=useState("");
+  const [showAllHisto,setShowAllHisto]=useState(false);
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(EO);
+  const [lignesForm,setLignesForm]=useState([{...EL}]); // au moins 1 ligne
   const [editing,setEditing]=useState(null);
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
+  // ── Import IA (format texte structuré généré par Claude) ──
+  const [aiOpen,setAiOpen]=useState(false);
+  const [aiErr,setAiErr]=useState("");
+  const [aiPreview,setAiPreview]=useState(null); // {form, lignes}
+  const [aiText,setAiText]=useState("");
+  const [newFourn,setNewFourn]=useState(false);
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
+  const fl=(i,k,v)=>setLignesForm(ls=>ls.map((l,j)=>j===i?{...l,[k]:v}:l));
+  const addLigne=()=>setLignesForm(ls=>[...ls,{...EL}]);
+  const removeLigne=i=>setLignesForm(ls=>ls.length>1?ls.filter((_,j)=>j!==i):ls);
   const isBool=v=>v===true||v==="TRUE";
+
+  // Parse les lignes depuis une commande existante
+
 
   // Marquer comme reçue
   async function toggleRecue(o){
@@ -2854,8 +3407,12 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
       await addToStock(o);
     } else {
       if(!isBool(o.factureCompta)){
-        const idx=stocks.rows.findIndex(s=>s.ref.toLowerCase()===o.article.toLowerCase());
-        if(idx>=0){const s=stocks.rows[idx];await stocks.update(s.id,{...s,qty:Math.max(0,Number(s.qty)-(+o.qty||0))});}
+        const lignes=getLignes(o);
+        for(const l of lignes){
+          if(!l.article)continue;
+          const idx=stocks.rows.findIndex(s=>s.ref.toLowerCase()===l.article.toLowerCase());
+          if(idx>=0){const s=stocks.rows[idx];await stocks.update(s.id,{...s,qty:Math.max(0,Number(s.qty)-(+l.qty||0))});}
+        }
       }
       next.factureCompta=false;
     }
@@ -2866,10 +3423,118 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
     await sheet.update(o.id,{...o,factureCompta:!isBool(o.factureCompta)});
   }
 
+  // ── Extraction IA depuis texte collé ──
+  // Correspondance approximative entre une catégorie texte et les CATS existantes
+  function matchCat(catTexte){
+    if(!catTexte)return"";
+    const n=s=>s.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+    const nc=n(catTexte);
+    // Match exact
+    const exact=CATS.find(c=>n(c)===nc);
+    if(exact)return exact;
+    // Match partiel — chercher si le texte contient un mot clé de la catégorie
+    const partial=CATS.find(c=>nc.includes(n(c))||n(c).includes(nc));
+    if(partial)return partial;
+    // Mots clés spéciaux
+    if(nc.includes("isolant")||nc.includes("acous")||nc.includes("phoniq"))return"Matériaux isolants";
+    if(nc.includes("etfe")||nc.includes("membrane")||nc.includes("textile"))return"Membranes ETFE";
+    if(nc.includes("alum")||nc.includes("profi"))return"Profilés aluminium";
+    if(nc.includes("acier")||nc.includes("steel")||nc.includes("struct"))return"Acier structure";
+    if(nc.includes("bois")||nc.includes("wood")||nc.includes("osb"))return"Structure bois";
+    if(nc.includes("vis")||nc.includes("fixat")||nc.includes("boulon"))return"Visserie & fixations";
+    if(nc.includes("joint")||nc.includes("etanch")||nc.includes("seal"))return"Étanchéité & joints";
+    if(nc.includes("outil")||nc.includes("tool")||nc.includes("decoup"))return"Outillage";
+    if(nc.includes("transport")||nc.includes("livr")||nc.includes("logist"))return"Transport & logistique";
+    if(nc.includes("epi")||nc.includes("securit")||nc.includes("protect"))return"EPI & sécurité";
+    if(nc.includes("cable")||nc.includes("electr"))return"Câblerie & électricité";
+    return"Autre";
+  }
+
+  // Parser le texte structuré généré par Claude
+  // Format attendu : lignes clé:valeur + blocs ARTICLE répétables
+  function parseTexteIA(texte){
+    const lines=texte.split("\n").map(l=>l.trim()).filter(Boolean);
+    const get=(key)=>{
+      const l=lines.find(x=>x.toUpperCase().startsWith(key.toUpperCase()+":"));
+      return l?l.slice(key.length+1).trim():"";
+    };
+    // Convertir date FR (JJ/MM/AAAA) ou texte en YYYY-MM-DD
+    const parseDate=(s)=>{
+      if(!s)return"";
+      if(/^\d{4}-\d{2}-\d{2}$/.test(s))return s;
+      if(/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)){
+        const[d,m,y]=s.split("/");
+        return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;
+      }
+      return"";
+    };
+    const formData={
+      ref:get("REF"),
+      fourn:get("FOURNISSEUR"),
+      date:parseDate(get("DATE"))||TODAY,
+      dateLivraison:parseDate(get("DATE_LIVRAISON")),
+      lieuLivraison:get("LIEU_LIVRAISON")||"La Rochelle",
+      projet:get("PROJET"),
+      loc:"",cat:"",article:"",qty:"",unit:"pcs",prix:"",lignes:"",
+    };
+    // Extraire les blocs ARTICLE
+    const lignes=[];
+    let cur=null;
+    for(const line of lines){
+      if(line.toUpperCase().startsWith("ARTICLE:")){
+        if(cur)lignes.push(cur);
+        cur={article:line.slice(8).trim(),qty:"",unit:"pcs",prix:"",cat:""};
+      } else if(cur){
+        if(line.toUpperCase().startsWith("QTE:"))cur.qty=line.slice(4).trim().replace(",",".");
+        else if(line.toUpperCase().startsWith("UNITE:"))cur.unit=line.slice(6).trim();
+        else if(line.toUpperCase().startsWith("PRIX:"))cur.prix=line.slice(5).trim().replace(",",".");
+        else if(line.toUpperCase().startsWith("CAT:"))cur.cat=matchCat(line.slice(4).trim());
+      }
+    }
+    if(cur)lignes.push(cur);
+    if(!lignes.length)return null;
+    return{formData,lignes};
+  }
+
+  function parseAndPreview(){
+    setAiErr("");setAiPreview(null);
+    const texte=aiText.trim();
+    if(texte.length<10){setAiErr("Colle d'abord le texte généré par Claude.");return;}
+    const result=parseTexteIA(texte);
+    if(!result||!result.lignes.length){setAiErr("Format non reconnu. Vérifie que le texte suit le format indiqué.");return;}
+    setAiPreview(result);
+  }
+
+  async function applyAiPreview(){
+    if(!aiPreview)return;
+    // Créer le fournisseur s'il n'existe pas et si l'utilisateur a coché
+    if(newFourn&&aiPreview.formData.fourn){
+      const existe=fournisseurs.rows.some(f=>f.nom.trim().toLowerCase()===aiPreview.formData.fourn.trim().toLowerCase());
+      if(!existe){
+        await fournisseurs.add({nom:aiPreview.formData.fourn,specialite:"",contact:"",tel:"",adresse:"",note:"Créé automatiquement depuis l'import IA"});
+      }
+    }
+    setForm({...EO,...aiPreview.formData});
+    setLignesForm(aiPreview.lignes.map(l=>({...EL,...l})));
+    setAiOpen(false);setAiPreview(null);setAiText("");setNewFourn(false);setErr("");setEditing(null);setOpen(true);
+  }
+
   async function addToStock(ord){
-    const idx=stocks.rows.findIndex(s=>s.ref.toLowerCase()===ord.article.toLowerCase());
-    if(idx>=0){const s=stocks.rows[idx];await stocks.update(s.id,{...s,qty:Number(s.qty)+(+ord.qty||0)});}
-    else{await stocks.add({ref:ord.article,cat:ord.cat||"",qty:+ord.qty||0,min:0,unit:ord.unit||"pcs",prix:+ord.prix||0,loc:ord.loc||"",fourn:ord.fourn||""});}
+    const lignes=getLignes(ord);
+    for(const l of lignes){
+      if(!l.article)continue;
+      const idx=stocks.rows.findIndex(s=>s.ref.toLowerCase()===l.article.toLowerCase());
+      if(idx>=0){
+        const s=stocks.rows[idx];
+        // Fusionner les tags existants avec les nouveaux
+        const tagsExist=(s.tags||"").split(",").filter(Boolean);
+        const tagsNew=(ord.tags||"").split(",").filter(Boolean);
+        const tagsMerge=[...new Set([...tagsExist,...tagsNew])].join(",");
+        await stocks.update(s.id,{...s,qty:Number(s.qty)+(+l.qty||0),tags:tagsMerge});
+      } else {
+        await stocks.add({ref:l.article,cat:l.cat||ord.cat||"",qty:+l.qty||0,min:0,unit:l.unit||"pcs",prix:+l.prix||0,loc:ord.loc||"",fourn:ord.fourn||"",tags:ord.tags||""});
+      }
+    }
   }
 
   async function syncEvenementLivraison(cmd,dateLiv){
@@ -2884,15 +3549,21 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
   }
 
   async function save(){
-    if(!form.article.trim()){setErr("Article obligatoire.");return;}
+    if(!lignesForm[0].article.trim()){setErr("Article obligatoire sur la 1ère ligne.");return;}
     if(!form.fourn.trim()){setErr("Fournisseur obligatoire.");return;}
     setSaving(true);setErr("");
     try{
-      const data={...form,qty:+form.qty||0,prix:+form.prix||0};
+      // 1ère ligne → champs legacy pour compatibilité
+      const l0=lignesForm[0];
+      const lignesJSON=lignesForm.length>1?JSON.stringify(lignesForm):"";
+      const data={...form,
+        article:l0.article,qty:+l0.qty||0,unit:l0.unit||"pcs",prix:+l0.prix||0,cat:l0.cat||form.cat||"",
+        lignes:lignesJSON,
+      };
       if(editing){await sheet.update(editing,data);}
       else{await sheet.add({...data,recue:false,factureCompta:false});}
-      if(form.dateLivraison){await syncEvenementLivraison(form,form.dateLivraison);}
-      setOpen(false);setEditing(null);setForm(EO);
+      if(form.dateLivraison){await syncEvenementLivraison({...form,article:l0.article},form.dateLivraison);}
+      setOpen(false);setEditing(null);setForm(EO);setLignesForm([{...EL}]);
     }catch(e){setErr(e.message);}setSaving(false);
   }
 
@@ -2902,13 +3573,17 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
   const isProjetTermine=o=>o.projet&&projTermines.has(normC(o.projet));
 
   // Livraisons en retard — projets non terminés uniquement
-  const livraisonsRetard=sheet.rows.filter(o=>!isBool(o.recue)&&o.dateLivraison&&toISO(o.dateLivraison)<TODAY&&!isProjetTermine(o));
-  const encours=sheet.rows.filter(o=>!isBool(o.recue)&&!isProjetTermine(o));
-  const attenteFacture=sheet.rows.filter(o=>isBool(o.recue)&&!isBool(o.factureCompta)&&!isProjetTermine(o));
-  const historique=sheet.rows.filter(o=>isBool(o.recue)&&isBool(o.factureCompta));
+  const applyFiltre=o=>{
+    if(filterProjet&&normC(o.projet)!==normC(filterProjet))return false;
+    if(filterTag){const t=(o.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
+    return true;
+  };
+  const livraisonsRetard=sheet.rows.filter(o=>!isBool(o.recue)&&o.dateLivraison&&toISO(o.dateLivraison)<TODAY&&!isProjetTermine(o)&&applyFiltre(o));
+  const encours=sheet.rows.filter(o=>!isBool(o.recue)&&!isProjetTermine(o)&&applyFiltre(o));
+  const attenteFacture=sheet.rows.filter(o=>isBool(o.recue)&&!isBool(o.factureCompta)&&!isProjetTermine(o)&&applyFiltre(o));
+  const historique=sheet.rows.filter(o=>isBool(o.recue)&&isBool(o.factureCompta)&&applyFiltre(o));
 
-  const panel=open&&<SidePanel title={editing?"Modifier la commande":"Nouvelle commande"} onClose={()=>{setOpen(false);setEditing(null);setForm(EO);}}>
-    <FG label="Référence commande"><Inp value={form.ref} onChange={e=>f("ref",e.target.value)} placeholder="CMD-001"/></FG>
+  const panel=open&&<SidePanel title={editing?"Modifier la commande":"Nouvelle commande"} onClose={()=>{setOpen(false);setEditing(null);setForm(EO);setLignesForm([{...EL}]);}}>    <FG label="Référence commande"><Inp value={form.ref} onChange={e=>f("ref",e.target.value)} placeholder="CMD-001"/></FG>
     <FG label="Date de commande"><Inp type="date" value={form.date} onChange={e=>f("date",e.target.value)}/></FG>
     <FG label="Date de livraison confirmée">
       <Inp type="date" value={form.dateLivraison||""} onChange={e=>f("dateLivraison",e.target.value)}/>
@@ -2920,20 +3595,138 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
         <option value="Chantier">Chantier — site du projet</option>
       </Sel>
     </FG>
-    <FG label="Article / désignation *"><Inp value={form.article} onChange={e=>f("article",e.target.value)} placeholder="Ex: Profilés keder 2m"/></FG>
     <FG label="Fournisseur *"><Sel value={form.fourn} onChange={e=>f("fourn",e.target.value)}><option value="">— Choisir —</option>{fournisseurs.rows.map(x=><option key={x.id}>{x.nom}</option>)}<option value="Autre">Autre</option></Sel></FG>
-    <FG label="Quantité"><Inp type="number" value={form.qty} onChange={e=>f("qty",e.target.value)} placeholder="0"/></FG>
-    <FG label="Unité"><Sel value={form.unit} onChange={e=>f("unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</Sel></FG>
-    <FG label="Prix unitaire (€)"><Inp type="number" value={form.prix} onChange={e=>f("prix",e.target.value)} placeholder="0.00"/></FG>
-    <FG label="Catégorie stock"><Sel value={form.cat} onChange={e=>f("cat",e.target.value)}><option value="">— Choisir —</option>{CATS.map(c=><option key={c}>{c}</option>)}</Sel></FG>
+
+    {/* ── Articles ── */}
+    <div style={{marginTop:8,marginBottom:4}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#1C1C1C",borderLeft:"3px solid #CC2222",paddingLeft:6,marginBottom:8}}>
+        Articles ({lignesForm.length})
+      </div>
+      {lignesForm.map((l,i)=>(
+        <div key={i} style={{background:"#F9F9F9",borderRadius:6,padding:"10px 10px 6px",marginBottom:8,border:"0.5px solid #EEEEEE",position:"relative"}}>
+          {lignesForm.length>1&&<button onClick={()=>removeLigne(i)} style={{position:"absolute",top:6,right:8,background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#CC2222"}}>✕</button>}
+          <div style={{fontSize:11,color:"#7A7A7A",marginBottom:6,fontWeight:600}}>Article {i+1}</div>
+          <FG label="Désignation *"><Inp value={l.article} onChange={e=>fl(i,"article",e.target.value)} placeholder="Ex: Profilés keder 2m"/></FG>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 80px 1fr",gap:6}}>
+            <FG label="Quantité"><Inp type="number" value={l.qty} onChange={e=>fl(i,"qty",e.target.value)} placeholder="0"/></FG>
+            <FG label="Unité"><Sel value={l.unit} onChange={e=>fl(i,"unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</Sel></FG>
+            <FG label="Prix unitaire (€)"><Inp type="number" value={l.prix} onChange={e=>fl(i,"prix",e.target.value)} placeholder="0.00"/></FG>
+          </div>
+          <FG label="Catégorie stock"><Sel value={l.cat||""} onChange={e=>fl(i,"cat",e.target.value)}><option value="">— Choisir —</option>{CATS.map(c=><option key={c}>{c}</option>)}</Sel></FG>
+          {l.qty>0&&l.prix>0&&<div style={{fontSize:11,color:"#2A7A2A",textAlign:"right",marginTop:2,fontWeight:600}}>
+            Sous-total : {(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")} €
+          </div>}
+        </div>
+      ))}
+      <button onClick={addLigne} style={{width:"100%",padding:"7px",borderRadius:4,border:"1px dashed #CC2222",background:"#FFF0F0",cursor:"pointer",fontSize:12,color:"#CC2222",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>
+        + Ajouter un article
+      </button>
+      {lignesForm.filter(l=>l.qty>0&&l.prix>0).length>1&&(
+        <div style={{textAlign:"right",marginTop:6,fontSize:12,fontWeight:700,color:"#1C1C1C"}}>
+          Total commande : {lignesForm.reduce((s,l)=>s+(+l.prix||0)*(+l.qty||0),0).toLocaleString("fr-FR")} €
+        </div>
+      )}
+    </div>
+
     <FG label="Projet lié"><Sel value={form.projet||""} onChange={e=>f("projet",e.target.value)}>
       <option value="">— Aucun —</option>{(projects?.rows||[]).map(p=><option key={p.id} value={p.name}>{p.name}</option>)}
     </Sel></FG>
     <FG label="Emplacement"><Inp value={form.loc} onChange={e=>f("loc",e.target.value)} placeholder="Ex: Rack B2"/></FG>
+    <FG label="Tags"><TagSelector tags={form.tags||""} onChange={v=>f("tags",v)} projetNom={form.projet} projects={projects}/></FG>
     <ErrMsg msg={err}/><PanelBtns onCancel={()=>{setOpen(false);setEditing(null);setForm(EO);}} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Créer la commande"}/>
   </SidePanel>;
 
   return <WithPanel panel={panel}>
+    <FiltreProjetTag projects={projects} filterProjet={filterProjet} setFilterProjet={setFilterProjet} filterTag={filterTag} setFilterTag={setFilterTag}/>
+    {/* ── Panel Import IA — Format texte structuré ── */}
+    {aiOpen&&<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.4)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget){setAiOpen(false);setAiPreview(null);setAiErr("");setAiText("");setNewFourn(false);}}}>      <div style={{background:"#fff",borderRadius:12,padding:24,width:560,maxWidth:"94vw",maxHeight:"90vh",overflow:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.18)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>🤖 Import IA — Scan de document</div>
+          <button onClick={()=>{setAiOpen(false);setAiPreview(null);setAiErr("");setAiText("");setNewFourn(false);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:"#7A7A7A"}}>✕</button>
+        </div>
+
+        {!aiPreview&&<>
+          <div style={{background:"#EBF3FF",borderRadius:8,padding:"10px 14px",marginBottom:12,fontSize:12,color:"#1A5DAB",lineHeight:1.7}}>
+            <div style={{fontWeight:700,marginBottom:4}}>Comment ça marche :</div>
+            1. Envoie l'image de ta facture/BL dans cette conversation Claude<br/>
+            2. Demande : "Génère le texte d'import pour BTP Manager"<br/>
+            3. Copie le texte généré et colle-le ci-dessous
+          </div>
+          <textarea
+            value={aiText||""}
+            onChange={e=>setAiText(e.target.value)}
+            placeholder={"Colle ici le texte généré par Claude...\n\nFormat attendu :\nFOURNISSEUR: Tecsound\nREF: 13014323\nDATE: 06/05/2026\n\nARTICLE: STICKSON COUPE 8KG/M2\nQTE: 38\nUNITE: m²\nPRIX: 13.25\nCAT: Membranes ETFE"}
+            style={{width:"100%",height:200,padding:"10px 12px",borderRadius:6,border:"1px solid #DDDDDD",fontSize:11,fontFamily:"'DM Mono',monospace",resize:"vertical",boxSizing:"border-box",color:"#1C1C1C",lineHeight:1.6}}
+          />
+          {aiErr&&<div style={{marginTop:8,fontSize:12,color:"#CC2222",padding:"8px 12px",background:"#FFF0F0",borderRadius:6}}>{aiErr}</div>}
+          <div style={{display:"flex",justifyContent:"flex-end",marginTop:10}}>
+            <button onClick={parseAndPreview} style={{padding:"8px 20px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:600}}>
+              Analyser →
+            </button>
+          </div>
+        </>}
+
+        {aiPreview&&<>
+          <div style={{fontSize:13,fontWeight:700,color:"#2A7A2A",marginBottom:12}}>✓ {aiPreview.lignes.length} article{aiPreview.lignes.length>1?"s":""} détecté{aiPreview.lignes.length>1?"s":""} — vérifiez avant de valider</div>
+
+          {/* Avertissement fournisseur inconnu */}
+          {aiPreview.formData.fourn&&!fournisseurs.rows.some(f=>f.nom.trim().toLowerCase()===aiPreview.formData.fourn.trim().toLowerCase())&&(
+            <div style={{background:"#FFF8EC",border:"1px solid #CC8800",borderLeft:"3px solid #CC8800",borderRadius:6,padding:"10px 14px",marginBottom:12}}>
+              <div style={{fontSize:12,fontWeight:700,color:"#CC8800",marginBottom:6}}>
+                ⚠ Fournisseur inconnu : "{aiPreview.formData.fourn}"
+              </div>
+              <div style={{fontSize:11,color:"#7A7A7A",marginBottom:8}}>Ce fournisseur n'existe pas encore dans ta base. Veux-tu le créer automatiquement ?</div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <input type="checkbox" checked={newFourn} onChange={e=>setNewFourn(e.target.checked)} id="new-fourn-check" style={{accentColor:"#CC8800",cursor:"pointer"}}/>
+                <label htmlFor="new-fourn-check" style={{fontSize:12,color:"#1C1C1C",cursor:"pointer"}}>Créer "{aiPreview.formData.fourn}" dans le module Fournisseurs</label>
+              </div>
+            </div>
+          )}
+
+          {/* Infos commande */}
+          <Bd style={{marginBottom:10}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#7A7A7A",marginBottom:6}}>COMMANDE</div>
+            {[
+              {lbl:"Fournisseur",val:aiPreview.formData.fourn},
+              {lbl:"Référence",val:aiPreview.formData.ref},
+              {lbl:"Date",val:aiPreview.formData.date?fmt(aiPreview.formData.date):""},
+              {lbl:"Livraison",val:aiPreview.formData.dateLivraison?fmt(aiPreview.formData.dateLivraison):""},
+              {lbl:"Lieu",val:aiPreview.formData.lieuLivraison},
+              {lbl:"Projet",val:aiPreview.formData.projet},
+            ].filter(x=>x.val).map((x,i)=>(
+              <div key={i} style={{display:"flex",gap:10,padding:"4px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+                <span style={{fontSize:11,color:"#7A7A7A",width:80,flexShrink:0}}>{x.lbl}</span>
+                <span style={{fontSize:12,color:"#1C1C1C",fontWeight:500}}>{x.val}</span>
+              </div>
+            ))}
+          </Bd>
+
+          {/* Articles */}
+          <Bd style={{marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#7A7A7A",marginBottom:6}}>ARTICLES</div>
+            {aiPreview.lignes.map((l,i)=>(
+              <div key={i} style={{padding:"6px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+                <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C"}}>{l.article}</div>
+                <div style={{fontSize:11,color:"#7A7A7A",display:"flex",gap:10,marginTop:2}}>
+                  {l.qty&&<span>{l.qty} {l.unit}</span>}
+                  {l.prix&&<span>{Number(l.prix).toLocaleString("fr-FR")} € /u</span>}
+                  {l.qty&&l.prix&&<span style={{color:"#2A7A2A",fontWeight:600}}>= {(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")} €</span>}
+                  {l.cat&&<span style={{background:"#F2F0ED",padding:"0 5px",borderRadius:3}}>{l.cat}</span>}
+                </div>
+              </div>
+            ))}
+            <div style={{textAlign:"right",marginTop:6,fontSize:12,fontWeight:700,color:"#1C1C1C"}}>
+              Total : {aiPreview.lignes.reduce((s,l)=>s+(+l.prix||0)*(+l.qty||0),0).toLocaleString("fr-FR")} €
+            </div>
+          </Bd>
+
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+            <button onClick={()=>{setAiPreview(null);setAiErr("");setNewFourn(false);}} style={{padding:"7px 16px",borderRadius:4,border:"1px solid #DDDDDD",background:"#fff",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#3A3A3A"}}>Corriger</button>
+            <button onClick={applyAiPreview} style={{padding:"8px 20px",borderRadius:4,border:"none",background:"#2A7A2A",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>Créer la commande →</button>
+          </div>
+        </>}
+      </div>
+    </div>}
     {/* Alerte livraisons en retard */}
     {livraisonsRetard.length>0&&<div style={{background:"#FFF0F0",border:"1px solid #FFCCCC",borderLeft:"4px solid #CC2222",borderRadius:8,padding:"10px 14px",marginBottom:14}}>
       <div style={{fontSize:13,fontWeight:700,color:"#CC2222",marginBottom:6}}>⚠ {livraisonsRetard.length} livraison{livraisonsRetard.length>1?"s":""} en retard — non reçue{livraisonsRetard.length>1?"s":""}</div>
@@ -2966,7 +3759,10 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
     <Bd style={{marginBottom:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <SecTitle>Commandes en cours</SecTitle>
-        <Btn primary onClick={()=>{setErr("");setEditing(null);setForm(EO);setOpen(true);}}>+ Nouvelle commande</Btn>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>{setAiPreview(null);setAiErr("");setAiOpen(true);}} style={{padding:"6px 12px",borderRadius:4,border:"1px solid #CC2222",background:"#FFF0F0",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#CC2222",fontWeight:600,display:"flex",alignItems:"center",gap:5}}>🤖 Import IA</button>
+          <Btn primary onClick={()=>{setErr("");setEditing(null);setForm(EO);setOpen(true);}}>+ Nouvelle commande</Btn>
+        </div>
       </div>
       {!encours.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune commande en cours.</div>}
       {encours.map(o=>{
@@ -2975,24 +3771,38 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
         <div key={o.id} style={{padding:"12px 0",borderBottom:"0.5px solid #EEEEEE",borderLeft:retard?"3px solid #CC2222":"none",paddingLeft:retard?8:0}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
             <div>
-              <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{o.article}</span>
-              {o.ref&&<span style={{fontSize:11,color:"#7A7A7A",marginLeft:8,fontFamily:"'DM Mono',monospace"}}>{o.ref}</span>}
+              <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{getLignes(o).length>1?`${getLignes(o).length} articles — ${o.ref||o.fourn}`:getLignes(o)[0].article}</span>
+              {o.ref&&getLignes(o).length<=1&&<span style={{fontSize:11,color:"#7A7A7A",marginLeft:8,fontFamily:"'DM Mono',monospace"}}>{o.ref}</span>}
               {retard&&<Badge label="Livraison en retard" bg="#FFF0F0" color="#CC2222" style={{marginLeft:8}}/>}
             </div>
             <div style={{display:"flex",gap:6}}>
-              <button onClick={()=>{setEditing(o.id);setForm({...o,qty:String(o.qty),prix:String(o.prix),date:toISO(o.date)||o.date,dateLivraison:o.dateLivraison?toISO(o.dateLivraison):"",lieuLivraison:o.lieuLivraison||"La Rochelle"});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Modifier</button>
+              <button onClick={()=>{setEditing(o.id);setForm({...o,qty:String(o.qty),prix:String(o.prix),date:toISO(o.date)||o.date,dateLivraison:o.dateLivraison?toISO(o.dateLivraison):"",lieuLivraison:o.lieuLivraison||"La Rochelle"});setLignesForm(getLignes(o).map(l=>({...l,qty:String(l.qty),prix:String(l.prix)})));setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Modifier</button>
               <button onClick={()=>sheet.remove(o.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
             </div>
           </div>
-          <div style={{fontSize:12,color:"#7A7A7A",marginBottom:8,display:"flex",gap:8,flexWrap:"wrap"}}>
-            <span>{o.fourn} · {o.qty} {o.unit}{o.prix>0&&` · ${(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €`} · {fmt(o.date)}</span>
+          <div style={{fontSize:12,color:"#7A7A7A",marginBottom:4,display:"flex",gap:8,flexWrap:"wrap"}}>
+            <span>{o.fourn} · Commandé le {fmt(o.date)}</span>
             {o.dateLivraison&&<span style={{color:retard?"#CC2222":"#2A7A2A",fontWeight:500}}>
               Livraison : {fmt(o.dateLivraison)}{retard&&` (${Math.abs(diffWorkDays(o.dateLivraison))}j retard)`}
               {o.lieuLivraison&&<span style={{marginLeft:6,background:o.lieuLivraison==="Chantier"?"#EBF3FF":"#F2F0ED",color:o.lieuLivraison==="Chantier"?"#1A5DAB":"#3A3A3A",fontSize:10,padding:"1px 6px",borderRadius:3,fontWeight:600}}>{o.lieuLivraison==="Chantier"?"📍 Chantier":"🏭 La Rochelle"}</span>}
             </span>}
             {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
           </div>
-          <Check checked={isBool(o.recue)} onChange={()=>toggleRecue(o)} label="Marquer comme reçue → ajout au stock" color="#2A7A2A"/>
+          {/* Lignes articles */}
+          {getLignes(o).map((l,i)=>(
+            <div key={i} style={{display:"flex",gap:8,padding:"3px 0",borderBottom:"0.5px solid #F5F5F5",alignItems:"center"}}>
+              <span style={{fontSize:11,color:"#1C1C1C",flex:1}}>{l.article}</span>
+              <span style={{fontSize:11,color:"#7A7A7A",whiteSpace:"nowrap"}}>{l.qty} {l.unit}</span>
+              {l.prix>0&&<span style={{fontSize:11,color:"#3A3A3A",whiteSpace:"nowrap",fontFamily:"'DM Mono',monospace"}}>{(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")} €</span>}
+            </div>
+          ))}
+          {getLignes(o).length>1&&<div style={{textAlign:"right",fontSize:11,fontWeight:700,color:"#1C1C1C",marginTop:3}}>
+            Total : {totalCommande(o).toLocaleString("fr-FR")} €
+          </div>}
+          <div style={{display:"flex",gap:16,flexWrap:"wrap",marginTop:6}}>
+            <Check checked={isBool(o.recue)} onChange={()=>toggleRecue(o)} label="Reçue → ajout au stock" color="#2A7A2A"/>
+            <Check checked={isBool(o.factureCompta)} onChange={()=>toggleFacture(o)} label="Facture reçue" color="#CC8800"/>
+          </div>
         </div>
         );
       })}
@@ -3011,7 +3821,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
             <Badge label="Reçue" bg="#F0FFF0" color="#2A7A2A"/>
           </div>
           <div style={{fontSize:12,color:"#7A7A7A",marginBottom:8,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-            <span>{o.fourn} · {o.qty} {o.unit}{o.prix>0&&` · ${(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €`} · {fmt(o.date)}</span>
+            <span>{o.fourn} · {fmt(o.date)} · {totalCommande(o)>0?totalCommande(o).toLocaleString("fr-FR")+" €":""}</span>
             {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
           </div>
           <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
@@ -3025,19 +3835,41 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
     {/* ── ZONE 3 : Historique archivé ── */}
     {historique.length>0&&<Bd>
       <SecTitle>Historique — archivées ({historique.length})</SecTitle>
-      {historique.map(o=>(
+      {(showAllHisto?historique:historique.slice(0,5)).map(o=>(
         <div key={o.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
           <div style={{flex:1}}>
-            <div style={{fontSize:13,color:"#7A7A7A",textDecoration:"line-through"}}>{o.article}</div>
-            <div style={{fontSize:11,color:"#7A7A7A",fontFamily:"'DM Mono',monospace",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-              <span>{o.fourn} · {fmt(o.date)}{o.prix>0&&` · ${(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €`}</span>
-              {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>{o.projet}</span>}
+            <div style={{fontSize:13,color:"#7A7A7A",textDecoration:"line-through"}}>{getLignes(o).length>1?`${getLignes(o).length} articles`:o.article}</div>
+            <div style={{fontSize:11,color:"#7A7A7A",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontFamily:"'DM Mono',monospace"}}>{o.fourn} · {fmt(o.date)}{totalCommande(o)>0&&` · ${totalCommande(o).toLocaleString("fr-FR")} €`}</span>
+              {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
             </div>
           </div>
           <Badge label="Reçue" bg="#F0FFF0" color="#2A7A2A"/>
           <Badge label="Compta ✓" bg="#F0FFF0" color="#2A7A2A"/>
+          <button onClick={()=>{setEditing(o.id);setForm({...o,qty:String(o.qty),prix:String(o.prix),date:toISO(o.date)||o.date,dateLivraison:o.dateLivraison?toISO(o.dateLivraison):"",lieuLivraison:o.lieuLivraison||"La Rochelle"});setLignesForm(getLignes(o).map(l=>({...l,qty:String(l.qty),prix:String(l.prix)})));setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif",flexShrink:0}}>Modifier</button>
+          <button onClick={async()=>{
+            if(!confirm(`Supprimer "${o.article||getLignes(o)[0]?.article}" de l'historique ?\n\nLes quantités seront retirées du stock.`))return;
+            const lignes=getLignes(o);
+            for(const l of lignes){
+              if(!l.article)continue;
+              const sx=stocks.rows.find(x=>x.ref.toLowerCase()===l.article.toLowerCase());
+              if(sx){await stocks.update(sx.id,{...sx,qty:Math.max(0,Number(sx.qty)-(+l.qty||0))});}
+            }
+            if(o.dateLivraison&&events){const evLivr=events.rows.find(e=>e.type==="livraison"&&(e.title||"").includes(o.article||getLignes(o)[0]?.article||"")&&toISO(e.date)===toISO(o.dateLivraison));if(evLivr)await events.remove(evLivr.id);}
+            await sheet.remove(o.id);
+          }} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#CC2222",flexShrink:0}}>✕</button>
         </div>
       ))}
+      {!showAllHisto&&historique.length>5&&(
+        <div onClick={()=>setShowAllHisto(true)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#1A5DAB",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+          ↓ Voir les {historique.length-5} autres ({historique.length} au total)
+        </div>
+      )}
+      {showAllHisto&&historique.length>5&&(
+        <div onClick={()=>setShowAllHisto(false)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#7A7A7A",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+          ↑ Réduire
+        </div>
+      )}
     </Bd>}
   </WithPanel>;
 }
@@ -3139,7 +3971,7 @@ function App(){
         {panel==="chantier"       &&<MissionModule moduleType="chantier" sheet={atelierChantier} projects={projects} team={team} stocks={stocks} events={events} orders={orders}/>}
         {panel==="prestataires"   &&<Prestataires sheet={prestataires} missions={prestMissions} projects={projects} stocks={stocks} events={events}/>}
         {panel==="fournisseurs"   &&<Fournisseurs sheet={fournisseurs}/>}
-        {panel==="stocks"         &&<Stocks sheet={stocks} fournisseurs={fournisseurs}/>}
+        {panel==="stocks"         &&<Stocks sheet={stocks} fournisseurs={fournisseurs} projects={projects} orders={orders}/>}
         {panel==="commandes"      &&<Commandes sheet={orders} stocks={stocks} fournisseurs={fournisseurs} projects={projects} events={events}/>}
       </div>
       {/* Footer */}
