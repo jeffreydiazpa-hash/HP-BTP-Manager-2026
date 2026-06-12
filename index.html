@@ -42,7 +42,7 @@
 const { useState, useEffect, useCallback } = React;
 
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v2.4.5-secure";
+const VERSION = "v2.6.0";
 
 // ── Système d'authentification ──
 // Token stocké en mémoire uniquement, expire toutes les 5 minutes
@@ -425,7 +425,7 @@ function calcAvancement(p, atelierChantier){
 // Compte TOUTES les commandes et prestations assignées au projet
 // Ne PAS filtrer ici par statut projet — chaque appelant applique sa propre règle
 function calcDepensesProjet(p, orders, prestMissions){
-  const isBool=v=>v===true||v==="TRUE";
+  const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
   const normP=s=>String(s||"").trim().toLowerCase();
   const projCmd=(orders?.rows||[]).filter(o=>normP(o.projet)===normP(p.name)||o.projet===String(p.id));
   const cmdEngagees=projCmd.reduce((s,o)=>s+(+o.prix||0)*(+o.qty||0),0);
@@ -441,7 +441,7 @@ function Dashboard({sheets}){
   const {projects,tasks,stocks,orders,events,prestMissions,atelierChantier}=sheets;
   const pending=tasks.rows.filter(t=>!t.done&&t.done!=="TRUE");
   const isDone=t=>t.done===true||t.done==="TRUE";
-  const isBool=v=>v===true||v==="TRUE";
+  const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
   async function toggleTask(t){await tasks.update(t.id,{...t,done:!isDone(t)});}
 
   // Séparation claire retard / urgent
@@ -883,7 +883,7 @@ function Dashboard({sheets}){
               const jours=diffWorkDays(m.dateDebut);
               return deps.map(dep=>{
                 let statut="ok";
-                if(dep.type==="stock"){const s=stocks.rows.find(x=>x.ref===dep.ref);statut=(s&&Number(s.qty)>=(Number(dep.qty)||1))?"ok":"manque";}
+                if(dep.type==="stock"){const s=stocks.rows.find(x=>normRef(x.ref)===normRef(dep.ref));statut=(s&&Number(s.qty)>=(Number(dep.qty)||1))?"ok":"manque";}
                 else if(dep.type==="commande"){const o=orders.rows.find(x=>Number(x.id)===Number(dep.id));statut=isBoolD(o?.recue)?"ok":"attente";}
                 else if(dep.type==="atelier"){const a=(atelierChantier?.rows||[]).find(x=>Number(x.id)===Number(dep.id));statut=a?.statut==="terminé"?"ok":"attente";}
                 if(statut==="ok")return null;
@@ -1077,6 +1077,20 @@ function FiltreProjetTag({projects,filterProjet,setFilterProjet,filterTag,setFil
   );
 }
 
+// ── Normalisation des refs stock : UNE SEULE méthode partout ──
+function normRef(s){return String(s||"").trim().toLowerCase().replace(/\s+/g," ");}
+
+// Parse les pièces stock d'une mission (nouveau format JSON ou ancien stockRef/stockQty)
+function getMissionStockItems(m){
+  // Si stockItems est défini (même vide []), c'est la source de vérité — ignorer stockRef
+  if(m.stockItems!==undefined&&m.stockItems!==null&&m.stockItems!==""){
+    try{const p=JSON.parse(m.stockItems);if(Array.isArray(p))return p.filter(x=>x.ref&&x.qty);}catch(e){}
+  }
+  // Fallback legacy : ancien champ stockRef (missions avant le multi-pièces)
+  if(m.stockRef)return [{ref:m.stockRef,qty:Number(m.stockQty)||1}];
+  return[];
+}
+
 const EP={name:"",statut:"en cours",avancement:0,equipe:0,budget:"",depense:"",client:"",lieu:"",note:"",ingenieur:"",tags:""};
 function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierChantier,team}){
   const [open,setOpen]=useState(false);
@@ -1091,7 +1105,7 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
   const [editingOrder,setEditingOrder]=useState(null);
   const [orderForm,setOrderForm]=useState({});
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
-  const isBool=v=>v===true||v==="TRUE";
+  const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
 
   function openDetail(id){
     setOpen(false);
@@ -1221,7 +1235,7 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
       .sort((a,b)=>toISO(a.dateDebut||"").localeCompare(toISO(b.dateDebut||"")));
     const projChantier=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name&&m.type==="chantier")
       .sort((a,b)=>toISO(a.dateDebut||"").localeCompare(toISO(b.dateDebut||"")));
-    const projStocks=stocks.rows.filter(s=>projOrders.some(o=>o.article&&s.ref&&o.article.toLowerCase()===s.ref.toLowerCase()));
+    const projStocks=stocks.rows.filter(s=>projOrders.some(o=>o.article&&s.ref&&normRef(o.article)===normRef(s.ref)));
 
     const sc=statutColor(p.statut);
     const dep=calcDepensesReelles(p);
@@ -1233,7 +1247,7 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
     const sbMission=s=>({planifié:{bg:"#F2F0ED",tx:"#3A3A3A"},"en cours":{bg:"#FFF0F0",tx:"#CC2222"},terminé:{bg:"#F0FFF0",tx:"#2A7A2A"}}[s]||{bg:"#F2F0ED",tx:"#3A3A3A"});
 
     function exportPDF(){
-      const isBool=v=>v===true||v==="TRUE";
+      const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
       const dateAujourdhui=new Date().toLocaleDateString("fr-FR");
       const ref=`Réf. HP-${String(p.id).padStart(4,"0")}-${new Date().getFullYear()}`;
       const equipeAutoPDF=calcEquipeAuto(p);
@@ -1448,7 +1462,6 @@ ${sections}
         {/* Avancement composite */}
         {(()=>{
           const av2=calcAvancement(p,atelierChantier);
-          if(av2.facteurs.length<=1&&av2.facteurs[0]?.lbl==="Études")return null;
           const cols=["#1A5DAB","#CC8800","#2A7A2A"];
           return(
             <Bd style={{marginBottom:14}}>
@@ -1749,9 +1762,9 @@ ${sections}
 
 // ══ PRESTATAIRES ══
 const EPREST={nom:"",specialite:"",contact:"",tel:"",note:""};
-const EPREST_MISSION={prestataire:"",projet:"",description:"",dateDebut:"",dateFin:"",prix:"",statut:"planifié",stockRef:"",stockQty:"",tags:""};
+const EPREST_MISSION={prestataire:"",projet:"",description:"",dateDebut:"",dateFin:"",prix:"",statut:"planifié",stockRef:"",stockQty:"",tags:"",stockItems:""};
 
-function Prestataires({sheet,missions,projects,stocks,events}){
+function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
   const [filterProjet,setFilterProjet]=useState("");
   const [filterTag,setFilterTag]=useState("");
   const [open,setOpen]=useState(false);
@@ -1760,6 +1773,8 @@ function Prestataires({sheet,missions,projects,stocks,events}){
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
   const [missionOpen,setMissionOpen]=useState(false);
+  const [stockModalPrest,setStockModalPrest]=useState(null);
+  const [savingStockPrest,setSavingStockPrest]=useState(false);
   const [missionForm,setMissionForm]=useState(EPREST_MISSION);
   const [missionEditing,setMissionEditing]=useState(null);
   const [savingM,setSavingM]=useState(false);
@@ -1799,19 +1814,37 @@ function Prestataires({sheet,missions,projects,stocks,events}){
         // Si la mission est déjà terminée et qu'on ajoute/modifie une pièce stock → déduire du stock
         const ancienne=missions.rows.find(x=>Number(x.id)===Number(missionEditing));
         if(ancienne&&ancienne.statut==="terminé"){
-          const ancRef=ancienne.stockRef||"";
-          const ancQty=Number(ancienne.stockQty)||0;
-          const newRef=missionForm.stockRef||"";
-          const newQty=Number(missionForm.stockQty)||0;
-          // Remettre l'ancienne pièce si elle existait
-          if(ancRef&&ancQty>0){
-            const sAnc=stocks.rows.find(x=>x.ref===ancRef);
-            if(sAnc)await stocks.update(sAnc.id,{...sAnc,qty:Number(sAnc.qty)+ancQty});
-          }
-          // Déduire la nouvelle pièce
-          if(newRef&&newQty>0){
-            const sNew=stocks.rows.find(x=>x.ref===newRef);
-            if(sNew)await stocks.update(sNew.id,{...sNew,qty:Math.max(0,Number(sNew.qty)-newQty)});
+          const ancItems=getMissionStockItems(ancienne);
+          let newItemsSave=[];
+          try{newItemsSave=missionForm.stockItems?JSON.parse(missionForm.stockItems):(missionForm.stockRef?[{ref:missionForm.stockRef,qty:+missionForm.stockQty||1}]:[]);}catch(e){}
+          const ancStr=JSON.stringify(ancItems.map(x=>normRef(x.ref)+"_"+x.qty).sort());
+          const newStr=JSON.stringify(newItemsSave.map(x=>normRef(x.ref)+"_"+x.qty).sort());
+          if(ancStr!==newStr){
+            // SNAPSHOT avant toute mutation
+            const snap=[...stocks.rows];
+            // Vérifier disponibilité D'ABORD
+            for(const it of newItemsSave){
+              if(!it.ref||!it.qty)continue;
+              const ancQty=ancItems.find(a=>normRef(a.ref)===normRef(it.ref))?.qty||0;
+              const sN=snap.find(x=>normRef(x.ref)===normRef(it.ref));
+              const dispoApresRemise=(sN?Number(sN.qty):0)+Number(ancQty);
+              if(dispoApresRemise<Number(it.qty)){
+                setErrM(`Stock insuffisant pour "${it.ref}" : ${dispoApresRemise} disponible, ${it.qty} demandé`);
+                setSavingM(false);return;
+              }
+            }
+            // Remettre les anciennes pièces (lecture depuis snap)
+            for(const it of ancItems){
+              if(!it.ref||!it.qty)continue;
+              await updateStockQty(stocks,snap,it.ref,+it.qty,{type:"correction",label:`Annulation mission : ${missionForm.description}`});
+            }
+            // Snapshot mis à jour manuellement pour les déductions
+            const snap2=snap.map(s=>ancItems.find(a=>normRef(a.ref)===normRef(s.ref))?{...s,qty:Number(s.qty)+(ancItems.find(a=>normRef(a.ref)===normRef(s.ref))?.qty||0)}:s);
+            // Déduire les nouvelles pièces (lecture depuis snap2)
+            for(const it of newItemsSave){
+              if(!it.ref||!it.qty)continue;
+              await updateStockQty(stocks,snap2,it.ref,-it.qty,{type:"prestation",label:missionForm.description,projet:missionForm.projet});
+            }
           }
         }
         await missions.update(missionEditing,item);
@@ -1845,17 +1878,55 @@ function Prestataires({sheet,missions,projects,stocks,events}){
 
   async function terminerMission(m){
     if(!confirm(`Marquer la prestation "${m.description}" comme terminée ?`))return;
-    // Met à jour le stock si une pièce est liée
-    if(m.stockRef&&m.stockQty>0){
-      const s=stocks.rows.find(x=>x.ref===m.stockRef);
-      if(s){await stocks.update(s.id,{...s,qty:Math.max(0,Number(s.qty)-Number(m.stockQty)),historique:true});}
-    }
-    // Met à jour les dépenses du projet
-    if(m.projet&&m.prix>0){
-      const p=projects.rows.find(x=>x.name===m.projet);
-      if(p){await projects.update(p.id,{...p,depense:(Number(p.depense)||0)+Number(m.prix)});}
-    }
-    await missions.update(m.id,{...m,statut:"terminé"});
+    // Ouvrir le modal de création stock (même logique que missions atelier/chantier)
+    setStockModalPrest({mission:m, stockForm:{
+      ref:m.description,
+      qty:1,
+      unit:"pcs",
+      cat:"Autre",
+      prix:0,
+      loc:"",
+      origine:`Fabriqué par ${m.prestataire||"prestataire"}`,
+    }});
+  }
+
+  async function confirmerTerminaisonPrest(m, creerStock, sf, dejaTermine){
+    setSavingStockPrest(true);
+    try{
+      const stockItems=getMissionStockItems(m);
+      // SNAPSHOT avant toute mutation
+      const snap=[...stocks.rows];
+      if(!dejaTermine){
+        // Vérifier disponibilité avec snapshot
+        for(const it of stockItems){
+          if(!it.ref||!it.qty)continue;
+          const chk=checkStockDispo(snap,it.ref,it.qty);
+          if(!chk.ok){alert(chk.msg);setSavingStockPrest(false);setStockModalPrest(null);return;}
+        }
+      }
+      // Créer/mettre à jour l'article stock produit
+      if(creerStock&&sf&&sf.ref){
+        const existe=snap.find(s=>normRef(s.ref)===normRef(sf.ref));
+        if(existe){
+          await stocks.update(existe.id,{...existe,qty:Number(existe.qty)+(+sf.qty||1),origine:sf.origine||existe.origine||""});
+        } else {
+          await stocks.add({ref:sf.ref,cat:sf.cat||"Autre",qty:+sf.qty||1,min:+sf.min||0,unit:sf.unit||"pcs",prix:+sf.prix||0,loc:sf.loc||"",fourn:sf.fourn||"",note:sf.note||"",tags:sf.tags||"",origine:sf.origine||"",prixRevient:+sf.prixRevient||0,projet:sf.projet||"",historique:JSON.stringify([{date:TODAY,type:"prestation",label:`Produit par prestation : ${m.description}`,projet:m.projet||"",prestataire:m.prestataire||"",qty:+sf.qty||1,qtyApres:+sf.qty||1}])});
+        }
+      }
+      if(!dejaTermine){
+        // Déduire les pièces consommées depuis snapshot
+        for(const it of stockItems){
+          if(!it.ref||!it.qty)continue;
+          await updateStockQty(stocks,snap,it.ref,-Number(it.qty),{type:"prestation",label:m.description,projet:m.projet||"",prestataire:m.prestataire||""});
+        }
+        if(m.projet&&m.prix>0){
+          const p=projects.rows.find(x=>x.name===m.projet);
+          if(p){await projects.update(p.id,{...p,depense:(Number(p.depense)||0)+Number(m.prix)});}
+        }
+        await missions.update(m.id,{...m,statut:"terminé"});
+      }
+    }catch(e){alert("Erreur : "+e.message);}
+    setSavingStockPrest(false);setStockModalPrest(null);
   }
 
   const statutBadgePrest=(s)=>({
@@ -1875,10 +1946,26 @@ function Prestataires({sheet,missions,projects,stocks,events}){
     <FG label="Date début"><Inp type="date" value={missionForm.dateDebut} onChange={e=>fm("dateDebut",e.target.value)}/></FG>
     <FG label="Date fin prévue"><Inp type="date" value={missionForm.dateFin} onChange={e=>fm("dateFin",e.target.value)}/></FG>
     <FG label="Prix de la prestation (€)"><Inp type="number" value={missionForm.prix} onChange={e=>fm("prix",e.target.value)} placeholder="0.00"/></FG>
-    <FG label="Pièce stock liée"><Sel value={missionForm.stockRef} onChange={e=>fm("stockRef",e.target.value)}>
-      <option value="">— Aucune —</option>{stocks.rows.map(s=><option key={s.id}>{s.ref}</option>)}
-    </Sel></FG>
-    {missionForm.stockRef&&<FG label="Quantité utilisée"><Inp type="number" value={missionForm.stockQty} onChange={e=>fm("stockQty",e.target.value)} placeholder="0"/></FG>}
+    <FG label="Pièces stock utilisées">
+      {(()=>{
+        let items=[];
+        try{items=missionForm.stockItems?JSON.parse(missionForm.stockItems):(missionForm.stockRef?[{ref:missionForm.stockRef,qty:+missionForm.stockQty||1}]:[]);}catch(e){}
+        const setItems=arr=>fm("stockItems",JSON.stringify(arr)); // ne pas filtrer pendant édition
+        return(<>
+          {items.map((it,i)=>(
+            <div key={i} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
+              <Sel value={it.ref} onChange={e=>{const a=[...items];a[i]={...a[i],ref:e.target.value};setItems(a);}}>
+                <option value="">— Choisir —</option>
+                {(missionEditing&&missionForm.statut==="terminé"?stocks.rows:stocks.rows.filter(s=>Number(s.qty)>0)).map(s=><option key={s.id} value={s.ref}>{s.ref} ({s.qty} {s.unit})</option>)}
+              </Sel>
+              <Inp type="number" value={it.qty} onChange={e=>{const a=[...items];a[i]={...a[i],qty:+e.target.value||1};setItems(a);}} placeholder="Qté" style={{width:70,flexShrink:0}}/>
+              <button onClick={()=>setItems(items.filter((_,j)=>j!==i))} style={{background:"none",border:"none",cursor:"pointer",color:"#CC2222",fontSize:14,flexShrink:0}}>✕</button>
+            </div>
+          ))}
+          <button onClick={()=>setItems([...items,{ref:"",qty:1}])} style={{width:"100%",padding:"6px",borderRadius:4,border:"1px dashed #CC2222",background:"#FFF0F0",cursor:"pointer",fontSize:12,color:"#CC2222",fontFamily:"'DM Sans',sans-serif"}}>+ Ajouter une pièce</button>
+        </>);
+      })()}
+    </FG>
     <FG label="Statut"><Sel value={missionForm.statut} onChange={e=>fm("statut",e.target.value)}>
       <option value="planifié">Planifié</option><option value="en cours">En cours</option><option value="terminé">Terminé</option>
     </Sel></FG>
@@ -1904,11 +1991,10 @@ function Prestataires({sheet,missions,projects,stocks,events}){
   const mTerminees=missions.rows.filter(m=>m.statut==="terminé").sort((a,b)=>toISO(b.dateFin||b.dateDebut||"").localeCompare(toISO(a.dateFin||a.dateDebut||"")));
 
   // ── Finances globales prestations — filtrées si projet actif ──
-  const norm=s=>String(s||"").trim().toLowerCase();
-  const missionsFin=filterProjet?missions.rows.filter(m=>norm(m.projet)===norm(filterProjet)):missions.rows;
+  const missionsFin=filterProjet?missions.rows.filter(m=>normRef(m.projet)===normRef(filterProjet)):missions.rows;
   const totalPrest=missionsFin.reduce((s,m)=>s+Number(m.prix||0),0);
   const parPrest=sheet.rows.map(p=>{
-    const pmiss=missionsFin.filter(m=>norm(m.prestataire)===norm(p.nom));
+    const pmiss=missionsFin.filter(m=>normRef(m.prestataire)===normRef(p.nom));
     const total=pmiss.reduce((s,m)=>s+Number(m.prix||0),0);
     const nb=pmiss.length;
     const pct=totalPrest>0&&total>0?Math.round(total/totalPrest*100):0;
@@ -1919,7 +2005,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
   if(detail){
     const p=sheet.rows.find(x=>Number(x.id)===Number(detail));
     if(!p){setDetail(null);return null;}
-    const pmissions=missions.rows.filter(m=>norm(m.prestataire)===norm(p.nom)).sort((a,b)=>toISO(b.dateDebut||"").localeCompare(toISO(a.dateDebut||"")));
+    const pmissions=missions.rows.filter(m=>normRef(m.prestataire)===normRef(p.nom)).sort((a,b)=>toISO(b.dateDebut||"").localeCompare(toISO(a.dateDebut||"")));
     const totalD=pmissions.reduce((s,m)=>s+Number(m.prix||0),0);
     const terminees=pmissions.filter(m=>m.statut==="terminé");
     const actives=pmissions.filter(m=>m.statut!=="terminé");
@@ -1960,6 +2046,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{m.description}</div>
                 <div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet}{m.dateDebut&&` · ${fmt(m.dateDebut)}${m.dateFin?` → ${fmt(m.dateFin)}`:""}`}</div>
+                {getMissionStockItems(m).length>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:2}}>🔩 {getMissionStockItems(m).map(it=>`${it.ref} ×${it.qty}`).join(" · ")}</div>}
               </div>
               {m.prix>0&&<span style={{fontSize:12,fontWeight:700,color:"#CC2222"}}>{Number(m.prix).toLocaleString("fr-FR")} €</span>}
               <Badge label={m.statut} bg={s.bg} color={s.tx}/>
@@ -1975,6 +2062,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
               <div style={{flex:1}}>
                 <div style={{fontSize:13,color:"#3A3A3A"}}>{m.description}</div>
                 <div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet}{m.dateFin&&` · ${fmt(m.dateFin)}`}</div>
+                {getMissionStockItems(m).length>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:2}}>🔩 {getMissionStockItems(m).map(it=>`${it.ref} ×${it.qty}`).join(" · ")}</div>}
               </div>
               {m.prix>0&&<span style={{fontSize:12,fontWeight:700,color:"#2A7A2A"}}>{Number(m.prix).toLocaleString("fr-FR")} €</span>}
               <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
@@ -2000,6 +2088,16 @@ function Prestataires({sheet,missions,projects,stocks,events}){
 
   return <WithPanel panel={activePanel}>
     {/* Modal partage prestataire */}
+    {stockModalPrest&&<ModalStockTerminaison
+      mission={stockModalPrest.mission}
+      moduleType="prestation"
+      onCancel={()=>setStockModalPrest(null)}
+      onConfirm={(creer,sf)=>confirmerTerminaisonPrest(stockModalPrest.mission,creer,sf,stockModalPrest.dejaTermine)}
+      saving={savingStockPrest}
+      stocks={stocks}
+      projects={projects}
+      fournisseurs={fournisseurs||{rows:[]}}
+    />}
     {partageId&&(()=>{const px=sheet.rows.find(x=>x.id===partageId);return px&&(
       <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.4)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget){setPartageId(null);setCopied(false);}}}>
         <div style={{background:"#fff",borderRadius:12,padding:24,width:400,maxWidth:"90vw",boxShadow:"0 8px 32px rgba(0,0,0,0.18)"}}>
@@ -2055,7 +2153,7 @@ function Prestataires({sheet,missions,projects,stocks,events}){
               {m.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 7px",borderRadius:4}}>{m.projet}</span>}
             </div>
             <div style={{fontSize:12,color:"#7A7A7A",marginTop:3}}>{m.dateDebut&&`Du ${fmt(m.dateDebut)}`}{m.dateFin&&` au ${fmt(m.dateFin)}`}</div>
-            {m.stockRef&&<div style={{fontSize:12,color:"#7A7A7A"}}>Pièce : {m.stockRef} × {m.stockQty}</div>}
+            {getMissionStockItems(m).length>0&&<div style={{fontSize:11,color:"#7A7A7A"}}>Pièces : {getMissionStockItems(m).map(it=>`${it.ref} ×${it.qty}`).join(", ")}</div>}
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             <Badge label={m.statut} bg={sb2.bg} color={sb2.tx}/>
@@ -2083,12 +2181,14 @@ function Prestataires({sheet,missions,projects,stocks,events}){
                 {m.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 7px",borderRadius:4}}>{m.projet}</span>}
                 {m.dateFin&&<span style={{fontSize:11,color:"#7A7A7A"}}>{fmt(m.dateFin)}</span>}
               </div>
+              {getMissionStockItems(m).length>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:3}}>🔩 {getMissionStockItems(m).map(it=>`${it.ref} ×${it.qty}`).join(" · ")}</div>}
             </div>
             {m.prix>0&&<span style={{fontSize:12,fontWeight:700,color:"#2A7A2A"}}>{Number(m.prix).toLocaleString("fr-FR")} €</span>}
             <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
           </div>
           <div style={{display:"flex",gap:6}}>
             <Btn small onClick={()=>{setMissionEditing(m.id);setMissionForm({...m,prix:String(m.prix),stockQty:String(m.stockQty)});setErrM("");setOpen(false);setMissionOpen(true);}}>Modifier</Btn>
+            <Btn small onClick={()=>setStockModalPrest({mission:m,dejaTermine:true,stockForm:{ref:m.description,qty:1,unit:"pcs",cat:"Autre",prix:0,loc:"",origine:`Fabriqué par ${m.prestataire||"prestataire"}`}})}>📦</Btn>
             <Btn small danger onClick={()=>missions.remove(m.id)}>Suppr.</Btn>
           </div>
         </Bd>
@@ -2144,7 +2244,104 @@ function Prestataires({sheet,missions,projects,stocks,events}){
 }
 
 // ══ ATELIER / CHANTIER (module générique) ══
-const EMISSION={type:"",projet:"",description:"",membres:[],stockRef:"",stockQty:"",dateDebut:"",dateFin:"",statut:"planifié",note:"",tags:""};
+// Composant modal pour créer un article stock à la terminaison d'une mission
+function ModalStockTerminaison({mission,moduleType,onCancel,onConfirm,saving,stocks,projects,fournisseurs}){
+  // Calcul du coût de revient automatique
+  const coutMatieres=(getMissionStockItems(mission)||[]).reduce((sum,it)=>{
+    const s=(stocks?.rows||[]).find(x=>normRef(x.ref)===normRef(it.ref));
+    return sum+(Number(s?.prix)||0)*Number(it.qty||0);
+  },0);
+  const coutMO=Number(mission.prix)||0;
+
+  const [creer,setCreer]=useState(true);
+  const [sf,setSf]=useState({
+    ref:mission.description,
+    qty:1,
+    unit:"pcs",
+    cat:moduleType==="atelier"?"Consommables atelier":moduleType==="chantier"?"Autre":"Autre",
+    prix:0,
+    min:0,
+    loc:moduleType==="atelier"?"Atelier":"",
+    origine:moduleType==="atelier"?"Fabriqué à l'atelier":moduleType==="chantier"?"Fabriqué en chantier":`Fabriqué par ${mission.prestataire||"prestataire"}`,
+    prixRevient:0,
+    fourn:"",
+    note:"",
+    projet:mission.projet||"",
+    tags:"",
+  });
+  const fSf=(k,v)=>setSf(x=>({...x,[k]:v}));
+
+  const coutTotal=coutMatieres+coutMO;
+  const prixRevientAuto=sf.qty>0?Math.round((coutTotal/sf.qty)*100)/100:0;
+
+  return(
+    <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.5)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:12,padding:24,width:460,maxWidth:"94vw",maxHeight:"90vh",overflow:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+        <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C",marginBottom:4}}>Mission terminée ✓</div>
+        <div style={{fontSize:12,color:"#7A7A7A",marginBottom:12}}>"{mission.description}"</div>
+
+        {/* Récap coût de revient */}
+        {coutTotal>0&&<div style={{background:"#F9F9F9",border:"0.5px solid #EEEEEE",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:12}}>
+          <div style={{fontWeight:700,color:"#1C1C1C",marginBottom:6}}>Coût de revient calculé</div>
+          {coutMatieres>0&&<div style={{display:"flex",justifyContent:"space-between",color:"#3A3A3A",marginBottom:2}}>
+            <span>Matières utilisées</span><span style={{fontFamily:"'DM Mono',monospace"}}>{coutMatieres.toLocaleString("fr-FR")} €</span>
+          </div>}
+          {coutMO>0&&<div style={{display:"flex",justifyContent:"space-between",color:"#3A3A3A",marginBottom:2}}>
+            <span>Main d'œuvre / prestation</span><span style={{fontFamily:"'DM Mono',monospace"}}>{coutMO.toLocaleString("fr-FR")} €</span>
+          </div>}
+          <div style={{display:"flex",justifyContent:"space-between",fontWeight:700,color:"#CC2222",borderTop:"0.5px solid #DDDDDD",paddingTop:6,marginTop:4}}>
+            <span>Total</span><span style={{fontFamily:"'DM Mono',monospace"}}>{coutTotal.toLocaleString("fr-FR")} €</span>
+          </div>
+          {sf.qty>0&&<div style={{fontSize:11,color:"#7A7A7A",marginTop:4}}>→ {prixRevientAuto.toLocaleString("fr-FR")} € / {sf.unit} ({sf.qty} {sf.unit} produit{sf.qty>1?"s":""})</div>}
+        </div>}
+
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:creer?14:0,padding:"10px 12px",background:"#F9F9F9",borderRadius:6,cursor:"pointer"}} onClick={()=>setCreer(v=>!v)}>
+          <input type="checkbox" checked={creer} onChange={()=>{}} style={{accentColor:"#CC2222",cursor:"pointer"}}/>
+          <span style={{fontSize:13,fontWeight:600,color:"#1C1C1C"}}>Créer / mettre à jour un article dans le stock</span>
+        </div>
+        {creer&&<div style={{marginTop:10}}>
+          <FG label="Désignation (ref stock)"><Inp value={sf.ref} onChange={e=>fSf("ref",e.target.value)}/></FG>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <FG label="Quantité produite"><Inp type="number" value={sf.qty} onChange={e=>fSf("qty",+e.target.value||1)} placeholder="1"/></FG>
+            <FG label="Unité"><Sel value={sf.unit} onChange={e=>fSf("unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</Sel></FG>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <FG label="Seuil d'alerte"><Inp type="number" value={sf.min} onChange={e=>fSf("min",+e.target.value||0)} placeholder="0"/></FG>
+            <FG label="Catégorie"><Sel value={sf.cat} onChange={e=>fSf("cat",e.target.value)}><option value="">— Choisir —</option>{CATS.map(c=><option key={c}>{c}</option>)}</Sel></FG>
+          </div>
+          <FG label="Prix de vente (€)"><Inp type="number" value={sf.prix} onChange={e=>fSf("prix",+e.target.value||0)} placeholder="0"/></FG>
+          <FG label={`Coût de revient / unité (€)${coutTotal>0?" · calculé automatiquement":""}`}>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <Inp type="number" value={sf.prixRevient!==undefined?sf.prixRevient:prixRevientAuto} onChange={e=>fSf("prixRevient",+e.target.value||0)} placeholder={String(prixRevientAuto)} style={{flex:1}}/>
+              {coutTotal>0&&<button onClick={()=>fSf("prixRevient",prixRevientAuto)} style={{padding:"6px 10px",borderRadius:4,border:"1px solid #DDDDDD",background:"#F9F9F9",cursor:"pointer",fontSize:11,color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif",flexShrink:0,whiteSpace:"nowrap"}}>⟳ Recalc.</button>}
+            </div>
+            <div style={{fontSize:10,color:"#7A7A7A",marginTop:3}}>Informatif uniquement — non comptabilisé dans les finances</div>
+          </FG>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <FG label="Emplacement"><Inp value={sf.loc} onChange={e=>fSf("loc",e.target.value)} placeholder="Ex: Rack A1"/></FG>
+            <FG label="Projet lié"><Sel value={sf.projet||""} onChange={e=>fSf("projet",e.target.value)}>
+              <option value="">— Aucun —</option>
+              {(projects?.rows||[]).map(p=><option key={p.id} value={p.name}>{p.name}</option>)}
+            </Sel></FG>
+          </div>
+          <FG label="Tags"><Inp value={sf.tags||""} onChange={e=>fSf("tags",e.target.value)} placeholder="Ex: Complexe Enveloppe (tags du projet auto-suggérés)"/>
+            {(()=>{const p=(projects?.rows||[]).find(x=>x.name===sf.projet);const pt=(p?.tags||"").split(",").map(t=>t.trim()).filter(Boolean);return pt.length>0&&sf.tags===sf.tags&&<div style={{display:"flex",gap:4,flexWrap:"wrap",marginTop:4}}>{pt.map((t,i)=><span key={i} onClick={()=>fSf("tags",sf.tags?sf.tags+","+t:t)} style={{fontSize:10,background:"#EBF3FF",color:"#1A5DAB",padding:"2px 6px",borderRadius:10,cursor:"pointer"}}>+ {t}</span>)}</div>;})()}
+          </FG>
+          <FG label="Origine"><Inp value={sf.origine||""} onChange={e=>fSf("origine",e.target.value)}/></FG>
+          <FG label="Note"><Inp value={sf.note||""} onChange={e=>fSf("note",e.target.value)} placeholder="Optionnel"/></FG>
+        </div>}
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}}>
+          <button onClick={onCancel} style={{padding:"8px 16px",borderRadius:4,border:"1px solid #DDDDDD",background:"#fff",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#3A3A3A"}}>Annuler</button>
+          <button onClick={()=>onConfirm(creer,{...sf,prixRevient:sf.prixRevient!==undefined?sf.prixRevient:prixRevientAuto})} disabled={saving} style={{padding:"8px 20px",borderRadius:4,border:"none",background:"#2A7A2A",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>
+            {saving?"...":"✓ Terminer la mission"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const EMISSION={type:"",projet:"",description:"",membres:[],stockRef:"",stockQty:"",dateDebut:"",dateFin:"",statut:"planifié",note:"",tags:"",stockItems:""};
 
 // Parse les dépendances stockées en JSON dans le champ note
 function parseDeps(note){
@@ -2157,13 +2354,15 @@ function serializeDeps(deps,noteTexte){
   return JSON.stringify({deps,noteTexte:noteTexte||""});
 }
 
-function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
+function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,fournisseurs}){
   const [filterProjet,setFilterProjet]=useState("");
   const [filterTag,setFilterTag]=useState("");
   const [showAllTerminees,setShowAllTerminees]=useState(false);
   const label=moduleType==="atelier"?"Atelier":"Chantier";
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState({...EMISSION,type:moduleType});
+  const [stockModal,setStockModal]=useState(null); // {mission, stockForm} pour la création stock
+  const [savingStock,setSavingStock]=useState(false);
   const [editing,setEditing]=useState(null);
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
@@ -2172,7 +2371,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
   const [deps,setDeps]=useState([]); // [{type:"stock"|"commande"|"atelier",ref,qty,id}]
   const [noteTexte,setNoteTexte]=useState("");
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
-  const isBool=v=>v===true||v==="TRUE";
+  const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
 
   function openPanel(mission=null){
     setErr("");
@@ -2220,38 +2419,61 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
 
   async function terminer(m){
     if(!confirm(`Marquer "${m.description}" comme terminé ?`))return;
+    // Proposer la création d'un article stock
+    const stockForm={
+      ref:m.description,
+      qty:1,
+      unit:"pcs",
+      cat:moduleType==="atelier"?"Consommables atelier":"Autre",
+      prix:0,
+      loc:moduleType==="atelier"?"Atelier":"",
+    };
+    setStockModal({mission:m, stockForm});
+  }
 
-    if(moduleType==="atelier"){
-      // Ajouter l'objet produit au stock
-      const stockRef=m.description;
-      const existe=stocks.rows.find(s=>s.ref===stockRef);
-      if(existe){
-        await stocks.update(existe.id,{...existe,qty:Number(existe.qty)+1});
-      } else {
-        await stocks.add({ref:stockRef,cat:"Atelier",qty:1,min:0,unit:"pcs",prix:0,loc:"Atelier",fourn:"",note:`Produit atelier — ${fmt(m.dateFin||m.dateDebut||TODAY)}`});
-      }
-      // Convertir les dépendances "atelier" → "stock" dans toutes les missions chantier liées
-      const missionsChantier=sheet.rows.filter(x=>x.type==="chantier"&&x.statut!=="terminé");
-      for(const mc of missionsChantier){
-        const parsed=parseDeps(mc.note);
-        const deps=parsed.deps||[];
-        const idx=deps.findIndex(d=>d.type==="atelier"&&Number(d.id)===Number(m.id));
-        if(idx>=0){
-          // Remplace la dep atelier par une dep stock avec ref = nom de la mission
-          const newDeps=[...deps];
-          newDeps[idx]={type:"stock",ref:stockRef,qty:deps[idx].qty||1};
-          const newNote=serializeDeps(newDeps,parsed.noteTexte||"");
-          await sheet.update(mc.id,{...mc,note:newNote});
+  async function confirmerTerminaison(m, creerStock, sf, dejaTermine){
+    setSavingStock(true);
+    try{
+      if(creerStock&&sf&&sf.ref){
+        const existe=stocks.rows.find(s=>normRef(s.ref)===normRef(sf.ref));
+        if(existe){
+          await stocks.update(existe.id,{...existe,qty:Number(existe.qty)+(+sf.qty||1)});
+        } else {
+          await stocks.add({ref:sf.ref,cat:sf.cat||"Autre",qty:+sf.qty||1,min:+sf.min||0,unit:sf.unit||"pcs",prix:+sf.prix||0,loc:sf.loc||"",fourn:sf.fourn||"",note:sf.note||"",tags:sf.tags||"",origine:sf.origine||"",prixRevient:+sf.prixRevient||0,projet:sf.projet||"",historique:JSON.stringify([{date:TODAY,type:moduleType,label:`Produit depuis mission : ${m.description}`,projet:m.projet||"",qty:+sf.qty||1,qtyApres:+sf.qty||1}])});
+        }
+        // Convertir dépendances atelier → stock dans missions chantier liées
+        if(moduleType==="atelier"){
+          const missionsChantier=sheet.rows.filter(x=>x.type==="chantier"&&x.statut!=="terminé");
+          for(const mc of missionsChantier){
+            const parsed=parseDeps(mc.note);
+            const deps=parsed.deps||[];
+            const idx=deps.findIndex(d=>d.type==="atelier"&&Number(d.id)===Number(m.id));
+            if(idx>=0){
+              const newDeps=[...deps];
+              newDeps[idx]={type:"stock",ref:sf.ref,qty:deps[idx].qty||1};
+              await sheet.update(mc.id,{...mc,note:serializeDeps(newDeps,parsed.noteTexte||"")});
+            }
+          }
         }
       }
-    }
 
-    // Déduire le stock utilisé (atelier et chantier)
-    if(m.stockRef&&m.stockQty>0){
-      const s=stocks.rows.find(x=>x.ref===m.stockRef);
-      if(s){await stocks.update(s.id,{...s,qty:Math.max(0,Number(s.qty)-Number(m.stockQty))});}
-    }
-    await sheet.update(m.id,{...m,statut:"terminé"});
+      // Déduire les pièces et finaliser — seulement si la mission n'était pas déjà terminée
+      if(!dejaTermine){
+        const snap3=[...stocks.rows];
+        const stockItems2=getMissionStockItems(m);
+        for(const it of stockItems2){
+          if(!it.ref||!it.qty)continue;
+          const chk=checkStockDispo(snap3,it.ref,it.qty);
+          if(!chk.ok){alert(chk.msg);setSavingStock(false);setStockModal(null);return;}
+        }
+        for(const it of stockItems2){
+          if(!it.ref||!it.qty)continue;
+          await updateStockQty(stocks,snap3,it.ref,-Number(it.qty),{type:moduleType,label:m.description,projet:m.projet||""});
+        }
+        await sheet.update(m.id,{...m,statut:"terminé"});
+      }
+    }catch(e){alert("Erreur : "+e.message);}
+    setSavingStock(false);setStockModal(null);
   }
 
   const toutes=sheet.rows.filter(m=>m.type===moduleType);
@@ -2279,7 +2501,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
     return (parsed.deps||[]).map(dep=>{
       let statut="ok",label="",detail="",ref="";
       if(dep.type==="stock"){
-        const s=stocks.rows.find(x=>x.ref===dep.ref);
+        const s=stocks.rows.find(x=>normRef(x.ref)===normRef(dep.ref));
         const dispo=s?Number(s.qty):0;
         const besoin=Number(dep.qty)||0;
         ref=dep.ref;
@@ -2317,7 +2539,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
   const alertesStockSimple=moduleType==="chantier"?actives
     .filter(m=>m.stockRef&&m.stockQty>0&&m.dateDebut&&!parseDeps(m.note).deps?.length)
     .map(m=>{
-      const s=stocks.rows.find(x=>x.ref===m.stockRef);
+      const s=stocks.rows.find(x=>normRef(x.ref)===normRef(m.stockRef));
       const dispo=s?Number(s.qty):0;
       const besoin=Number(m.stockQty);
       const jours=diffWorkDays(m.dateDebut);
@@ -2411,10 +2633,29 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
     </>}
 
     {moduleType==="atelier"&&<>
-      <FG label="Pièce stock utilisée"><Sel value={form.stockRef} onChange={e=>f("stockRef",e.target.value)}>
-        <option value="">— Aucune —</option>{stocks.rows.map(s=><option key={s.id}>{s.ref}</option>)}
-      </Sel></FG>
-      {form.stockRef&&<FG label="Quantité utilisée"><Inp type="number" value={form.stockQty} onChange={e=>f("stockQty",e.target.value)} placeholder="0"/></FG>}
+      <FG label="Pièces stock utilisées">
+        {(()=>{
+          let items=[];
+          try{items=form.stockItems?JSON.parse(form.stockItems):(form.stockRef?[{ref:form.stockRef,qty:+form.stockQty||1}]:[]);}catch(e){}
+          const setItems=arr=>f("stockItems",JSON.stringify(arr)); // ne pas filtrer pendant édition
+          return(<>
+            {items.map((it,i)=>(
+              <div key={i} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
+                <Sel value={it.ref} onChange={e=>{const a=[...items];a[i]={...a[i],ref:e.target.value};setItems(a);}}>
+                  <option value="">— Choisir —</option>
+                  {(editing&&form.statut==="terminé"?stocks.rows:stocks.rows.filter(s=>Number(s.qty)>0)).map(s=><option key={s.id} value={s.ref}>{s.ref} ({s.qty} {s.unit})</option>)}
+                </Sel>
+                <div style={{display:"flex",flexDirection:"column",flexShrink:0}}>
+                  <Inp type="number" value={it.qty} onChange={e=>{const a=[...items];a[i]={...a[i],qty:+e.target.value||1};setItems(a);}} placeholder="Qté" style={{width:70,border:(()=>{const sx=stocks.rows.find(s=>normRef(s.ref)===normRef(it.ref));return sx&&Number(it.qty)>Number(sx.qty)?"1px solid #CC2222":"1px solid #DDDDDD";})()}}/>
+                  {(()=>{const sx=stocks.rows.find(s=>normRef(s.ref)===normRef(it.ref));return sx&&Number(it.qty)>Number(sx.qty)?<span style={{fontSize:9,color:"#CC2222",fontWeight:600}}>Max: {sx.qty}</span>:null;})()}
+                </div>
+                <button onClick={()=>setItems(items.filter((_,j)=>j!==i))} style={{background:"none",border:"none",cursor:"pointer",color:"#CC2222",fontSize:14,flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            <button onClick={()=>setItems([...items,{ref:"",qty:1}])} style={{width:"100%",padding:"6px",borderRadius:4,border:"1px dashed #CC2222",background:"#FFF0F0",cursor:"pointer",fontSize:12,color:"#CC2222",fontFamily:"'DM Sans',sans-serif"}}>+ Ajouter une pièce</button>
+          </>);
+        })()}
+      </FG>
       <FG label="Note"><Inp value={form.note||""} onChange={e=>f("note",e.target.value)} placeholder="Optionnel"/></FG>
     </>}
 
@@ -2441,6 +2682,17 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
   });
 
   return <WithPanel panel={panel}>
+    {/* ── Modal création article stock — composant dédié pour éviter useState dans IIFE ── */}
+    {stockModal&&<ModalStockTerminaison
+      mission={stockModal.mission}
+      moduleType={moduleType}
+      onCancel={()=>setStockModal(null)}
+      onConfirm={(creer,sf)=>confirmerTerminaison(stockModal.mission,creer,sf,stockModal.dejaTermine)}
+      saving={savingStock}
+      stocks={stocks}
+      projects={projects}
+      fournisseurs={fournisseurs||{rows:[]}}
+    />}
     <FiltreProjetTag projects={projects} filterProjet={filterProjet} setFilterProjet={setFilterProjet} filterTag={filterTag} setFilterTag={setFilterTag}/>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -2556,12 +2808,14 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders}){
               <div style={{flex:1}}>
                 <div style={{fontSize:13,color:"#3A3A3A",fontWeight:500}}>{m.description}</div>
                 <div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet}{getMembres(m).length>0&&` · ${getMembres(m).join(", ")}`}</div>
+                {getMissionStockItems(m).length>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:2}}>🔩 {getMissionStockItems(m).map(it=>`${it.ref} ×${it.qty}`).join(" · ")}</div>}
                 {(m.dateDebut||m.dateFin)&&<div style={{fontSize:11,color:"#7A7A7A"}}>{m.dateDebut&&fmt(m.dateDebut)}{m.dateFin&&` → ${fmt(m.dateFin)}`}</div>}
               </div>
               <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
             </div>
             <div style={{display:"flex",gap:6}}>
               <Btn small onClick={()=>openPanel(m)}>Modifier</Btn>
+              <Btn small onClick={()=>setStockModal({mission:m,dejaTermine:true,stockForm:{ref:m.description,qty:1,unit:"pcs",cat:moduleType==="atelier"?"Consommables atelier":"Autre",prix:0,loc:moduleType==="atelier"?"Atelier":"",origine:moduleType==="atelier"?"Fabriqué à l'atelier":"Fabriqué en chantier"}})}>📦 Stock</Btn>
               <Btn small danger onClick={()=>sheet.remove(m.id)}>Suppr.</Btn>
             </div>
           </Bd>
@@ -3259,9 +3513,116 @@ function Fournisseurs({sheet}){
 }
 
 // ══ STOCKS ══
-const ES={ref:"",cat:"",fourn:"",qty:"",min:"",unit:"pcs",prix:"",loc:"",note:"",tags:""};
-function Stocks({sheet,fournisseurs,projects,orders}){
+const ES={ref:"",cat:"",fourn:"",qty:"",min:"",unit:"pcs",prix:"",loc:"",note:"",tags:"",origine:"",projet:""};
+function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMissions}){
   const [filterProjet,setFilterProjet]=useState("");
+  const [recalculating,setRecalculating]=useState(false);
+
+  const isBoolS=v=>v===true||String(v).toUpperCase()==="TRUE";
+  async function recalculerStock(){
+    if(!confirm("Recalculer le stock depuis les commandes et missions ?\n\nTotal reçu (commandes reçues) − Total utilisé (missions terminées) = Stock corrigé\nCoût de revient recalculé automatiquement pour les articles produits\n\nContinuer ?"))return;
+    setRecalculating(true);
+    try{
+      const map={};
+
+      // ── Entrées : commandes reçues ──
+      for(const o of (orders?.rows||[])){
+        if(!isBoolS(o.recue))continue;
+        for(const l of getLignes(o)){
+          if(!l.article||!l.qty)continue;
+          const k=normRef(l.article);
+          if(!map[k])map[k]={recu:0,utilise:0,coutRevient:null};
+          map[k].recu+=Number(l.qty)||0;
+        }
+      }
+
+      // ── Sorties : missions atelier/chantier terminées ──
+      for(const m of (atelierChantier?.rows||[])){
+        if(m.statut!=="terminé")continue;
+        for(const it of getMissionStockItems(m)){
+          if(!it.ref||!it.qty)continue;
+          const k=normRef(it.ref);
+          if(!map[k])map[k]={recu:0,utilise:0,coutRevient:null};
+          map[k].utilise+=Number(it.qty)||0;
+        }
+      }
+
+      // ── Sorties : prestations terminées ──
+      for(const m of (prestMissions?.rows||[])){
+        if(m.statut!=="terminé")continue;
+        for(const it of getMissionStockItems(m)){
+          if(!it.ref||!it.qty)continue;
+          const k=normRef(it.ref);
+          if(!map[k])map[k]={recu:0,utilise:0,coutRevient:null};
+          map[k].utilise+=Number(it.qty)||0;
+        }
+      }
+
+      // ── Coût de revient : pour chaque article, trouver les missions qui l'ont PRODUIT ──
+      // Un article est "produit" par une mission si sa ref correspond à la description de la mission
+      // (logique du modal ModalStockTerminaison qui pré-remplit ref = mission.description)
+      const coutMap={}; // norm(ref) → {coutTotal, qtyProduite}
+
+      for(const m of (atelierChantier?.rows||[])){
+        if(m.statut!=="terminé")continue;
+        const k=normRef(m.description);
+        if(!coutMap[k])coutMap[k]={coutTotal:0,qtyProduite:0};
+        // Coût matières : pièces utilisées × leur prix stock
+        for(const it of getMissionStockItems(m)){
+          if(!it.ref||!it.qty)continue;
+          const s=sheet.rows.find(x=>normRef(x.ref)===normRef(it.ref));
+          coutMap[k].coutTotal+=(Number(s?.prix)||0)*Number(it.qty);
+        }
+        // Pas de coût MO direct pour atelier/chantier (salaires non trackés ici)
+      }
+
+      for(const m of (prestMissions?.rows||[])){
+        if(m.statut!=="terminé")continue;
+        const k=normRef(m.description);
+        if(!coutMap[k])coutMap[k]={coutTotal:0,qtyProduite:0};
+        // Coût matières
+        for(const it of getMissionStockItems(m)){
+          if(!it.ref||!it.qty)continue;
+          const s=sheet.rows.find(x=>normRef(x.ref)===normRef(it.ref));
+          coutMap[k].coutTotal+=(Number(s?.prix)||0)*Number(it.qty);
+        }
+        // Coût MO = prix de la prestation
+        coutMap[k].coutTotal+=Number(m.prix)||0;
+      }
+
+      // ── Mise à jour de chaque article du stock ──
+      let updated=0;
+      for(const s of sheet.rows){
+        const k=normRef(s.ref);
+        const changed={};
+
+        // Quantité
+        if(map[k]!==undefined){
+          const newQty=Math.max(0,map[k].recu-map[k].utilise);
+          if(Number(s.qty)!==newQty)changed.qty=newQty;
+        }
+
+        // Coût de revient : si cet article a été produit par des missions
+        if(coutMap[k]&&coutMap[k].coutTotal>0){
+          // qty produite = ce qui a été ajouté au stock depuis des missions
+          // On prend la qty actuelle corrigée comme base, sinon qty existante
+          const qtyRef=changed.qty!==undefined?changed.qty:Number(s.qty);
+          if(qtyRef>0){
+            const newPrixRevient=Math.round((coutMap[k].coutTotal/qtyRef)*100)/100;
+            if(Number(s.prixRevient||0)!==newPrixRevient)changed.prixRevient=newPrixRevient;
+          }
+        }
+
+        if(Object.keys(changed).length>0){
+          await sheet.update(s.id,{...s,...changed});
+          updated++;
+        }
+      }
+
+      alert(`Recalcul terminé — ${updated} article${updated!==1?"s":""} mis à jour (quantités + coûts de revient).`);
+    }catch(e){alert("Erreur : "+e.message);}
+    setRecalculating(false);
+  }
   const [filterTag,setFilterTag]=useState("");
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(ES);
@@ -3279,12 +3640,19 @@ function Stocks({sheet,fournisseurs,projects,orders}){
     <FG label="Unité"><Sel value={form.unit} onChange={e=>f("unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</Sel></FG>
     <FG label="Prix unitaire (€)"><Inp type="number" value={form.prix} onChange={e=>f("prix",e.target.value)} placeholder="0.00"/></FG>
     <FG label="Emplacement"><Inp value={form.loc} onChange={e=>f("loc",e.target.value)} placeholder="Ex: Étagère A3"/></FG>
-    <FG label="Tags"><TagSelector tags={form.tags||""} onChange={v=>f("tags",v)} projetNom={""} projects={projects}/></FG>
+    <FG label="Origine"><Inp value={form.origine||""} onChange={e=>f("origine",e.target.value)} placeholder="Ex: Fabriqué à l'atelier, Fabriqué par Nota Bene..."/></FG>
+    <FG label="Projet lié"><Sel value={form.projet||""} onChange={e=>f("projet",e.target.value)}>
+      <option value="">— Aucun —</option>
+      {projects.rows.map(p=><option key={p.id}>{p.name}</option>)}
+    </Sel></FG>
+    <FG label="Tags"><TagSelector tags={form.tags||""} onChange={v=>f("tags",v)} projetNom={form.projet||""} projects={projects}/></FG>
+    <FG label="Note"><Inp value={form.note||""} onChange={e=>f("note",e.target.value)} placeholder="Optionnel"/></FG>
     <ErrMsg msg={err}/><PanelBtns onCancel={()=>setOpen(false)} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Enregistrer"}/>
   </SidePanel>;
+  const [showAllEpuise,setShowAllEpuise]=useState(false);
+  const [detailStock,setDetailStock]=useState(null); // ref de l'article sélectionné
   const filteredStock=sheet.rows.filter(s=>{
     if(filterProjet){
-      const norm=x=>String(x||"").trim().toLowerCase();
       // Méthode 1 : tags communs entre le stock et le projet
       const sTags=(s.tags||"").split(",").map(x=>x.trim()).filter(Boolean);
       const projRow=(projects?.rows||[]).find(p=>p.name===filterProjet);
@@ -3292,20 +3660,85 @@ function Stocks({sheet,fournisseurs,projects,orders}){
       const hasTagMatch=projTags.length>0&&sTags.some(st=>projTags.includes(st));
       // Méthode 2 : au moins une commande du projet contient cet article dans ses lignes
       const hasOrderMatch=(orders?.rows||[]).some(o=>
-        norm(o.projet)===norm(filterProjet)&&
-        getLignes(o).some(l=>norm(l.article)===norm(s.ref))
+        normRef(o.projet)===normRef(filterProjet)&&
+        getLignes(o).some(l=>normRef(l.article)===normRef(s.ref))
       );
       if(!hasTagMatch&&!hasOrderMatch)return false;
     }
     if(filterTag){const t=(s.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
     return true;
   });
-  const alerts=filteredStock.filter(s=>Number(s.qty)<Number(s.min));
-  const valeur=filteredStock.reduce((s,i)=>s+Number(i.qty)*(Number(i.prix)||0),0);
+  const stockActif=filteredStock.filter(s=>Number(s.qty)>0);
+  const stockEpuise=filteredStock.filter(s=>Number(s.qty)===0||s.qty===""||s.qty===null);
+  const alerts=stockActif.filter(s=>Number(s.qty)<Number(s.min));
+  const valeur=stockActif.reduce((s,i)=>s+Number(i.qty)*(Number(i.prix)||0),0);
   return <WithPanel panel={panel}>
+    {/* ── Panel détail article ── */}
+    {detailStock&&(()=>{
+      const s=sheet.rows.find(x=>x.ref===detailStock);
+      if(!s)return null;
+      const hist=parseStockHistorique(s);
+      const typeLabel={commande:"📦 Commande",prestation:"🔧 Prestation",atelier:"🏭 Atelier",chantier:"🏗 Chantier"};
+      const typeColor={commande:"#2A7A2A",prestation:"#CC6600",atelier:"#1A5DAB",chantier:"#7A2A7A"};
+      return(
+        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.4)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget)setDetailStock(null);}}>
+          <div style={{background:"#fff",borderRadius:12,padding:24,width:520,maxWidth:"94vw",maxHeight:"85vh",overflow:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.18)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div>
+                <div style={{fontSize:15,fontWeight:700,color:"#1C1C1C"}}>{s.ref}</div>
+                <div style={{fontSize:12,color:"#7A7A7A"}}>{s.cat} · {s.fourn||"—"}</div>
+              </div>
+              <button onClick={()=>setDetailStock(null)} style={{background:"none",border:"none",cursor:"pointer",fontSize:18,color:"#7A7A7A"}}>✕</button>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16}}>
+              {[
+                {lbl:"Stock actuel",val:`${s.qty} ${s.unit}`,color:Number(s.qty)===0?"#CC2222":Number(s.qty)<Number(s.min)?"#CC8800":"#2A7A2A"},
+                {lbl:"Seuil min",val:`${s.min} ${s.unit}`,color:"#3A3A3A"},
+                {lbl:"Valeur (prix achat)",val:Number(s.prix)>0?`${(Number(s.qty)*Number(s.prix)).toLocaleString("fr-FR")} €`:"—",color:"#1C1C1C"},
+              ].map((k,i)=>(
+                <div key={i} style={{background:"#F9F9F9",borderRadius:8,padding:"10px 12px",border:"0.5px solid #EEEEEE"}}>
+                  <div style={{fontSize:10,color:"#7A7A7A",marginBottom:2}}>{k.lbl}</div>
+                  <div style={{fontSize:15,fontWeight:700,color:k.color}}>{k.val}</div>
+                </div>
+              ))}
+            </div>
+            {Number(s.prixRevient)>0&&<div style={{background:"#FFF8EC",border:"0.5px solid #FFDD99",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:11,color:"#CC8800",fontWeight:700}}>Coût de revient unitaire</div>
+                  <div style={{fontSize:10,color:"#CC8800"}}>Informatif — non comptabilisé</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:16,fontWeight:700,color:"#CC8800",fontFamily:"'DM Mono',monospace"}}>{Number(s.prixRevient).toLocaleString("fr-FR")} €</div>
+                  {Number(s.qty)>0&&<div style={{fontSize:11,color:"#CC8800"}}>Total : {(Number(s.prixRevient)*Number(s.qty)).toLocaleString("fr-FR")} €</div>}
+                </div>
+              </div>
+            </div>}
+            <div style={{fontSize:13,fontWeight:700,color:"#1C1C1C",marginBottom:10,borderLeft:"3px solid #CC2222",paddingLeft:8}}>
+              Historique des mouvements ({hist.length})
+            </div>
+            {hist.length===0&&<div style={{fontSize:12,color:"#7A7A7A",padding:"12px 0",textAlign:"center"}}>Aucun mouvement enregistré. Les futures utilisations apparaîtront ici.</div>}
+            {hist.map((h,i)=>(
+              <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start",padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+                <div style={{fontSize:11,fontWeight:600,color:typeColor[h.type]||"#3A3A3A",width:80,flexShrink:0,paddingTop:2}}>{typeLabel[h.type]||h.type}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{h.label||"—"}</div>
+                  {h.projet&&<div style={{fontSize:11,color:"#7A7A7A"}}>{h.projet}{h.prestataire?` · ${h.prestataire}`:""}</div>}
+                </div>
+                <div style={{textAlign:"right",flexShrink:0}}>
+                  <div style={{fontSize:13,fontWeight:700,color:h.qty>0?"#2A7A2A":"#CC2222"}}>{h.qty>0?"+":""}{h.qty} {s.unit}</div>
+                  <div style={{fontSize:10,color:"#7A7A7A"}}>{fmt(h.date)}</div>
+                  {h.qtyApres!==undefined&&<div style={{fontSize:10,color:"#AAAAAA"}}>→ stock: {h.qtyApres} {s.unit}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    })()}
     <FiltreProjetTag projects={projects} filterProjet={filterProjet} setFilterProjet={setFilterProjet} filterTag={filterTag} setFilterTag={setFilterTag}/>
     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
-      {[{val:filteredStock.length+(filteredStock.length!==sheet.rows.length?` / ${sheet.rows.length} total`:""),lbl:"Références"},{val:alerts.length,lbl:"Sous seuil d'alerte",alert:alerts.length>0},{val:valeur.toLocaleString("fr-FR")+" €",lbl:"Valeur totale estimée"}].map((m,i)=>(
+      {[{val:stockActif.length+(filteredStock.length!==sheet.rows.length?` / ${sheet.rows.length} total`:""),lbl:"Références"},{val:alerts.length,lbl:"Sous seuil d'alerte",alert:alerts.length>0},{val:valeur.toLocaleString("fr-FR")+" €",lbl:"Valeur totale estimée"}].map((m,i)=>(
         <div key={i} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderTop:m.alert?"3px solid #CC2222":"3px solid #F2F0ED",borderRadius:8,padding:"12px 14px"}}>
           <div style={{fontSize:18,fontWeight:700,color:m.alert?"#CC2222":"#1C1C1C"}}>{m.val}</div>
           <div style={{fontSize:12,color:"#7A7A7A",marginTop:2}}>{m.lbl}</div>
@@ -3316,17 +3749,24 @@ function Stocks({sheet,fournisseurs,projects,orders}){
     <Bd>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <SecTitle>Inventaire</SecTitle>
-        <Btn primary onClick={()=>{setEditing(null);setForm(ES);setErr("");setOpen(true);}}>+ Nouvel article</Btn>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={recalculerStock} disabled={recalculating} title="Recalcule les quantités depuis les commandes reçues et missions terminées" style={{padding:"6px 12px",borderRadius:4,border:"1px solid #CC8800",background:"#FFF8EC",cursor:recalculating?"wait":"pointer",fontSize:12,color:"#CC8800",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>
+            {recalculating?"⟳ Calcul...":"⟳ Recalculer"}
+          </button>
+          <Btn primary onClick={()=>{setEditing(null);setForm(ES);setErr("");setOpen(true);}}>+ Nouvel article</Btn>
+        </div>
       </div>
       {!sheet.rows.length&&<div style={{fontSize:13,color:"#7A7A7A",padding:"10px 0"}}>Aucun article en inventaire.</div>}
-      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 80px 80px",gap:8,padding:"6px 0",borderBottom:"0.5px solid #DDDDDD",marginBottom:4}}>
-        {["Référence","Qté / Seuil","Emplacement","État",""].map((h,i)=><span key={i} style={{fontSize:11,fontWeight:700,color:"#7A7A7A"}}>{h}</span>)}
+      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 80px 80px",gap:8,padding:"6px 0",borderBottom:"0.5px solid #DDDDDD",marginBottom:4}}>
+        {["Référence","Qté / Seuil","Prix unitaire","Total","État",""].map((h,i)=><span key={i} style={{fontSize:11,fontWeight:700,color:"#7A7A7A"}}>{h}</span>)}
       </div>
       
-      {filteredStock.map(s=>{const r=Number(s.qty)/Math.max(Number(s.min),0.001);const sb=r<0.7?{bg:"#FFF0F0",tx:"#CC2222",lbl:"Critique"}:r<1?{bg:"#FFF8EC",tx:"#CC8800",lbl:"Bas"}:{bg:"#F0FFF0",tx:"#2A7A2A",lbl:"OK"};return(
-        <div key={s.id} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 80px 80px",gap:8,alignItems:"center",padding:"9px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+      {stockActif.map(s=>{const r=Number(s.qty)/Math.max(Number(s.min),0.001);const sb=r<0.7?{bg:"#FFF0F0",tx:"#CC2222",lbl:"Critique"}:r<1?{bg:"#FFF8EC",tx:"#CC8800",lbl:"Bas"}:{bg:"#F0FFF0",tx:"#2A7A2A",lbl:"OK"};return(
+        <div key={s.id} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 80px 80px",gap:8,alignItems:"center",padding:"9px 0",borderBottom:"0.5px solid #EEEEEE",cursor:"pointer"}} onClick={()=>setDetailStock(s.ref)}>
           <div><div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{s.ref}</div>
             <div style={{fontSize:11,color:"#7A7A7A"}}>{s.cat}</div>
+            {s.origine&&<div style={{fontSize:10,color:"#7A7A7A",fontStyle:"italic",marginTop:1}}>📍 {s.origine}</div>}
+            {s.projet&&<div style={{display:"inline-block",fontSize:10,fontWeight:600,color:"#CC2222",background:"#FFF0F0",padding:"1px 6px",borderRadius:10,marginTop:3}}>{s.projet}</div>}
             {(s.tags||"").split(",").filter(Boolean).length>0&&(
               <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:3}}>
                 {(s.tags||"").split(",").filter(Boolean).map((tag,i)=>(
@@ -3335,18 +3775,98 @@ function Stocks({sheet,fournisseurs,projects,orders}){
               </div>
             )}
           </div>
-          <span style={{fontSize:12,color:"#3A3A3A",fontFamily:"'DM Mono',monospace"}}>{s.qty}/{s.min} {s.unit}</span>
-          <span style={{fontSize:12,color:"#7A7A7A"}}>{s.loc||"—"}</span>
+          <span style={{fontSize:12,color:Number(s.qty)===0?"#CC2222":"#3A3A3A",fontFamily:"'DM Mono',monospace",fontWeight:Number(s.qty)===0?700:400}}>{s.qty}/{s.min} {s.unit}</span>
+          <span style={{fontSize:12,color:"#3A3A3A",fontFamily:"'DM Mono',monospace"}}>{Number(s.prix)>0?Number(s.prix).toLocaleString("fr-FR")+" €":"—"}</span>
+          <span style={{fontSize:12,color:(Number(s.qty)||0)*(Number(s.prix)||0)>0?"#1C1C1C":"#AAAAAA",fontFamily:"'DM Mono',monospace",fontWeight:500}}>{(Number(s.qty)||0)*(Number(s.prix)||0)>0?((Number(s.qty)||0)*(Number(s.prix)||0)).toLocaleString("fr-FR")+" €":"—"}</span>
           <Badge label={sb.lbl} bg={sb.bg} color={sb.tx}/>
-          <div style={{display:"flex",gap:4}}>
+          <div style={{display:"flex",gap:4}} onClick={e=>e.stopPropagation()}>
             <button onClick={()=>{setEditing(s.id);setForm({...s,qty:String(s.qty),min:String(s.min),prix:String(s.prix),tags:s.tags||""});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
+            {(()=>{
+              const fourn=fournisseurs.rows.find(f=>(f.nom||"").toLowerCase()===(s.fourn||"").toLowerCase());
+              const email=fourn?.contact||"";
+              const qteManquante=Math.max(0,(Number(s.min)||0)-(Number(s.qty)||0));
+              const mailHref=`mailto:${email}?subject=Commande ${s.ref}&body=Bonjour,%0A%0ANous souhaitons commander :%0A- Article : ${s.ref}%0A- Quantité : ${qteManquante>0?qteManquante:s.min} ${s.unit}%0A%0ACordialement,%0AHigh Point Structures`;
+              return email?(
+                <a href={mailHref} title={`Envoyer commande à ${fourn.nom}`} style={{background:"none",border:"1px solid #1A5DAB",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#1A5DAB",fontFamily:"'DM Sans',sans-serif",textDecoration:"none",display:"inline-block"}}>✉</a>
+              ):(
+                <span title="Aucun email fournisseur" style={{fontSize:11,padding:"2px 6px",color:"#AAAAAA",cursor:"default"}}>✉</span>
+              );
+            })()}
             <button onClick={()=>sheet.remove(s.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
           </div>
         </div>
       );})}
-      
+
+      {/* ── Historique — stock épuisé ── */}
+      {stockEpuise.length>0&&<>
+        <div style={{fontSize:13,fontWeight:700,color:"#7A7A7A",borderLeft:"3px solid #DDDDDD",paddingLeft:8,margin:"16px 0 8px"}}>
+          Stock épuisé ({stockEpuise.length})
+        </div>
+        {(showAllEpuise?stockEpuise:stockEpuise.slice(0,5)).map(s=>(
+          <div key={s.id} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 80px 80px",gap:8,alignItems:"center",padding:"8px 0",borderBottom:"0.5px solid #EEEEEE",opacity:.7}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:500,color:"#CC2222",textDecoration:"line-through"}}>{s.ref}</div>
+              <div style={{fontSize:11,color:"#7A7A7A"}}>{s.cat}</div>
+              {s.origine&&<div style={{fontSize:10,color:"#7A7A7A",fontStyle:"italic"}}>📍 {s.origine}</div>}
+            </div>
+            <span style={{fontSize:12,color:"#CC2222",fontFamily:"'DM Mono',monospace",fontWeight:700}}>0 / {s.min} {s.unit}</span>
+            <span style={{fontSize:12,color:"#7A7A7A",fontFamily:"'DM Mono',monospace"}}>{Number(s.prix)>0?Number(s.prix).toLocaleString("fr-FR")+" €":"—"}</span>
+            <span style={{fontSize:12,color:"#AAAAAA",fontFamily:"'DM Mono',monospace"}}>—</span>
+            <Badge label="Épuisé" bg="#FFF0F0" color="#CC2222"/>
+            <div style={{display:"flex",gap:4}}>
+              <button onClick={()=>{setEditing(s.id);setForm({...s,qty:String(s.qty),min:String(s.min),prix:String(s.prix),tags:s.tags||""});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
+              <button onClick={()=>sheet.remove(s.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
+            </div>
+          </div>
+        ))}
+        {!showAllEpuise&&stockEpuise.length>5&&(
+          <div onClick={()=>setShowAllEpuise(true)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#1A5DAB",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+            ↓ Voir les {stockEpuise.length-5} autres ({stockEpuise.length} au total)
+          </div>
+        )}
+        {showAllEpuise&&stockEpuise.length>5&&(
+          <div onClick={()=>setShowAllEpuise(false)} style={{textAlign:"center",padding:"8px 0",fontSize:12,color:"#7A7A7A",cursor:"pointer",borderTop:"0.5px solid #EEEEEE",marginTop:4}}>
+            ↑ Réduire
+          </div>
+        )}
+      </>}
+
     </Bd>
   </WithPanel>;
+}
+
+// ── Fonction centralisée de mise à jour du stock ──
+// stocksSheet : le useSheet("stocks")
+// snap : snapshot des rows AVANT toutes mutations de cette session
+// ref : ref article à modifier
+// delta : +N entrée, -N sortie
+// meta : {type, label, projet, prestataire} pour l'historique
+async function updateStockQty(stocksSheet, snap, ref, delta, meta){
+  if(!ref||!delta||delta===0)return;
+  const s=snap.find(x=>normRef(x.ref)===normRef(ref));
+  if(!s)return;
+  const newQty=Math.max(0,Number(s.qty)+delta);
+  const hist=parseStockHistorique(s);
+  hist.unshift({
+    date:meta?.date||TODAY,
+    type:meta?.type||"manuel",
+    label:meta?.label||"",
+    projet:meta?.projet||"",
+    prestataire:meta?.prestataire||"",
+    qty:delta,
+    qtyApres:newQty,
+  });
+  await stocksSheet.update(s.id,{...s,qty:newQty,historique:JSON.stringify(hist.slice(0,100))});
+}
+
+// ── Vérifier disponibilité stock (avant mutation) ──
+function checkStockDispo(snap, ref, qtyDemandee){
+  if(!ref||!qtyDemandee)return{ok:true,dispo:0};
+  const s=snap.find(x=>normRef(x.ref)===normRef(ref));
+  if(!s)return{ok:false,dispo:0,msg:`Article "${ref}" introuvable dans le stock`};
+  const dispo=Number(s.qty)||0;
+  if(dispo<Number(qtyDemandee))return{ok:false,dispo,msg:`Stock insuffisant pour "${ref}" : ${dispo} disponible, ${qtyDemandee} demandé`};
+  return{ok:true,dispo};
 }
 
 // Helpers commandes globaux (utilisés par Commandes ET Stocks)
@@ -3358,11 +3878,334 @@ function totalCommande(o){
   return getLignes(o).reduce((s,l)=>s+(+l.prix||0)*(+l.qty||0),0);
 }
 
+// Ajoute une entrée dans l'historique d'un article stock
+function parseStockHistorique(s){
+  if(!s.historique||s.historique===true)return[];
+  try{return JSON.parse(s.historique)||[];}catch(e){return[];}
+}
+async function addStockHistorique(stocks,ref,entry){
+  const s=stocks.rows.find(x=>normRef(x.ref)===normRef(ref));
+  if(!s)return;
+  const hist=parseStockHistorique(s);
+  hist.unshift({...entry,date:entry.date||TODAY}); // plus récent en premier
+  await stocks.update(s.id,{...s,qty:s.qty,historique:JSON.stringify(hist.slice(0,100))}); // max 100 entrées
+}
+
 // ══ COMMANDES ══
+
+// ═══════════════════════════════════════════════
+// MODULE DEVIS
+// ═══════════════════════════════════════════════
+function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
+  const [groupeOpen,setGroupeOpen]=useState(null); // id du groupe ouvert
+  const [formOpen,setFormOpen]=useState(false);
+  const [form,setForm]=useState(ED);
+  const [lignesForm,setLignesForm]=useState([{...EL}]);
+  const [editing,setEditing]=useState(null);
+  const [saving,setSaving]=useState(false);
+  const [err,setErr]=useState("");
+  const [aiOpen,setAiOpen]=useState(false);
+  const [aiText,setAiText]=useState("");
+  const [aiPreview,setAiPreview]=useState(null);
+  const [aiErr,setAiErr]=useState("");
+  const [titreGroupe,setTitreGroupe]=useState(""); // pour créer un nouveau groupe
+  const [titreOpen,setTitreOpen]=useState(false);
+  const f=(k,v)=>setForm(x=>({...x,[k]:v}));
+  const fl=(i,k,v)=>setLignesForm(ls=>ls.map((l,j)=>j===i?{...l,[k]:v}:l));
+  const addLigne=()=>setLignesForm(ls=>[...ls,{...EL}]);
+  const removeLigne=i=>setLignesForm(ls=>ls.length>1?ls.filter((_,j)=>j!==i):ls);
+
+  // Grouper les devis par titre
+  const actifs=devis.rows.filter(d=>d.statut!=="refusé");
+  const archives=devis.rows.filter(d=>d.statut==="refusé");
+  const groupes=[...new Set(actifs.map(d=>d.titre).filter(Boolean))];
+
+  function openNew(titre){
+    setForm({...ED,titre,date:TODAY});
+    setLignesForm([{...EL}]);
+    setEditing(null);setErr("");setFormOpen(true);
+  }
+
+  function openEdit(d){
+    let ligs=[];
+    try{ligs=d.lignes?JSON.parse(d.lignes):[];}catch(e){}
+    if(!ligs.length) ligs=[{article:d.description||"",qty:d.prix?"":1,unit:"pcs",prix:d.prix||"",cat:""}];
+    setForm({...ED,...d});
+    setLignesForm(ligs.length?ligs:[{...EL}]);
+    setEditing(d.id);setErr("");setFormOpen(true);
+  }
+
+  async function save(){
+    if(!form.titre){setErr("Titre du groupe requis");return;}
+    if(!form.fourn){setErr("Fournisseur requis");return;}
+    setSaving(true);
+    const item={...form,lignes:JSON.stringify(lignesForm.filter(l=>l.article)),prix:lignesForm.reduce((s,l)=>(+l.prix||0)*(+l.qty||1)+s,0)||form.prix||0};
+    if(editing) await devis.update(editing,item);
+    else await devis.add(item);
+    setFormOpen(false);setSaving(false);
+  }
+
+  async function accepter(d){
+    if(!confirm(`Accepter le devis de "${d.fourn}" et le convertir en commande ?`))return;
+    // Archiver les autres devis du même groupe
+    for(const other of devis.rows.filter(x=>x.titre===d.titre&&x.id!==d.id)){
+      await devis.update(other.id,{...other,statut:"refusé"});
+    }
+    await devis.update(d.id,{...d,statut:"accepté"});
+    // Callback → crée la commande dans Commandes
+    onAccepter(d,lignesFrom(d));
+  }
+
+  function lignesFrom(d){
+    try{const l=JSON.parse(d.lignes||"[]");if(l.length)return l;}catch(e){}
+    return [{article:d.description||"",qty:1,unit:"pcs",prix:d.prix||0,cat:""}];
+  }
+
+  // Import IA
+  function parseDevisIA(txt){
+    const lines=txt.split("\n").map(s=>s.trim()).filter(Boolean);
+    const get=(k)=>{const l=lines.find(x=>x.toUpperCase().startsWith(k+":"));return l?l.slice(k.length+1).trim():"";}
+    const formData={titre:get("TITRE")||get("OBJET")||"",fourn:get("FOURNISSEUR")||get("FOURN")||"",projet:get("PROJET")||"",date:get("DATE")||TODAY,delai:get("DELAI")||"",note:get("NOTE")||"",tags:get("TAGS")||""};
+    const articles=[];
+    let cur=null;
+    for(const line of lines){
+      const u=line.toUpperCase();
+      if(u.startsWith("ARTICLE:")){cur={article:line.slice(8).trim(),qty:"1",unit:"pcs",prix:"",cat:""};articles.push(cur);}
+      else if(cur){
+        if(u.startsWith("QTE:")||u.startsWith("QTÉ:"))cur.qty=line.split(":")[1].trim();
+        else if(u.startsWith("UNITE:")||u.startsWith("UNITÉ:"))cur.unit=line.split(":")[1].trim();
+        else if(u.startsWith("PRIX:"))cur.prix=line.split(":")[1].trim();
+        else if(u.startsWith("CAT:"))cur.cat=line.split(":")[1].trim();
+      }
+    }
+    if(!articles.length){setAiErr("Aucun article détecté. Vérifiez le format.");return;}
+    setAiPreview({formData,articles});
+  }
+
+  function validerIA(){
+    if(!aiPreview)return;
+    setForm(x=>({...x,...aiPreview.formData}));
+    setLignesForm(aiPreview.articles);
+    setAiOpen(false);setAiPreview(null);setAiText("");setAiErr("");
+    setFormOpen(true);
+  }
+
+  const totalDevis=(d)=>{
+    try{const l=JSON.parse(d.lignes||"[]");if(l.length)return l.reduce((s,x)=>(+x.prix||0)*(+x.qty||1)+s,0);}catch(e){}
+    return +d.prix||0;
+  };
+
+  return(
+    <div>
+      {/* ── En-tête ── */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div style={{fontSize:15,fontWeight:700,color:"#1C1C1C",borderLeft:"3px solid #CC2222",paddingLeft:8}}>
+          Comparaison de devis ({groupes.length} groupe{groupes.length!==1?"s":""})
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setAiOpen(true)} style={{padding:"7px 14px",borderRadius:4,border:"1px solid #CC2222",background:"#fff",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#CC2222",fontWeight:600}}>🤖 Import IA</button>
+          <button onClick={()=>setTitreOpen(true)} style={{padding:"7px 14px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>+ Nouveau groupe</button>
+        </div>
+      </div>
+
+      {/* ── Modal titre nouveau groupe ── */}
+      {titreOpen&&<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.4)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{background:"#fff",borderRadius:10,padding:24,width:400,boxShadow:"0 8px 32px rgba(0,0,0,0.18)"}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>Nouveau groupe de devis</div>
+          <FG label="Titre du besoin (ex: Scotch étanchéité ALCOV)">
+            <Inp value={titreGroupe} onChange={e=>setTitreGroupe(e.target.value)} placeholder="Désignation du besoin à comparer"/>
+          </FG>
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:12}}>
+            <button onClick={()=>{setTitreOpen(false);setTitreGroupe("");}} style={{padding:"7px 14px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
+            <button onClick={()=>{if(!titreGroupe.trim())return;openNew(titreGroupe.trim());setTitreOpen(false);setTitreGroupe("");}} style={{padding:"7px 16px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>Créer →</button>
+          </div>
+        </div>
+      </div>}
+
+      {/* ── Modal Import IA ── */}
+      {aiOpen&&<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.4)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{background:"#fff",borderRadius:12,padding:24,width:520,maxWidth:"94vw",maxHeight:"90vh",overflow:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.18)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div style={{fontSize:14,fontWeight:700}}>🤖 Import IA — Devis fournisseur</div>
+            <button onClick={()=>{setAiOpen(false);setAiPreview(null);setAiErr("");setAiText("");}} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:"#7A7A7A"}}>✕</button>
+          </div>
+          {!aiPreview&&<>
+            <div style={{background:"#EBF3FF",borderRadius:8,padding:"10px 14px",marginBottom:12,fontSize:12,color:"#1A5DAB",lineHeight:1.7}}>
+              <div style={{fontWeight:700,marginBottom:4}}>Format attendu :</div>
+              TITRE: Scotch étanchéité ALCOV<br/>
+              FOURNISSEUR: Rubans du Sud Ouest<br/>
+              PROJET: ALCOV<br/>
+              DELAI: 5 jours<br/>
+              ARTICLE: S.F. étanchéité blanc ionomère<br/>
+              QTE: 12<br/>
+              UNITE: pcs<br/>
+              PRIX: 93.05
+            </div>
+            <textarea value={aiText||""} onChange={e=>setAiText(e.target.value)} placeholder="Colle ici le texte du devis..." style={{width:"100%",height:200,padding:"10px 12px",borderRadius:6,border:"1px solid #DDD",fontSize:11,fontFamily:"'DM Mono',monospace",resize:"vertical",boxSizing:"border-box"}}/>
+            {aiErr&&<div style={{marginTop:8,fontSize:12,color:"#CC2222",padding:"8px 12px",background:"#FFF0F0",borderRadius:6}}>{aiErr}</div>}
+            <div style={{display:"flex",justifyContent:"flex-end",marginTop:10}}>
+              <button onClick={()=>parseDevisIA(aiText)} style={{padding:"8px 20px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:600}}>Analyser →</button>
+            </div>
+          </>}
+          {aiPreview&&<>
+            <div style={{fontSize:13,fontWeight:700,color:"#2A7A2A",marginBottom:12}}>✓ {aiPreview.articles.length} article{aiPreview.articles.length>1?"s":""} détecté{aiPreview.articles.length>1?"s":""}</div>
+            <div style={{background:"#F9F9F9",borderRadius:6,padding:"10px 12px",marginBottom:12,fontSize:12}}>
+              <div><b>Titre :</b> {aiPreview.formData.titre||"—"}</div>
+              <div><b>Fournisseur :</b> {aiPreview.formData.fourn||"—"}</div>
+              {aiPreview.formData.delai&&<div><b>Délai :</b> {aiPreview.formData.delai}</div>}
+            </div>
+            {aiPreview.articles.map((a,i)=>(
+              <div key={i} style={{display:"flex",gap:8,padding:"4px 0",borderBottom:"0.5px solid #EEE",fontSize:12}}>
+                <span style={{flex:1}}>{a.article}</span>
+                <span style={{color:"#7A7A7A"}}>{a.qty} {a.unit}</span>
+                <span style={{fontFamily:"'DM Mono',monospace"}}>{(+a.prix*(+a.qty||1)).toLocaleString("fr-FR")} €</span>
+              </div>
+            ))}
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:12}}>
+              <button onClick={()=>setAiPreview(null)} style={{padding:"7px 14px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>← Modifier</button>
+              <button onClick={validerIA} style={{padding:"7px 16px",borderRadius:4,border:"none",background:"#2A7A2A",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>Ouvrir dans le formulaire →</button>
+            </div>
+          </>}
+        </div>
+      </div>}
+
+      {/* ── Groupes de devis ── */}
+      {groupes.length===0&&<div style={{textAlign:"center",padding:"40px 0",color:"#7A7A7A",fontSize:13}}>
+        Aucun groupe de devis actif.<br/>Crée un groupe pour comparer des fournisseurs.
+      </div>}
+
+      {groupes.map(titre=>{
+        const items=actifs.filter(d=>d.titre===titre);
+        const isOpen=groupeOpen===titre;
+        const best=items.reduce((a,b)=>totalDevis(a)<=totalDevis(b)?a:b,items[0]);
+        return(
+          <div key={titre} style={{background:"#fff",border:"0.5px solid #EEEEEE",borderRadius:8,marginBottom:12,overflow:"hidden"}}>
+            {/* En-tête groupe */}
+            <div onClick={()=>setGroupeOpen(isOpen?null:titre)} style={{padding:"12px 16px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",background:isOpen?"#F9F9F9":"#fff"}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>{titre}</div>
+                <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{items.length} devis · meilleur prix : {totalDevis(best).toLocaleString("fr-FR")} € ({best.fourn})</div>
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <button onClick={e=>{e.stopPropagation();openNew(titre);}} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#3A3A3A"}}>+ Devis</button>
+                <span style={{color:"#7A7A7A",fontSize:12}}>{isOpen?"▲":"▼"}</span>
+              </div>
+            </div>
+
+            {/* Tableau comparatif */}
+            {isOpen&&<div style={{padding:"0 16px 16px"}}>
+              {/* Headers */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 80px 100px 80px 1fr",gap:8,padding:"8px 0",borderBottom:"1px solid #EEE",fontSize:11,fontWeight:700,color:"#7A7A7A"}}>
+                <span>Fournisseur</span><span>Délai</span><span style={{textAlign:"right"}}>Total HT</span><span>Statut</span><span>Articles</span>
+              </div>
+              {items.sort((a,b)=>totalDevis(a)-totalDevis(b)).map((d,idx)=>{
+                const isBest=idx===0;
+                const ligs=lignesFrom(d);
+                return(
+                  <div key={d.id} style={{display:"grid",gridTemplateColumns:"1fr 80px 100px 80px 1fr",gap:8,padding:"10px 0",borderBottom:"0.5px solid #F5F5F5",alignItems:"start",background:isBest?"#F0FFF4":"#fff",borderRadius:isBest?4:0}}>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:600,color:"#1C1C1C",display:"flex",alignItems:"center",gap:6}}>
+                        {isBest&&<span style={{fontSize:10,background:"#2A7A2A",color:"#fff",padding:"1px 5px",borderRadius:3}}>Mieux-disant</span>}
+                        {d.fourn}
+                      </div>
+                      {d.note&&<div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{d.note}</div>}
+                    </div>
+                    <div style={{fontSize:12,color:"#3A3A3A"}}>{d.delai||"—"}</div>
+                    <div style={{fontSize:13,fontWeight:700,color:isBest?"#2A7A2A":"#1C1C1C",textAlign:"right",fontFamily:"'DM Mono',monospace"}}>{totalDevis(d).toLocaleString("fr-FR")} €</div>
+                    <div style={{fontSize:11}}>
+                      {d.statut==="accepté"?<span style={{color:"#2A7A2A",fontWeight:700}}>✓ Accepté</span>:<span style={{color:"#7A7A7A"}}>En attente</span>}
+                    </div>
+                    <div style={{fontSize:11,color:"#3A3A3A"}}>
+                      {ligs.map((l,i)=><div key={i}>{l.article} · {l.qty} {l.unit}{l.prix?` · ${(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")} €`:""}</div>)}
+                    </div>
+                  </div>
+                );
+              })}
+              {/* Actions */}
+              <div style={{display:"flex",gap:8,marginTop:12,justifyContent:"flex-end"}}>
+                {items.map(d=>(
+                  <div key={d.id} style={{display:"flex",gap:6}}>
+                    <button onClick={()=>openEdit(d)} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>Modifier ({d.fourn})</button>
+                    <button onClick={()=>accepter(d)} style={{padding:"5px 12px",borderRadius:4,border:"none",background:"#2A7A2A",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>✓ Accepter ({d.fourn})</button>
+                  </div>
+                ))}
+              </div>
+            </div>}
+          </div>
+        );
+      })}
+
+      {/* ── Archives ── */}
+      {archives.length>0&&<details style={{marginTop:16}}>
+        <summary style={{fontSize:12,color:"#7A7A7A",cursor:"pointer",padding:"8px 0"}}>Devis archivés ({archives.length})</summary>
+        {archives.map(d=>(
+          <div key={d.id} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"0.5px solid #EEE",fontSize:12,color:"#7A7A7A"}}>
+            <span>{d.titre} — {d.fourn}</span>
+            <span style={{fontFamily:"'DM Mono',monospace"}}>{totalDevis(d).toLocaleString("fr-FR")} €</span>
+            <span style={{color:"#CC2222"}}>Refusé</span>
+          </div>
+        ))}
+      </details>}
+
+      {/* ── Panel formulaire devis ── */}
+      {formOpen&&<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.4)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget)setFormOpen(false);}}>
+        <div style={{background:"#fff",borderRadius:12,padding:24,width:560,maxWidth:"94vw",maxHeight:"92vh",overflow:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>{editing?"Modifier le devis":"Nouveau devis"}</div>
+            <button onClick={()=>setFormOpen(false)} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:"#7A7A7A"}}>✕</button>
+          </div>
+          <FG label="Groupe / besoin"><Inp value={form.titre||""} onChange={e=>f("titre",e.target.value)} placeholder="Ex: Scotch étanchéité ALCOV"/></FG>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <FG label="Fournisseur"><Sel value={form.fourn||""} onChange={e=>f("fourn",e.target.value)}>
+              <option value="">— Choisir —</option>
+              {(fournisseurs?.rows||[]).map(fo=><option key={fo.id}>{fo.nom}</option>)}
+            </Sel></FG>
+            <FG label="Projet"><Sel value={form.projet||""} onChange={e=>f("projet",e.target.value)}>
+              <option value="">— Aucun —</option>
+              {(projects?.rows||[]).map(p=><option key={p.id}>{p.name}</option>)}
+            </Sel></FG>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <FG label="Date du devis"><Inp type="date" value={form.date||TODAY} onChange={e=>f("date",e.target.value)}/></FG>
+            <FG label="Délai annoncé"><Inp value={form.delai||""} onChange={e=>f("delai",e.target.value)} placeholder="Ex: 5 jours ouvrés"/></FG>
+          </div>
+          <FG label="Articles proposés">
+            {lignesForm.map((l,i)=>(
+              <div key={i} style={{display:"grid",gridTemplateColumns:"2fr 60px 60px 80px 80px 24px",gap:4,marginBottom:4,alignItems:"center"}}>
+                <Inp value={l.article||""} onChange={e=>fl(i,"article",e.target.value)} placeholder="Désignation"/>
+                <Inp type="number" value={l.qty||""} onChange={e=>fl(i,"qty",e.target.value)} placeholder="Qté"/>
+                <Sel value={l.unit||"pcs"} onChange={e=>fl(i,"unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</Sel>
+                <Inp type="number" value={l.prix||""} onChange={e=>fl(i,"prix",e.target.value)} placeholder="Prix/u"/>
+                <Sel value={l.cat||""} onChange={e=>fl(i,"cat",e.target.value)}><option value="">Catégorie</option>{CATS.map(cat=><option key={cat}>{cat}</option>)}</Sel>
+                <button onClick={()=>removeLigne(i)} style={{background:"none",border:"none",cursor:"pointer",fontSize:14,color:"#CC2222"}}>✕</button>
+              </div>
+            ))}
+            <button onClick={addLigne} style={{padding:"5px 12px",borderRadius:4,border:"1px dashed #DDD",background:"#F9F9F9",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#3A3A3A",marginTop:4}}>+ Ajouter un article</button>
+          </FG>
+          <div style={{background:"#F9F9F9",borderRadius:6,padding:"8px 12px",marginBottom:12,textAlign:"right",fontSize:13,fontWeight:700,fontFamily:"'DM Mono',monospace"}}>
+            Total : {lignesForm.reduce((s,l)=>(+l.prix||0)*(+l.qty||1)+s,0).toLocaleString("fr-FR")} €
+          </div>
+          <FG label="Note / conditions"><Inp value={form.note||""} onChange={e=>f("note",e.target.value)} placeholder="Conditions de paiement, remarques..."/></FG>
+          <FG label="Tags"><TagSelector tags={form.tags||""} onChange={v=>f("tags",v)} projetNom={form.projet||""} projects={projects}/></FG>
+          {err&&<div style={{fontSize:12,color:"#CC2222",marginBottom:8,padding:"6px 10px",background:"#FFF0F0",borderRadius:4}}>{err}</div>}
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:8}}>
+            <button onClick={()=>setFormOpen(false)} style={{padding:"8px 16px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
+            <button onClick={save} disabled={saving} style={{padding:"8px 20px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>
+              {saving?"...":editing?"Mettre à jour":"Enregistrer"}
+            </button>
+          </div>
+        </div>
+      </div>}
+    </div>
+  );
+}
+
 const EO={ref:"",fourn:"",article:"",qty:"",unit:"pcs",prix:"",cat:"",loc:"",date:TODAY,dateLivraison:"",lieuLivraison:"La Rochelle",projet:"",lignes:"",tags:""};
+const ED={titre:"",fourn:"",projet:"",description:"",lignes:"",prix:"",delai:"",statut:"en attente",date:TODAY,note:"",tags:""};
 // Ligne d'article vide
 const EL={article:"",qty:"",unit:"pcs",prix:"",cat:""};
-function Commandes({sheet,stocks,fournisseurs,projects,events}){
+function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
+  const [onglet,setOnglet]=useState("commandes"); // "commandes" | "devis"
   const [filterProjet,setFilterProjet]=useState("");
   const [filterTag,setFilterTag]=useState("");
   const [showAllHisto,setShowAllHisto]=useState(false);
@@ -3382,7 +4225,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
   const fl=(i,k,v)=>setLignesForm(ls=>ls.map((l,j)=>j===i?{...l,[k]:v}:l));
   const addLigne=()=>setLignesForm(ls=>[...ls,{...EL}]);
   const removeLigne=i=>setLignesForm(ls=>ls.length>1?ls.filter((_,j)=>j!==i):ls);
-  const isBool=v=>v===true||v==="TRUE";
+  const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
 
   // Parse les lignes depuis une commande existante
 
@@ -3395,11 +4238,11 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
       await addToStock(o);
     } else {
       if(!isBool(o.factureCompta)){
+        const snap=[...stocks.rows];
         const lignes=getLignes(o);
         for(const l of lignes){
           if(!l.article)continue;
-          const idx=stocks.rows.findIndex(s=>s.ref.toLowerCase()===l.article.toLowerCase());
-          if(idx>=0){const s=stocks.rows[idx];await stocks.update(s.id,{...s,qty:Math.max(0,Number(s.qty)-(+l.qty||0))});}
+          await updateStockQty(stocks,snap,l.article,-(+l.qty||0),{type:"commande",label:`Annulation réception : ${o.ref||o.fourn||""}`,projet:o.projet||""});
         }
       }
       next.factureCompta=false;
@@ -3509,18 +4352,25 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
 
   async function addToStock(ord){
     const lignes=getLignes(ord);
+    // SNAPSHOT avant les updates séquentiels
+    const snap=[...stocks.rows];
     for(const l of lignes){
       if(!l.article)continue;
-      const idx=stocks.rows.findIndex(s=>s.ref.toLowerCase()===l.article.toLowerCase());
-      if(idx>=0){
-        const s=stocks.rows[idx];
-        // Fusionner les tags existants avec les nouveaux
-        const tagsExist=(s.tags||"").split(",").filter(Boolean);
+      const existing=snap.find(s=>normRef(s.ref)===normRef(l.article));
+      if(existing){
+        const tagsExist=(existing.tags||"").split(",").filter(Boolean);
         const tagsNew=(ord.tags||"").split(",").filter(Boolean);
         const tagsMerge=[...new Set([...tagsExist,...tagsNew])].join(",");
-        await stocks.update(s.id,{...s,qty:Number(s.qty)+(+l.qty||0),tags:tagsMerge});
+        await updateStockQty(stocks,snap,l.article,+l.qty||0,{type:"commande",label:ord.ref||ord.fourn||"",projet:ord.projet||"",date:ord.date||TODAY});
+        // Mettre à jour tags ET projet
+        const sUpdated=stocks.rows.find(s=>normRef(s.ref)===normRef(l.article));
+        if(sUpdated){
+          const needsUpdate=(tagsMerge!==existing.tags)||(ord.projet&&!existing.projet);
+          if(needsUpdate)await stocks.update(sUpdated.id,{...sUpdated,tags:tagsMerge,projet:sUpdated.projet||ord.projet||""});
+        }
       } else {
-        await stocks.add({ref:l.article,cat:l.cat||ord.cat||"",qty:+l.qty||0,min:0,unit:l.unit||"pcs",prix:+l.prix||0,loc:ord.loc||"",fourn:ord.fourn||"",tags:ord.tags||""});
+        const initHist=JSON.stringify([{date:ord.date||TODAY,type:"commande",label:ord.ref||ord.fourn||"",projet:ord.projet||"",fourn:ord.fourn||"",qty:+l.qty||0,qtyApres:+l.qty||0}]);
+        await stocks.add({ref:l.article,cat:l.cat||ord.cat||"",qty:+l.qty||0,min:0,unit:l.unit||"pcs",prix:+l.prix||0,loc:ord.loc||"",fourn:ord.fourn||"",tags:ord.tags||"",projet:ord.projet||"",historique:initHist});
       }
     }
   }
@@ -3625,6 +4475,43 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
   </SidePanel>;
 
   return <WithPanel panel={panel}>
+    {/* ── Navigation onglets ── */}
+    <div style={{display:"flex",gap:0,marginBottom:16,borderBottom:"2px solid #EEEEEE"}}>
+      {[["commandes","📦 Commandes"],["devis","📋 Devis"]].map(([id,label])=>(
+        <button key={id} onClick={()=>setOnglet(id)} style={{padding:"8px 18px",border:"none",background:"none",cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif",fontWeight:onglet===id?700:400,color:onglet===id?"#CC2222":"#7A7A7A",borderBottom:onglet===id?"2px solid #CC2222":"2px solid transparent",marginBottom:-2}}>{label}</button>
+      ))}
+    </div>
+
+    {/* ── Module Devis ── */}
+    {onglet==="devis"&&<ModuleDevis
+      devis={devis}
+      fournisseurs={fournisseurs}
+      projects={projects}
+      onAccepter={async(d,ligs)=>{
+        // Créer la commande depuis le devis accepté
+        const cmd={...EO,
+          ref:`Devis → ${d.titre}`,
+          fourn:d.fourn,
+          article:ligs.length===1?ligs[0].article:"",
+          qty:ligs.length===1?ligs[0].qty:"",
+          unit:ligs.length===1?ligs[0].unit:"pcs",
+          prix:ligs.length===1?ligs[0].prix:"",
+          cat:ligs.length===1?ligs[0].cat:"",
+          lignes:ligs.length>1?JSON.stringify(ligs):"",
+          projet:d.projet||"",
+          tags:d.tags||"",
+          date:TODAY,
+          passee:false,
+          recue:false,
+          factureCompta:false,
+        };
+        await sheet.add(cmd);
+        setOnglet("commandes");
+        alert(`Commande créée : "${d.fourn}" — ${d.titre}`);
+      }}
+    />}
+
+    {onglet==="commandes"&&<>
     <FiltreProjetTag projects={projects} filterProjet={filterProjet} setFilterProjet={setFilterProjet} filterTag={filterTag} setFilterTag={setFilterTag}/>
     {/* ── Panel Import IA — Format texte structuré ── */}
     {aiOpen&&<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.4)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget){setAiOpen(false);setAiPreview(null);setAiErr("");setAiText("");setNewFourn(false);}}}>      <div style={{background:"#fff",borderRadius:12,padding:24,width:560,maxWidth:"94vw",maxHeight:"90vh",overflow:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.18)"}}>
@@ -3775,6 +4662,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
               {o.lieuLivraison&&<span style={{marginLeft:6,background:o.lieuLivraison==="Chantier"?"#EBF3FF":"#F2F0ED",color:o.lieuLivraison==="Chantier"?"#1A5DAB":"#3A3A3A",fontSize:10,padding:"1px 6px",borderRadius:3,fontWeight:600}}>{o.lieuLivraison==="Chantier"?"📍 Chantier":"🏭 La Rochelle"}</span>}
             </span>}
             {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
+            {(o.tags||"").split(",").filter(Boolean).map((t,i)=><span key={i} style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:10}}>{t.trim()}</span>)}
           </div>
           {/* Lignes articles */}
           {getLignes(o).map((l,i)=>(
@@ -3811,6 +4699,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
           <div style={{fontSize:12,color:"#7A7A7A",marginBottom:8,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
             <span>{o.fourn} · {fmt(o.date)} · {totalCommande(o)>0?totalCommande(o).toLocaleString("fr-FR")+" €":""}</span>
             {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
+            {(o.tags||"").split(",").filter(Boolean).map((t,i)=><span key={i} style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:10}}>{t.trim()}</span>)}
           </div>
           <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
             <Check checked={false} onChange={()=>toggleRecue(o)} label="Annuler réception (retour en cours)" color="#CC2222"/>
@@ -3830,6 +4719,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
             <div style={{fontSize:11,color:"#7A7A7A",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
               <span style={{fontFamily:"'DM Mono',monospace"}}>{o.fourn} · {fmt(o.date)}{totalCommande(o)>0&&` · ${totalCommande(o).toLocaleString("fr-FR")} €`}</span>
               {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
+              {(o.tags||"").split(",").filter(Boolean).map((t,i)=><span key={i} style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:10}}>{t.trim()}</span>)}
             </div>
           </div>
           <Badge label="Reçue" bg="#F0FFF0" color="#2A7A2A"/>
@@ -3840,7 +4730,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
             const lignes=getLignes(o);
             for(const l of lignes){
               if(!l.article)continue;
-              const sx=stocks.rows.find(x=>x.ref.toLowerCase()===l.article.toLowerCase());
+              const sx=stocks.rows.find(x=>normRef(x.ref)===normRef(l.article));
               if(sx){await stocks.update(sx.id,{...sx,qty:Math.max(0,Number(sx.qty)-(+l.qty||0))});}
             }
             if(o.dateLivraison&&events){const evLivr=events.rows.find(e=>e.type==="livraison"&&(e.title||"").includes(o.article||getLignes(o)[0]?.article||"")&&toISO(e.date)===toISO(o.dateLivraison));if(evLivr)await events.remove(evLivr.id);}
@@ -3859,6 +4749,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events}){
         </div>
       )}
     </Bd>}
+    </>}
   </WithPanel>;
 }
 
@@ -3889,6 +4780,7 @@ function App(){
   const fournisseurs=useSheet("fournisseurs");
   const stocks=useSheet("stocks");
   const orders=useSheet("orders");
+  const devis=useSheet("Devis");
   const notes=useSheet("notes");
   const prestataires=useSheet("prestataires");
   const prestMissions=useSheet("prestMissions");
@@ -3955,12 +4847,12 @@ function App(){
         {panel==="taches"         &&<Taches sheet={tasks} projects={projects}/>}
         {panel==="calendrier"     &&<Calendrier sheet={events} projects={projects} atelierChantier={atelierChantier}/>}
         {panel==="equipes"        &&<Equipes sheet={team} journal={journal}/>}
-        {panel==="atelier"        &&<MissionModule moduleType="atelier" sheet={atelierChantier} projects={projects} team={team} stocks={stocks} events={events}/>}
-        {panel==="chantier"       &&<MissionModule moduleType="chantier" sheet={atelierChantier} projects={projects} team={team} stocks={stocks} events={events} orders={orders}/>}
-        {panel==="prestataires"   &&<Prestataires sheet={prestataires} missions={prestMissions} projects={projects} stocks={stocks} events={events}/>}
+        {panel==="atelier"        &&<MissionModule moduleType="atelier" sheet={atelierChantier} projects={projects} team={team} stocks={stocks} events={events} fournisseurs={fournisseurs}/>}
+        {panel==="chantier"       &&<MissionModule moduleType="chantier" sheet={atelierChantier} projects={projects} team={team} stocks={stocks} events={events} orders={orders} fournisseurs={fournisseurs}/>}
+        {panel==="prestataires"   &&<Prestataires sheet={prestataires} missions={prestMissions} projects={projects} stocks={stocks} events={events} fournisseurs={fournisseurs}/>}
         {panel==="fournisseurs"   &&<Fournisseurs sheet={fournisseurs}/>}
-        {panel==="stocks"         &&<Stocks sheet={stocks} fournisseurs={fournisseurs} projects={projects} orders={orders}/>}
-        {panel==="commandes"      &&<Commandes sheet={orders} stocks={stocks} fournisseurs={fournisseurs} projects={projects} events={events}/>}
+        {panel==="stocks"         &&<Stocks sheet={stocks} fournisseurs={fournisseurs} projects={projects} orders={orders} atelierChantier={atelierChantier} prestMissions={prestMissions}/>}
+        {panel==="commandes"      &&<Commandes sheet={orders} stocks={stocks} fournisseurs={fournisseurs} projects={projects} events={events} devis={devis}/>}
       </div>
       {/* Footer */}
       <div style={{textAlign:"center",padding:"10px 20px",fontSize:10,color:"#7A7A7A",borderTop:"0.5px solid #DDDDDD",background:"#fff",fontFamily:"'DM Sans',sans-serif"}}>
