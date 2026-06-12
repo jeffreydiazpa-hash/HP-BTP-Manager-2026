@@ -42,7 +42,7 @@
 const { useState, useEffect, useCallback } = React;
 
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v2.6.0";
+const VERSION = "v2.8.5";
 
 // ── Système d'authentification ──
 // Token stocké en mémoire uniquement, expire toutes les 5 minutes
@@ -50,20 +50,20 @@ let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
 
+// Fonction pour définir l'email depuis l'écran de login
+function setAuthEmail(email){ _authEmail=email.trim().toLowerCase(); _authToken=null; _tokenExpiry=0; }
+function clearAuth(){ _authEmail=null; _authToken=null; _tokenExpiry=0; }
+
 async function ensureAuth() {
   const now = Date.now();
   if (_authToken && _authEmail && now < _tokenExpiry - 30000) {
     return { email: _authEmail, token: _authToken };
   }
-  if (!_authEmail) {
-    const email = window.prompt("Entrez votre email Google autorisé :");
-    if (!email) throw new Error("Authentification annulée");
-    _authEmail = email.trim().toLowerCase();
-  }
+  if (!_authEmail) throw new Error("Email non défini — reconnectez-vous");
   const token = await jsonp({ action: "auth", email: _authEmail });
   if (!token.ok) {
-    _authEmail = null;
-    throw new Error(token.msg || "Authentification échouée — vérifiez votre email");
+    _authToken=null; _tokenExpiry=0;
+    throw new Error(token.msg || "Email non autorisé");
   }
   _authToken = token.token;
   _tokenExpiry = now + 5 * 60 * 1000;
@@ -226,6 +226,9 @@ const UC={
   done:{bg:"#EBF3FF",tx:"#1A5DAB",lbl:"Terminée"},
 };
 const EV_COLORS={rdv:"#2A7A2A",deadline:"#CC2222",chantier:"#1A5DAB",livraison:"#7A4A00",deplacement:"#7A2A7A",prestation:"#CC6600"};
+// Types d'événements auto-générés depuis d'autres modules — ne pas modifier directement
+const EV_AUTO_TYPES=new Set(["chantier","prestation","livraison"]);
+const EV_AUTO_MODULE={chantier:"module Chantier",prestation:"module Prestataires",livraison:"module Commandes"};
 const EV_LABELS={rdv:"RDV",deadline:"Deadline",chantier:"Chantier",livraison:"Livraison",deplacement:"Déplacement",prestation:"Prestation"};
 const CATS=["Visserie & fixations","Profilés aluminium","Membranes ETFE","Acier structure","Structure bois","Étanchéité & joints","Câblerie & électricité","Plomberie & fluides","Revêtements & finitions","Matériaux isolants","Consommables atelier","Outillage","EPI & sécurité","Fournitures de bureau","Transport & logistique","Autre"];
 const UNITS=["pcs","m²","ml","barres","kg","rouleaux","cartouches","boîtes"];
@@ -437,8 +440,8 @@ function calcDepensesProjet(p, orders, prestMissions){
 }
 
 // ══ DASHBOARD ══
-function Dashboard({sheets}){
-  const {projects,tasks,stocks,orders,events,prestMissions,atelierChantier}=sheets;
+function Dashboard({sheets,hideFinances=false}){
+  const {projects,tasks,stocks,orders,events,prestMissions,atelierChantier,journal}=sheets;
   const pending=tasks.rows.filter(t=>!t.done&&t.done!=="TRUE");
   const isDone=t=>t.done===true||t.done==="TRUE";
   const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
@@ -455,6 +458,15 @@ function Dashboard({sheets}){
   const upcoming=[...events.rows].sort((a,b)=>toISO(a.date).localeCompare(toISO(b.date))).filter(e=>toISO(e.date)>=TODAY).slice(0,5);
   const loading=Object.values(sheets).some(s=>s.loading);
   const [showFinances,setShowFinances]=useState(false);
+  const [noteText,setNoteText]=useState("");
+  const [savingNote,setSavingNote]=useState(false);
+  async function saveNote(){
+    if(!noteText.trim())return;
+    setSavingNote(true);
+    await journal.add({date:TODAY,texte:noteText.trim()});
+    setNoteText("");
+    setSavingNote(false);
+  }
 
   // ── Finances globales — projets non terminés uniquement ──
   const projetsActifsFinance=projects.rows.filter(p=>p.statut!=="terminé");
@@ -562,9 +574,9 @@ function Dashboard({sheets}){
               {/* KPIs synthèse */}
               <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:16}}>
                 {[
-                  {lbl:"Chiffre d'affaires",val:totalCA.toLocaleString("fr-FR")+" €",sub:`${projetsActifsFinance.length} projet${projetsActifsFinance.length>1?"s":""}`,color:"#1C1C1C"},
-                  {lbl:"Dépenses totales",val:totalDepenses.toLocaleString("fr-FR")+" €",sub:`${pctDep}% du CA`,color:pctDep>90?"#CC2222":pctDep>60?"#CC8800":"#3A3A3A"},
-                  {lbl:"Solde CA − Dépenses",val:(solde>=0?"+":"")+solde.toLocaleString("fr-FR")+" €",sub:solde>=0?"Positif":"Déficit",color:soldeColor},
+                  {lbl:"Chiffre d'affaires",val:hideFinances?"•••":totalCA.toLocaleString("fr-FR")+" €",sub:`${projetsActifsFinance.length} projet${projetsActifsFinance.length>1?"s":""}`,color:"#1C1C1C"},
+                  {lbl:"Dépenses totales",val:hideFinances?"•••":totalDepenses.toLocaleString("fr-FR")+" €",sub:hideFinances?"":""+pctDep+"% du CA",color:pctDep>90?"#CC2222":pctDep>60?"#CC8800":"#3A3A3A"},
+                  {lbl:"Solde CA − Dépenses",val:hideFinances?"•••":(solde>=0?"+":"")+solde.toLocaleString("fr-FR")+" €",sub:solde>=0?"Positif":"Déficit",color:soldeColor},
                 ].map((m,i)=>(
                   <div key={i} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderRadius:8,padding:"14px 16px"}}>
                     <div style={{fontSize:11,color:"#7A7A7A",marginBottom:4}}>{m.lbl}</div>
@@ -576,7 +588,6 @@ function Dashboard({sheets}){
 
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
 
-                {/* Graphique CA vs Dépenses par projet */}
                 <Bd>
                   <SecTitle>CA vs Dépenses par projet</SecTitle>
                   {!projData.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucun projet avec budget défini.</div>}
@@ -593,68 +604,238 @@ function Dashboard({sheets}){
                           <div style={{flex:1,height:8,background:"#EEEEEE",borderRadius:4,overflow:"hidden"}}>
                             <div style={{height:"100%",width:`${p.ca/maxVal*100}%`,background:"#1A5DAB",borderRadius:4}}/>
                           </div>
-                          <span style={{fontSize:10,color:"#7A7A7A",width:64,textAlign:"right",flexShrink:0}}>{p.ca.toLocaleString("fr-FR")} €</span>
+                          <span style={{fontSize:10,color:"#7A7A7A",width:64,textAlign:"right",flexShrink:0}}>{hideFinances?"•••":p.ca.toLocaleString("fr-FR")+' €'}</span>
                         </div>
                         <div style={{display:"flex",alignItems:"center",gap:6}}>
                           <span style={{fontSize:10,color:"#7A7A7A",width:28,flexShrink:0}}>Dep.</span>
                           <div style={{flex:1,height:8,background:"#EEEEEE",borderRadius:4,overflow:"hidden"}}>
                             <div style={{height:"100%",width:`${p.dep/maxVal*100}%`,background:pct>90?"#CC2222":pct>60?"#CC8800":"#2A7A2A",borderRadius:4}}/>
                           </div>
-                          <span style={{fontSize:10,color:"#7A7A7A",width:64,textAlign:"right",flexShrink:0}}>{p.dep.toLocaleString("fr-FR")} €</span>
+                          <span style={{fontSize:10,color:"#7A7A7A",width:64,textAlign:"right",flexShrink:0}}>{hideFinances?"•••":p.dep.toLocaleString("fr-FR")+' €'}</span>
                         </div>
                       </div>
                     );
                   })}
                 </Bd>
 
-                {/* Donut répartition dépenses — corrigé */}
                 <Bd>
                   <SecTitle>Répartition des dépenses</SecTitle>
                   {totalDepenses>0?(()=>{
-                    // Donut SVG — formule correcte
-                    // SVG circle commence à 3h, on veut démarrer à 12h → offset = circ/4
-                    // Arc 1 (commandes) : offset = circ/4 (recule de 25% pour démarrer à 12h)
-                    // Arc 2 (prest) : offset = circ/4 - cmdArc (décalé après le 1er)
                     const r=52,cx=68,cy=68,circ=2*Math.PI*r;
                     const cmdArc=totalEngagees/totalDepenses*circ;
                     const prestArc=totalPrest/totalDepenses*circ;
+                    // Évolution mensuelle — 6 derniers mois
+                    const now=new Date(TODAY+"T00:00:00");
+                    const moisLabels=[];const moisCmd=[];const moisPrest=[];
+                    for(let i=5;i>=0;i--){
+                      const d=new Date(now.getFullYear(),now.getMonth()-i,1);
+                      const mm=String(d.getMonth()+1).padStart(2,"0");
+                      const yy=d.getFullYear();
+                      const key=`${yy}-${mm}`;
+                      moisLabels.push(MONTHS[d.getMonth()].slice(0,3));
+                      const cmdM=orders.rows.filter(o=>{if(!o.date)return false;const od=toISO(o.date);return od&&od.slice(0,7)===key&&(projetsActifsFinance.some(p=>p.name===o.projet)||!o.projet);}).reduce((s,o)=>s+getLignes(o).reduce((ss,l)=>(+l.prix||0)*(+l.qty||1)+ss,0)||(+o.prix||0)*(+o.qty||1),0);
+                      const prestM=(prestMissions?.rows||[]).filter(m=>{const md=toISO(m.dateFin||m.dateDebut);return md&&md.slice(0,7)===key&&(projetsActifsFinance.some(p=>p.name===m.projet)||!m.projet);}).reduce((s,m)=>s+Number(m.prix||0),0);
+                      moisCmd.push(Math.round(cmdM));moisPrest.push(Math.round(prestM));
+                    }
+                    const maxM=Math.max(...moisCmd.map((v,i)=>v+moisPrest[i]),1);
+                    const bw=26;const bh=90;const gap=6;
                     return(
-                      <div style={{display:"flex",alignItems:"center",gap:16}}>
-                        <svg width="136" height="136" viewBox="0 0 136 136" style={{flexShrink:0}}>
-                          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEEEEE" strokeWidth="20"/>
-                          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#CC2222" strokeWidth="20"
-                            strokeDasharray={`${cmdArc} ${circ-cmdArc}`}
-                            strokeDashoffset={circ/4}
-                            style={{transformOrigin:"68px 68px"}}/>
-                          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#CC8800" strokeWidth="20"
-                            strokeDasharray={`${prestArc} ${circ-prestArc}`}
-                            strokeDashoffset={circ/4-cmdArc}
-                            style={{transformOrigin:"68px 68px"}}/>
-                          <text x={cx} y={cy-5} textAnchor="middle" fontSize="14" fontWeight="700" fill="#1C1C1C" fontFamily="DM Sans,sans-serif">{pctDep}%</text>
-                          <text x={cx} y={cx+12} textAnchor="middle" fontSize="9" fill="#7A7A7A" fontFamily="DM Sans,sans-serif">consommé</text>
-                        </svg>
-                        <div style={{flex:1}}>
-                          {[
-                            {color:"#CC2222",lbl:"Commandes",val:totalEngagees,pct:partCmd},
-                            {color:"#CC8800",lbl:"Prestations",val:totalPrest,pct:partPrest},
-                          ].map((x,i)=>(
-                            <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                              <div style={{width:10,height:10,borderRadius:2,background:x.color,flexShrink:0}}/>
-                              <div>
-                                <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C"}}>{x.lbl}</div>
-                                <div style={{fontSize:11,color:"#7A7A7A"}}>{x.val.toLocaleString("fr-FR")} € · {x.pct}%</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,alignItems:"stretch"}}>
+                        {/* Gauche : grand donut centré + légende en dessous */}
+                        <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+                          <svg width="180" height="180" viewBox="0 0 136 136" style={{display:"block"}}>
+                            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEEEEE" strokeWidth="20"/>
+                            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#CC2222" strokeWidth="20"
+                              strokeDasharray={`${cmdArc} ${circ-cmdArc}`} strokeDashoffset={circ/4}/>
+                            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#CC8800" strokeWidth="20"
+                              strokeDasharray={`${prestArc} ${circ-prestArc}`} strokeDashoffset={circ/4-cmdArc}/>
+                            <text x={cx} y={cy-4} textAnchor="middle" fontSize="14" fontWeight="700" fill="#1C1C1C" fontFamily="DM Sans,sans-serif">{pctDep}%</text>
+                            <text x={cx} y={cy+12} textAnchor="middle" fontSize="9" fill="#7A7A7A" fontFamily="DM Sans,sans-serif">consommé</text>
+                          </svg>
+                          <div style={{marginTop:16,width:"100%",maxWidth:220}}>
+                            {[{color:"#CC2222",lbl:"Commandes",val:totalEngagees,pct:partCmd},{color:"#CC8800",lbl:"Prestations",val:totalPrest,pct:partPrest}].map((x,i)=>(
+                              <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                                <div style={{width:10,height:10,borderRadius:2,background:x.color,flexShrink:0}}/>
+                                <div style={{flex:1}}>
+                                  <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C"}}>{x.lbl}</div>
+                                  <div style={{fontSize:11,color:"#7A7A7A"}}>{hideFinances?"•••":x.val.toLocaleString("fr-FR")+" €"} · {x.pct}%</div>
+                                </div>
                               </div>
+                            ))}
+                            <div style={{borderTop:"0.5px solid #EEEEEE",paddingTop:8,marginTop:4}}>
+                              <div style={{fontSize:10,color:"#7A7A7A"}}>Total dépenses</div>
+                              <div style={{fontSize:15,fontWeight:700,color:"#1C1C1C"}}>{hideFinances?"•••":totalDepenses.toLocaleString("fr-FR")+' €'}</div>
                             </div>
-                          ))}
-                          <div style={{borderTop:"0.5px solid #EEEEEE",paddingTop:8}}>
-                            <div style={{fontSize:10,color:"#7A7A7A"}}>Total dépenses</div>
-                            <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>{totalDepenses.toLocaleString("fr-FR")} €</div>
+                          </div>
+                        </div>
+                        {/* Droite : évolution mensuelle centrée verticalement */}
+                        <div style={{display:"flex",flexDirection:"column",justifyContent:"center"}}>
+                          <div style={{fontSize:11,fontWeight:700,color:"#3A3A3A",marginBottom:12}}>Évolution mensuelle</div>
+                          <div style={{display:"flex",gap:`${gap}px`,alignItems:"flex-end",height:`${bh+20}px`}}>
+                            {moisLabels.map((lbl,i)=>{
+                              const cmd=moisCmd[i];const prest=moisPrest[i];const total=cmd+prest;
+                              const hCmd=total>0?Math.round(cmd/maxM*bh):0;
+                              const hPrest=total>0?Math.round(prest/maxM*bh):0;
+                              return(
+                                <div key={i} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,flex:1}}>
+                                  {total>0&&<div style={{fontSize:9,color:"#7A7A7A",whiteSpace:"nowrap"}}>{(total/1000).toFixed(0)}k</div>}
+                                  <div style={{width:"100%",display:"flex",flexDirection:"column-reverse"}}>
+                                    {hPrest>0&&<div style={{height:`${hPrest}px`,background:"#CC8800",borderRadius:hCmd>0?"0":"3px 3px 0 0",width:"100%"}}/>}
+                                    {hCmd>0&&<div style={{height:`${hCmd}px`,background:"#CC2222",borderRadius:"3px 3px 0 0",width:"100%"}}/>}
+                                    {total===0&&<div style={{height:4,background:"#EEEEEE",borderRadius:3,width:"100%"}}/>}
+                                  </div>
+                                  <div style={{fontSize:9,color:"#7A7A7A",whiteSpace:"nowrap"}}>{lbl}</div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div style={{display:"flex",gap:12,marginTop:10}}>
+                            {[["#CC2222","Commandes"],["#CC8800","Prestations"]].map(([col,lbl],i)=>(
+                              <div key={i} style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:"#7A7A7A"}}>
+                                <div style={{width:8,height:8,background:col,borderRadius:1}}/>{lbl}
+                              </div>
+                            ))}
                           </div>
                         </div>
                       </div>
                     );
                   })():<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune dépense enregistrée.</div>}
                 </Bd>
+
+                <Bd>
+                  <SecTitle>Stock immobilisé</SecTitle>
+                  {(()=>{
+                    const colors=["#CC2222","#1A5DAB","#2A7A2A","#CC8800","#7A2A7A","#CC6600","#3A3A3A","#2A7A7A"];
+                    const stockActif=stocks.rows.filter(s=>Number(s.qty)>0&&Number(s.prix)>0);
+                    const valeurTotale=stocks.rows.reduce((s,x)=>(Number(x.qty)||0)*(Number(x.prix)||0)+s,0);
+                    const byCat={};
+                    for(const s of stocks.rows){
+                      const v=(Number(s.qty)||0)*(Number(s.prix)||0);
+                      if(v<=0)continue;
+                      const cat=s.cat||"Autre";
+                      byCat[cat]=(byCat[cat]||0)+v;
+                    }
+                    const catData=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+                    const topArticles=[...stocks.rows].filter(s=>(Number(s.qty)||0)*(Number(s.prix)||0)>0).sort((a,b)=>(Number(b.qty)*Number(b.prix))-(Number(a.qty)*Number(a.prix))).slice(0,5);
+                    if(!valeurTotale)return <div style={{fontSize:13,color:"#7A7A7A"}}>Aucun article valorisé.</div>;
+                    const r=48,cx=60,cy=60,circ=2*Math.PI*r;
+                    let offset=circ/4;
+                    return(
+                      <div>
+                        <div style={{background:"#F9F9F9",borderRadius:6,padding:"8px 12px",marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <span style={{fontSize:11,color:"#7A7A7A"}}>{stockActif.length} articles valorisés</span>
+                          <span style={{fontSize:15,fontWeight:700,color:"#1C1C1C",fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":Math.round(valeurTotale).toLocaleString("fr-FR")+' €'}</span>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:16,alignItems:"start"}}>
+                          {/* Gauche : donut + légende */}
+                          <div>
+                            <svg width="150" height="150" viewBox="0 0 120 120" style={{display:"block"}}>
+                              <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEEEEE" strokeWidth="18"/>
+                              {catData.map(([cat,val],i)=>{const arc=val/valeurTotale*circ;const el=<circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={colors[i%colors.length]} strokeWidth="18" strokeDasharray={`${arc} ${circ-arc}`} strokeDashoffset={offset}/>;offset-=arc;return el;})}
+                              <text x={cx} y={cy+4} textAnchor="middle" fontSize="10" fontWeight="700" fill="#1C1C1C" fontFamily="DM Sans,sans-serif">{catData.length}</text>
+                              <text x={cx} y={cy+14} textAnchor="middle" fontSize="7" fill="#7A7A7A" fontFamily="DM Sans,sans-serif">catég.</text>
+                            </svg>
+                            <div style={{marginTop:8}}>
+                              {catData.slice(0,4).map(([cat,val],i)=>(
+                                <div key={i} style={{display:"flex",alignItems:"center",gap:5,marginBottom:4}}>
+                                  <div style={{width:7,height:7,borderRadius:2,background:colors[i%colors.length],flexShrink:0}}/>
+                                  <span style={{fontSize:10,color:"#3A3A3A",whiteSpace:"nowrap"}}>{cat}</span>
+                                  <span style={{fontSize:10,color:"#7A7A7A",marginLeft:"auto",fontFamily:"'DM Mono',monospace"}}>{Math.round(val/valeurTotale*100)}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          {/* Droite : top articles */}
+                          <div>
+                            <div style={{fontSize:11,fontWeight:700,color:"#3A3A3A",marginBottom:8}}>Top articles</div>
+                            {topArticles.map((s,i)=>{
+                              const v=Math.round((Number(s.qty)||0)*(Number(s.prix)||0));
+                              const pct=Math.round(v/valeurTotale*100);
+                              return(
+                                <div key={i} style={{marginBottom:7}}>
+                                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                                    <span style={{fontSize:11,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"65%"}}>{s.ref}</span>
+                                    <span style={{fontSize:10,color:"#7A7A7A",fontFamily:"'DM Mono',monospace",flexShrink:0}}>{hideFinances?"•••":v.toLocaleString("fr-FR")+' €'}</span>
+                                  </div>
+                                  <div style={{height:4,background:"#EEEEEE",borderRadius:2}}>
+                                    <div style={{height:"100%",width:pct+"%",background:"#1A5DAB",borderRadius:2}}/>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </Bd>
+
+                <Bd>
+                  <SecTitle>Achats par catégorie</SecTitle>
+                  {(()=>{
+                    const colors=["#CC2222","#1A5DAB","#2A7A2A","#CC8800","#7A2A7A","#CC6600","#3A3A3A","#2A7A7A"];
+                    const isBoolC=v=>v===true||String(v).toUpperCase()==="TRUE";
+                    const byCat={};
+                    let total=0;
+                    for(const o of orders.rows){
+                      for(const l of getLignes(o)){
+                        const v=(+l.prix||0)*(+l.qty||1);
+                        if(v<=0)continue;
+                        const cat=l.cat||o.cat||"Autre";
+                        byCat[cat]=(byCat[cat]||0)+v;
+                        total+=v;
+                      }
+                    }
+                    const catData=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+                    if(!total)return <div style={{fontSize:13,color:"#7A7A7A"}}>Aucun achat catégorisé.</div>;
+                    const r=48,cx=60,cy=60,circ=2*Math.PI*r;
+                    let offset=circ/4;
+                    return(
+                      <div>
+                        <div style={{background:"#F9F9F9",borderRadius:6,padding:"8px 12px",marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <span style={{fontSize:11,color:"#7A7A7A"}}>{catData.length} catégories</span>
+                          <span style={{fontSize:15,fontWeight:700,color:"#1C1C1C",fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":Math.round(total).toLocaleString("fr-FR")+' €'}</span>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:16,alignItems:"start"}}>
+                          {/* Gauche : donut + légende */}
+                          <div>
+                            <svg width="150" height="150" viewBox="0 0 120 120" style={{display:"block"}}>
+                              <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEEEEE" strokeWidth="14"/>
+                              {catData.map(([cat,val],i)=>{const arc=val/total*circ;const el=<circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={colors[i%colors.length]} strokeWidth="18" strokeDasharray={`${arc} ${circ-arc}`} strokeDashoffset={offset}/>;offset-=arc;return el;})}
+                              <text x={cx} y={cy+4} textAnchor="middle" fontSize="9" fontWeight="700" fill="#1C1C1C" fontFamily="DM Sans,sans-serif">{catData.length}</text>
+                              <text x={cx} y={cy+14} textAnchor="middle" fontSize="7" fill="#7A7A7A" fontFamily="DM Sans,sans-serif">catég.</text>
+                            </svg>
+                            <div style={{marginTop:8}}>
+                              {catData.slice(0,5).map(([cat,val],i)=>(
+                                <div key={i} style={{display:"flex",alignItems:"center",gap:5,marginBottom:4}}>
+                                  <div style={{width:7,height:7,borderRadius:2,background:colors[i%colors.length],flexShrink:0}}/>
+                                  <span style={{fontSize:10,color:"#3A3A3A",whiteSpace:"nowrap"}}>{cat}</span>
+                                  <span style={{fontSize:10,color:"#7A7A7A",marginLeft:"auto",fontFamily:"'DM Mono',monospace"}}>{Math.round(val/total*100)}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          {/* Droite : barres détail */}
+                          <div>
+                            <div style={{fontSize:11,fontWeight:700,color:"#3A3A3A",marginBottom:8}}>Détail</div>
+                            {catData.slice(0,6).map(([cat,val],i)=>(
+                              <div key={i} style={{marginBottom:7}}>
+                                <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                                  <span style={{fontSize:11,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"65%"}}>{cat}</span>
+                                  <span style={{fontSize:10,color:"#7A7A7A",fontFamily:"'DM Mono',monospace",flexShrink:0}}>{hideFinances?"•••":Math.round(val).toLocaleString("fr-FR")+' €'}</span>
+                                </div>
+                                <div style={{height:5,background:"#EEEEEE",borderRadius:2}}>
+                                  <div style={{height:"100%",width:Math.round(val/catData[0][1]*100)+"%",background:colors[i%colors.length],borderRadius:2}}/>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </Bd>
+
               </div>
 
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
@@ -675,7 +856,7 @@ function Dashboard({sheets}){
                               <div style={{width:8,height:8,borderRadius:"50%",background:colors[i%colors.length],flexShrink:0}}/>
                               <span style={{fontSize:12,fontWeight:500,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:140}}>{p.name}</span>
                             </div>
-                            <span style={{fontSize:11,color:"#7A7A7A",flexShrink:0}}>{pct}% · {p.ca.toLocaleString("fr-FR")} €</span>
+                            <span style={{fontSize:11,color:"#7A7A7A",flexShrink:0}}>{pct}% · {hideFinances?"•••":p.ca.toLocaleString("fr-FR")+' €'}</span>
                           </div>
                           <div style={{height:6,background:"#EEEEEE",borderRadius:3,overflow:"hidden"}}>
                             <div style={{height:"100%",width:pct+"%",background:colors[i%colors.length],borderRadius:3}}/>
@@ -686,7 +867,7 @@ function Dashboard({sheets}){
                   })()}
                   <div style={{borderTop:"0.5px solid #EEEEEE",paddingTop:8,marginTop:4,display:"flex",justifyContent:"space-between"}}>
                     <span style={{fontSize:11,color:"#7A7A7A"}}>CA total</span>
-                    <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{totalCA.toLocaleString("fr-FR")} €</span>
+                    <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{hideFinances?"•••":totalCA.toLocaleString("fr-FR")+' €'}</span>
                   </div>
                 </Bd>
 
@@ -707,7 +888,7 @@ function Dashboard({sheets}){
                             <span style={{fontSize:12,fontWeight:500,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"55%"}}>{p.name}</span>
                             <span style={{fontSize:11,color:isNeg?"#CC2222":"#2A7A2A",fontWeight:600,flexShrink:0}}>
                               {isNeg?"-":"+"}
-                              {Math.abs(p.net).toLocaleString("fr-FR")} € ({Math.abs(pct)}%)
+                              {hideFinances?"•••":Math.abs(p.net).toLocaleString("fr-FR")+" €"} ({Math.abs(pct)}%)
                             </span>
                           </div>
                           <div style={{height:6,background:"#EEEEEE",borderRadius:3,overflow:"hidden"}}>
@@ -720,7 +901,7 @@ function Dashboard({sheets}){
                   <div style={{borderTop:"0.5px solid #EEEEEE",paddingTop:8,marginTop:4,display:"flex",justifyContent:"space-between"}}>
                     <span style={{fontSize:11,color:"#7A7A7A"}}>Solde global</span>
                     <span style={{fontSize:13,fontWeight:700,color:solde>=0?"#2A7A2A":"#CC2222"}}>
-                      {solde>=0?"+":""}{solde.toLocaleString("fr-FR")} €
+                      {solde>=0?"+":""}{hideFinances?"•••":solde.toLocaleString("fr-FR")+' €'}
                     </span>
                   </div>
                 </Bd>
@@ -738,7 +919,7 @@ function Dashboard({sheets}){
                         <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.article}</div>
                         <div style={{fontSize:11,color:"#7A7A7A"}}>{o.fourn}{o.projet&&` · ${o.projet}`}</div>
                       </div>
-                      <span style={{fontSize:12,fontWeight:700,color:isBool(o.recue)?"#2A7A2A":"#3A3A3A",flexShrink:0}}>{o.total.toLocaleString("fr-FR")} €</span>
+                      <span style={{fontSize:12,fontWeight:700,color:isBool(o.recue)?"#2A7A2A":"#3A3A3A",flexShrink:0}}>{hideFinances?"•••":o.total.toLocaleString("fr-FR")+' €'}</span>
                     </div>
                   ))}
                 </Bd>
@@ -754,7 +935,7 @@ function Dashboard({sheets}){
                         <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.description}</div>
                         <div style={{fontSize:11,color:"#7A7A7A"}}>{m.prestataire&&`${m.prestataire} · `}{m.projet}</div>
                       </div>
-                      <span style={{fontSize:12,fontWeight:700,color:m.statut==="terminé"?"#2A7A2A":"#3A3A3A",flexShrink:0}}>{Number(m.prix).toLocaleString("fr-FR")} €</span>
+                      <span style={{fontSize:12,fontWeight:700,color:m.statut==="terminé"?"#2A7A2A":"#3A3A3A",flexShrink:0}}>{hideFinances?"•••":Number(m.prix).toLocaleString("fr-FR")+' €'}</span>
                     </div>
                   ))}
                 </Bd>
@@ -777,9 +958,9 @@ function Dashboard({sheets}){
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:0}}>
               {[
-                {lbl:"Chiffre d'affaires",val:totalCA.toLocaleString("fr-FR")+" €",color:"#1C1C1C",border:true},
-                {lbl:"Dépenses totales",val:(totalEngagees+totalPrest).toLocaleString("fr-FR")+" €",sub:`cmd ${totalEngagees.toLocaleString("fr-FR")} + prest ${totalPrest.toLocaleString("fr-FR")}`,color:pctDep>90?"#CC2222":pctDep>60?"#CC8800":"#3A3A3A",border:true},
-                {lbl:"CA − Dépenses",val:(solde>=0?"+":"")+solde.toLocaleString("fr-FR")+" €",color:soldeColor,border:false},
+                {lbl:"Chiffre d'affaires",val:hideFinances?"•••":totalCA.toLocaleString("fr-FR")+" €",color:"#1C1C1C",border:true},
+                {lbl:"Dépenses totales",val:hideFinances?"•••":(totalEngagees+totalPrest).toLocaleString("fr-FR")+" €",sub:`cmd ${totalEngagees.toLocaleString("fr-FR")} + prest ${totalPrest.toLocaleString("fr-FR")}`,color:pctDep>90?"#CC2222":pctDep>60?"#CC8800":"#3A3A3A",border:true},
+                {lbl:"CA − Dépenses",val:hideFinances?"•••":(solde>=0?"+":"")+solde.toLocaleString("fr-FR")+" €",color:soldeColor,border:false},
               ].map((m,i)=>(
                 <div key={i} style={{padding:"4px 16px",borderRight:m.border?"1px solid #EEEEEE":"none"}}>
                   <div style={{fontSize:10,color:"#7A7A7A",marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{m.lbl}</div>
@@ -872,10 +1053,10 @@ function Dashboard({sheets}){
         </Bd>
 
         <Bd>
-          <SecTitle>Chantiers — dépendances manquantes</SecTitle>
+          <SecTitle>Atelier & Chantier — dépendances manquantes</SecTitle>
           {(()=>{
             const isBoolD=v=>v===true||v==="TRUE";
-            const chantActifs=(atelierChantier?.rows||[]).filter(m=>m.type==="chantier"&&m.statut!=="terminé");
+            const chantActifs=(atelierChantier?.rows||[]).filter(m=>(m.type==="chantier"||m.type==="atelier")&&m.statut!=="terminé");
             const alertes=chantActifs.flatMap(m=>{
               const parsed=parseDeps(m.note);
               const deps=parsed.deps||[];
@@ -957,6 +1138,38 @@ function Dashboard({sheets}){
           })()}
         </Bd>
 
+      </div>
+
+      {/* ── Bloc Notes générales ── */}
+      <div style={{marginTop:16}}>
+        <Bd>
+          <SecTitle>Notes générales</SecTitle>
+          {/* Zone de saisie */}
+          <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"flex-start"}}>
+            <textarea
+              value={noteText}
+              onChange={e=>setNoteText(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey))saveNote();}}
+              placeholder="Ajouter une note... (Ctrl+Entrée pour valider)"
+              style={{flex:1,padding:"8px 10px",borderRadius:6,border:"1px solid #DDDDDD",fontSize:12,fontFamily:"'DM Sans',sans-serif",resize:"vertical",minHeight:60,color:"#1C1C1C",outline:"none"}}
+            />
+            <button onClick={saveNote} disabled={savingNote||!noteText.trim()} style={{padding:"8px 14px",borderRadius:4,border:"none",background:"#CC2222",cursor:noteText.trim()?"pointer":"default",opacity:noteText.trim()?1:0.4,fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700,flexShrink:0}}>
+              {savingNote?"...":"+ Ajouter"}
+            </button>
+          </div>
+          {/* Liste des notes */}
+          {!(journal?.rows||[]).length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune note.</div>}
+          {(journal?.rows||[]).slice().reverse().map(n=>(
+            <div key={n.id} style={{display:"flex",gap:10,padding:"8px 10px",borderRadius:6,background:"#F9F9F9",marginBottom:6,border:"0.5px solid #EEEEEE",alignItems:"flex-start"}}>
+              <div style={{width:3,background:"#CC2222",borderRadius:2,flexShrink:0,alignSelf:"stretch",minHeight:16}}/>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,color:"#1C1C1C",lineHeight:1.5,whiteSpace:"pre-wrap"}}>{n.texte}</div>
+                <div style={{fontSize:10,color:"#7A7A7A",marginTop:4}}>{fmt(n.date)}</div>
+              </div>
+              <button onClick={()=>journal.remove(n.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color:"#CCCCCC",flexShrink:0,padding:"0 2px"}} title="Supprimer">✕</button>
+            </div>
+          ))}
+        </Bd>
       </div>
     </div>
   );
@@ -1079,6 +1292,8 @@ function FiltreProjetTag({projects,filterProjet,setFilterProjet,filterTag,setFil
 
 // ── Normalisation des refs stock : UNE SEULE méthode partout ──
 function normRef(s){return String(s||"").trim().toLowerCase().replace(/\s+/g," ");}
+// Masque les montants si hideFinances est activé
+const hideMoney=(val,hide,placeholder="••••")=>hide?<span style={{color:"#CCCCCC",userSelect:"none",letterSpacing:2}}>{placeholder}</span>:val;
 
 // Parse les pièces stock d'une mission (nouveau format JSON ou ancien stockRef/stockQty)
 function getMissionStockItems(m){
@@ -1092,7 +1307,7 @@ function getMissionStockItems(m){
 }
 
 const EP={name:"",statut:"en cours",avancement:0,equipe:0,budget:"",depense:"",client:"",lieu:"",note:"",ingenieur:"",tags:""};
-function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierChantier,team}){
+function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierChantier,team,hideFinances=false}){
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(EP);
   const [editing,setEditing]=useState(null);
@@ -1271,10 +1486,10 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         sections+=secTitle(1,"Résumé financier");
         sections+=`<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:14px;">`;
         [
-          {lbl:"Chiffre d'affaires",val:caVal>0?caVal.toLocaleString("fr-FR")+" €":"—"},
-          {lbl:"Dépenses engagées",val:dep.total>0?dep.total.toLocaleString("fr-FR")+" €":"—"},
-          {lbl:"Commandes reçues",val:dep.recues>0?dep.recues.toLocaleString("fr-FR")+" €":"—"},
-          {lbl:"Prestations",val:dep.prest>0?dep.prest.toLocaleString("fr-FR")+" €":"—"},
+          {lbl:"Chiffre d'affaires",val:hideFinances?"•••":caVal>0?caVal.toLocaleString("fr-FR")+" €":"—"},
+          {lbl:"Dépenses engagées",val:hideFinances?"•••":dep.total>0?dep.total.toLocaleString("fr-FR")+" €":"—"},
+          {lbl:"Commandes reçues",val:hideFinances?"•••":dep.recues>0?dep.recues.toLocaleString("fr-FR")+" €":"—"},
+          {lbl:"Prestations",val:hideFinances?"•••":dep.prest>0?dep.prest.toLocaleString("fr-FR")+" €":"—"},
         ].forEach(m=>{
           sections+=`<div style="background:#F9F9F9;border:0.5px solid #DDDDDD;border-radius:6px;padding:10px 12px;"><div style="font-size:8.5pt;color:#7A7A7A;margin-bottom:3px;font-family:'DM Sans',Arial,sans-serif;">${m.lbl}</div><div style="font-size:14pt;font-weight:700;color:#1C1C1C;font-family:'DM Sans',Arial,sans-serif;">${m.val}</div></div>`;
         });
@@ -1308,8 +1523,8 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         sections+=table(["Article","Fournisseur","Qté","Prix unitaire","Total","Statut"],
           projOrders.map(o=>[
             o.article,o.fourn,`${o.qty} ${o.unit||""}`,
-            o.prix>0?Number(o.prix).toLocaleString("fr-FR")+" €":"—",
-            o.prix>0?(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")+" €":"—",
+            hideFinances?"•••":o.prix>0?Number(o.prix).toLocaleString("fr-FR")+" €":"—",
+            hideFinances?"•••":o.prix>0?(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")+" €":"—",
             isBool(o.recue)?"Reçue":"En cours"
           ])
         );
@@ -1322,7 +1537,7 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
           projPrest.map(m=>[
             m.description,m.prestataire||"—",
             m.dateDebut?`${fmt(m.dateDebut)}${m.dateFin?" → "+fmt(m.dateFin):""}` :"—",
-            m.prix>0?Number(m.prix).toLocaleString("fr-FR")+" €":"—",
+            hideFinances?"•••":m.prix>0?Number(m.prix).toLocaleString("fr-FR")+" €":"—",
             m.statut
           ])
         );
@@ -1445,9 +1660,9 @@ ${sections}
             const equipeAuto=calcEquipeAuto(p);
             return[
               {lbl:"Avancement",val:calcAvancement(p,atelierChantier).global+"%"},
-              {lbl:"Chiffre d'affaires",val:caVal>0?caVal.toLocaleString("fr-FR")+" €":"—"},
-              {lbl:"Dépenses engagées",val:dep.total>0?dep.total.toLocaleString("fr-FR")+" €":depSaisie>0?depSaisie.toLocaleString("fr-FR")+" €":"—",
-               sub:dep.total>0?`cmd: ${dep.engagees.toLocaleString("fr-FR")} € · prest: ${dep.prest.toLocaleString("fr-FR")} €`:null},
+              {lbl:"Chiffre d'affaires",val:hideFinances?"•••":caVal>0?caVal.toLocaleString("fr-FR")+" €":"—"},
+              {lbl:"Dépenses engagées",val:hideFinances?"•••":dep.total>0?dep.total.toLocaleString("fr-FR")+" €":depSaisie>0?depSaisie.toLocaleString("fr-FR")+" €":"—",
+               sub:dep.total>0?`cmd: ${hideFinances?"•••":dep.engagees.toLocaleString("fr-FR")+" €"} · prest: ${hideFinances?"•••":dep.prest.toLocaleString("fr-FR")+" €"}`:null},
               {lbl:"Équipe",val:equipeAuto.length>0?`${equipeAuto.length} pers.`:p.equipe?p.equipe+" pers.":"—",
                sub:equipeAuto.length>0?equipeAuto.slice(0,2).join(", ")+(equipeAuto.length>2?` +${equipeAuto.length-2}`:""):null},
             ].map((m,i)=>(
@@ -1500,7 +1715,7 @@ ${sections}
 
         {/* Barre CA */}
         {caVal>0&&<div style={{marginBottom:14}}>
-          <div style={{fontSize:12,color:"#7A7A7A",marginBottom:4}}>Consommation CA : {pct}%{dep.total>0&&<span style={{marginLeft:8,fontSize:11}}> · {dep.recues.toLocaleString("fr-FR")} € reçus · {dep.engagees.toLocaleString("fr-FR")} € engagés</span>}</div>
+          <div style={{fontSize:12,color:"#7A7A7A",marginBottom:4}}>Consommation CA : {pct}%{dep.total>0&&<span style={{marginLeft:8,fontSize:11}}> · {hideFinances?"•••":dep.recues.toLocaleString("fr-FR")+" €"} reçus · {hideFinances?"•••":dep.engagees.toLocaleString("fr-FR")+" €"} engagés</span>}</div>
           <div style={{height:5,borderRadius:3,background:"#EEEEEE",overflow:"hidden"}}>
             <div style={{height:"100%",width:Math.min(pct,100)+"%",background:pct>90?"#CC2222":pct>60?"#CC8800":"#2A7A2A",borderRadius:3}}/>
           </div>
@@ -1549,7 +1764,7 @@ ${sections}
               <SecTitle>Commandes ({projOrders.length})</SecTitle>
               {projOrders.filter(o=>isBool(o.recue)).length>0&&
                 <span style={{fontSize:12,color:"#2A7A2A",fontWeight:600}}>
-                  {projOrders.filter(o=>isBool(o.recue)).reduce((s,o)=>s+(+o.prix||0)*(+o.qty||0),0).toLocaleString("fr-FR")} € reçues
+                  {hideFinances?"•••":projOrders.filter(o=>isBool(o.recue)).reduce((s,o)=>s+(+o.prix||0)*(+o.qty||0),0).toLocaleString("fr-FR")+" €"} reçues
                 </span>}
             </div>
             {!projOrders.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune commande liée.</div>}
@@ -1572,7 +1787,7 @@ ${sections}
                 <div key={o.id} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE",alignItems:"center"}}>
                   <div style={{flex:1}}>
                     <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{o.article}</div>
-                    <div style={{fontSize:11,color:"#7A7A7A"}}>{o.fourn} · {o.qty} {o.unit}{o.prix>0&&` · ${(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €`}</div>
+                    <div style={{fontSize:11,color:"#7A7A7A"}}>{o.fourn} · {o.qty} {o.unit}{o.prix>0&&(hideFinances?` · •••`:`  · ${(+o.prix*(+o.qty||1)).toLocaleString("fr-FR")} €`)}</div>
                   </div>
                   <Badge label={isBool(o.recue)?"Reçue":"En cours"} bg={isBool(o.recue)?"#F0FFF0":"#F2F0ED"} color={isBool(o.recue)?"#2A7A2A":"#3A3A3A"}/>
                   <button onClick={()=>{setEditingOrder(o.id);setOrderForm({...o});}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
@@ -1587,7 +1802,7 @@ ${sections}
               <SecTitle>Prestations ({projPrest.length})</SecTitle>
               {projPrest.filter(m=>m.statut==="terminé").length>0&&
                 <span style={{fontSize:12,color:"#2A7A2A",fontWeight:600}}>
-                  {projPrest.filter(m=>m.statut==="terminé").reduce((s,m)=>s+Number(m.prix||0),0).toLocaleString("fr-FR")} € terminées
+                  {hideFinances?"•••":projPrest.filter(m=>m.statut==="terminé").reduce((s,m)=>s+Number(m.prix||0),0).toLocaleString("fr-FR")+" €"} terminées
                 </span>}
             </div>
             {!projPrest.length&&<div style={{fontSize:13,color:"#7A7A7A"}}>Aucune prestation.</div>}
@@ -1599,7 +1814,7 @@ ${sections}
                     <div style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{m.description}</div>
                     <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:2}}>
                       {m.prestataire&&<span style={{background:"#F2F0ED",color:"#3A3A3A",fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:3}}>{m.prestataire}</span>}
-                      {m.prix>0&&<span style={{fontSize:11,color:"#7A7A7A"}}>{Number(m.prix).toLocaleString("fr-FR")} €</span>}
+                      {m.prix>0&&<span style={{fontSize:11,color:"#7A7A7A"}}>{hideFinances?"•••":Number(m.prix).toLocaleString("fr-FR")+' €'}</span>}
                     </div>
                   </div>
                   <Badge label={m.statut} bg={sb.bg} color={sb.tx}/>
@@ -1731,7 +1946,7 @@ ${sections}
             <Badge label={p.statut} bg={c.bg} color={c.tx}/>
             {(()=>{const av=calcAvancement(p,atelierChantier);return(<><div style={{fontSize:12,color:"#7A7A7A",marginTop:8}}>Avancement : {av.global}%</div><PBar val={av.global}/></>);})()}
             {caVal>0&&<>
-              <div style={{fontSize:12,color:"#7A7A7A",marginTop:6}}>{depAff.toLocaleString("fr-FR")} € / {caVal.toLocaleString("fr-FR")} € CA{dep.total>0&&<span style={{fontSize:10,color:"#7A7A7A",marginLeft:4}}>(engagé)</span>}</div>
+              <div style={{fontSize:12,color:"#7A7A7A",marginTop:6}}>{hideFinances?"•••":depAff.toLocaleString("fr-FR")+" €"} / {hideFinances?"•••":caVal.toLocaleString("fr-FR")+" €"} CA{dep.total>0&&<span style={{fontSize:10,color:"#7A7A7A",marginLeft:4}}>(engagé)</span>}</div>
               <PBar val={bp}/>
             </>}
             <div style={{fontSize:11,color:"#CC2222",marginTop:8,fontWeight:500}}>→ Voir le détail complet</div>
@@ -1751,7 +1966,7 @@ ${sections}
                 <div><div style={{fontSize:13,fontWeight:700,color:"#3A3A3A",textDecoration:"line-through"}}>{p.name}</div>{p.client&&<div style={{fontSize:12,color:"#7A7A7A"}}>{p.client}</div>}</div>
                 <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
               </div>
-              {p.budget>0&&<div style={{fontSize:12,color:"#7A7A7A"}}>{Number(p.depense).toLocaleString("fr-FR")} € / {Number(p.budget).toLocaleString("fr-FR")} € CA</div>}
+              {p.budget>0&&<div style={{fontSize:12,color:"#7A7A7A"}}>{hideFinances?"•••":`${Number(p.depense).toLocaleString("fr-FR")} € / ${Number(p.budget).toLocaleString("fr-FR")} € CA`}</div>}
             </div>
           ))}
         </div>
@@ -1764,7 +1979,7 @@ ${sections}
 const EPREST={nom:"",specialite:"",contact:"",tel:"",note:""};
 const EPREST_MISSION={prestataire:"",projet:"",description:"",dateDebut:"",dateFin:"",prix:"",statut:"planifié",stockRef:"",stockQty:"",tags:"",stockItems:""};
 
-function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
+function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFinances=false}){
   const [filterProjet,setFilterProjet]=useState("");
   const [filterTag,setFilterTag]=useState("");
   const [open,setOpen]=useState(false);
@@ -2027,7 +2242,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
         {/* KPIs */}
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
           {[
-            {lbl:"Total dépensé",val:totalD>0?totalD.toLocaleString("fr-FR")+" €":"—",color:"#CC2222",bold:true},
+            {lbl:"Total dépensé",val:hideFinances?"•••":totalD>0?totalD.toLocaleString("fr-FR")+" €":"—",color:"#CC2222",bold:true},
             {lbl:"Prestations",val:pmissions.length},
             {lbl:"Terminées",val:terminees.length},
           ].map((m,i)=>(
@@ -2047,8 +2262,9 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
                 <div style={{fontSize:13,fontWeight:500,color:"#1C1C1C"}}>{m.description}</div>
                 <div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet}{m.dateDebut&&` · ${fmt(m.dateDebut)}${m.dateFin?` → ${fmt(m.dateFin)}`:""}`}</div>
                 {getMissionStockItems(m).length>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:2}}>🔩 {getMissionStockItems(m).map(it=>`${it.ref} ×${it.qty}`).join(" · ")}</div>}
+                {(()=>{const cmds=(parseDeps(m.note).deps||[]).filter(d=>d.type==="commande");return cmds.length>0&&<div style={{fontSize:10,color:"#CC8800",marginTop:2}}>🛒 {cmds.map(d=>`${d.ref||d.id} ×${d.qty}`).join(" · ")}</div>;})()}
               </div>
-              {m.prix>0&&<span style={{fontSize:12,fontWeight:700,color:"#CC2222"}}>{Number(m.prix).toLocaleString("fr-FR")} €</span>}
+              {m.prix>0&&<span style={{fontSize:12,fontWeight:700,color:"#CC2222"}}>{hideFinances?"•••":Number(m.prix).toLocaleString("fr-FR")+" €"}</span>}
               <Badge label={m.statut} bg={s.bg} color={s.tx}/>
             </div>
           );})}
@@ -2063,8 +2279,9 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
                 <div style={{fontSize:13,color:"#3A3A3A"}}>{m.description}</div>
                 <div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet}{m.dateFin&&` · ${fmt(m.dateFin)}`}</div>
                 {getMissionStockItems(m).length>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:2}}>🔩 {getMissionStockItems(m).map(it=>`${it.ref} ×${it.qty}`).join(" · ")}</div>}
+                {(()=>{const cmds=(parseDeps(m.note).deps||[]).filter(d=>d.type==="commande");return cmds.length>0&&<div style={{fontSize:10,color:"#CC8800",marginTop:2}}>🛒 {cmds.map(d=>`${d.ref||d.id} ×${d.qty}`).join(" · ")}</div>;})()}
               </div>
-              {m.prix>0&&<span style={{fontSize:12,fontWeight:700,color:"#2A7A2A"}}>{Number(m.prix).toLocaleString("fr-FR")} €</span>}
+              {m.prix>0&&<span style={{fontSize:12,fontWeight:700,color:"#2A7A2A"}}>{hideFinances?"•••":Number(m.prix).toLocaleString("fr-FR")+' €'}</span>}
               <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
             </div>
           ))}
@@ -2079,7 +2296,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
             </div>
           )}
           <div style={{display:"flex",justifyContent:"flex-end",marginTop:8,paddingTop:8,borderTop:"1px solid #EEEEEE"}}>
-            <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>Total : {totalD.toLocaleString("fr-FR")} €</span>
+            <span style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>Total : {hideFinances?"•••":totalD.toLocaleString("fr-FR")+' €'}</span>
           </div>
         </Bd>}
       </WithPanel>
@@ -2118,14 +2335,14 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
     {parPrest.length>0&&<Bd style={{marginBottom:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
         <SecTitle>Finances prestations</SecTitle>
-        <span style={{fontSize:14,fontWeight:700,color:"#CC2222"}}>{totalPrest.toLocaleString("fr-FR")} € total</span>
+        <span style={{fontSize:14,fontWeight:700,color:"#CC2222"}}>{hideFinances?"•••":totalPrest.toLocaleString("fr-FR")+" €"} total</span>
       </div>
       {parPrest.map((p,i)=>(
         <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0",borderBottom:"0.5px solid #EEEEEE"}}>
           <div style={{flex:1,minWidth:0}}>
             <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
               <span style={{fontSize:12,fontWeight:500,color:"#1C1C1C"}}>{p.nom}</span>
-              <span style={{fontSize:11,color:"#7A7A7A"}}>{p.total.toLocaleString("fr-FR")} € · {p.pct}%</span>
+              <span style={{fontSize:11,color:"#7A7A7A"}}>{hideFinances?"•••":p.total.toLocaleString("fr-FR")+" €"} · {p.pct}%</span>
             </div>
             <div style={{height:4,borderRadius:2,background:"#EEEEEE",overflow:"hidden"}}>
               <div style={{height:"100%",width:p.pct+"%",background:i===0?"#CC2222":i===1?"#CC8800":"#3A3A3A",borderRadius:2}}/>
@@ -2157,7 +2374,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             <Badge label={m.statut} bg={sb2.bg} color={sb2.tx}/>
-            {m.prix>0&&<span style={{fontSize:13,fontWeight:700,color:"#CC2222"}}>{Number(m.prix).toLocaleString("fr-FR")} €</span>}
+            {m.prix>0&&<span style={{fontSize:13,fontWeight:700,color:"#CC2222"}}>{hideFinances?"•••":Number(m.prix).toLocaleString("fr-FR")+' €'}</span>}
           </div>
         </div>
         <div style={{display:"flex",gap:6}}>
@@ -2183,7 +2400,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
               </div>
               {getMissionStockItems(m).length>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:3}}>🔩 {getMissionStockItems(m).map(it=>`${it.ref} ×${it.qty}`).join(" · ")}</div>}
             </div>
-            {m.prix>0&&<span style={{fontSize:12,fontWeight:700,color:"#2A7A2A"}}>{Number(m.prix).toLocaleString("fr-FR")} €</span>}
+            {m.prix>0&&<span style={{fontSize:12,fontWeight:700,color:"#2A7A2A"}}>{hideFinances?"•••":Number(m.prix).toLocaleString("fr-FR")+' €'}</span>}
             <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
           </div>
           <div style={{display:"flex",gap:6}}>
@@ -2233,7 +2450,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs}){
                   <button onClick={e=>{e.stopPropagation();sheet.remove(p.id);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
                 </div>
               </div>
-              {nb>0&&<div style={{fontSize:11,color:"#7A7A7A",marginTop:4}}>{nb} prestation{nb>1?"s":""}{tot>0&&` · ${tot.toLocaleString("fr-FR")} €`}</div>}
+              {nb>0&&<div style={{fontSize:11,color:"#7A7A7A",marginTop:4}}>{nb} prestation{nb>1?"s":""}{tot>0&&` · ${hideFinances?"•••":tot.toLocaleString("fr-FR")+" €"}`}</div>}
               <div style={{fontSize:10,color:"#CC2222",marginTop:4,fontWeight:500}}>→ Voir le détail</div>
             </div>
           );
@@ -2284,15 +2501,15 @@ function ModalStockTerminaison({mission,moduleType,onCancel,onConfirm,saving,sto
         {coutTotal>0&&<div style={{background:"#F9F9F9",border:"0.5px solid #EEEEEE",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:12}}>
           <div style={{fontWeight:700,color:"#1C1C1C",marginBottom:6}}>Coût de revient calculé</div>
           {coutMatieres>0&&<div style={{display:"flex",justifyContent:"space-between",color:"#3A3A3A",marginBottom:2}}>
-            <span>Matières utilisées</span><span style={{fontFamily:"'DM Mono',monospace"}}>{coutMatieres.toLocaleString("fr-FR")} €</span>
+            <span>Matières utilisées</span><span style={{fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":coutMatieres.toLocaleString("fr-FR")+' €'}</span>
           </div>}
           {coutMO>0&&<div style={{display:"flex",justifyContent:"space-between",color:"#3A3A3A",marginBottom:2}}>
-            <span>Main d'œuvre / prestation</span><span style={{fontFamily:"'DM Mono',monospace"}}>{coutMO.toLocaleString("fr-FR")} €</span>
+            <span>Main d'œuvre / prestation</span><span style={{fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":coutMO.toLocaleString("fr-FR")+' €'}</span>
           </div>}
           <div style={{display:"flex",justifyContent:"space-between",fontWeight:700,color:"#CC2222",borderTop:"0.5px solid #DDDDDD",paddingTop:6,marginTop:4}}>
-            <span>Total</span><span style={{fontFamily:"'DM Mono',monospace"}}>{coutTotal.toLocaleString("fr-FR")} €</span>
+            <span>Total</span><span style={{fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":coutTotal.toLocaleString("fr-FR")+' €'}</span>
           </div>
-          {sf.qty>0&&<div style={{fontSize:11,color:"#7A7A7A",marginTop:4}}>→ {prixRevientAuto.toLocaleString("fr-FR")} € / {sf.unit} ({sf.qty} {sf.unit} produit{sf.qty>1?"s":""})</div>}
+          {sf.qty>0&&<div style={{fontSize:11,color:"#7A7A7A",marginTop:4}}>→ {hideFinances?"•••":prixRevientAuto.toLocaleString("fr-FR")+" €"} / {sf.unit} ({sf.qty} {sf.unit} produit{sf.qty>1?"s":""})</div>}
         </div>}
 
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:creer?14:0,padding:"10px 12px",background:"#F9F9F9",borderRadius:6,cursor:"pointer"}} onClick={()=>setCreer(v=>!v)}>
@@ -2363,6 +2580,8 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
   const [form,setForm]=useState({...EMISSION,type:moduleType});
   const [stockModal,setStockModal]=useState(null); // {mission, stockForm} pour la création stock
   const [savingStock,setSavingStock]=useState(false);
+  const [selCmd,setSelCmd]=useState("");
+  const [qtyCmd,setQtyCmd]=useState(1);
   const [editing,setEditing]=useState(null);
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
@@ -2397,7 +2616,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
     if(!form.description.trim()){setErr("Description obligatoire.");return;}
     setSaving(true);setErr("");
     try{
-      const noteSerialized=moduleType==="chantier"?serializeDeps(deps,noteTexte):(form.note||"");
+      const noteSerialized=(moduleType==="chantier"||moduleType==="atelier")?serializeDeps(deps,noteTexte):(form.note||"");
       const item={...form,stockQty:+form.stockQty||0,
         membres:Array.isArray(form.membres)?form.membres.join(","):form.membres,
         note:noteSerialized};
@@ -2408,8 +2627,17 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
       }
       // Sync événement calendrier pour chantier
       if(moduleType==="chantier"&&events&&form.dateDebut){
-        const evExistant=events.rows.find(e=>e.type==="chantier"&&e.title===form.description);
-        const evData={title:form.description,date:form.dateDebut,heure:"",type:"chantier",projet:form.projet||"",note:"Mission chantier",dateFin:form.dateFin||""};
+        // Chercher l'événement existant : d'abord par note missionId, puis par ancien titre, puis par nouveau titre
+        const ancienne=sheet.rows.find(m=>Number(m.id)===Number(editing));
+        const ancienTitre=ancienne?.description||"";
+        const evExistant=events.rows.find(e=>
+          e.type==="chantier"&&(
+            e.note===`missionId:${editing}` ||         // lien fort par id
+            (editing&&e.title===ancienTitre) ||        // ancien titre si on édite
+            e.title===form.description                 // nouveau titre (création)
+          )
+        );
+        const evData={title:form.description,date:form.dateDebut,heure:"",type:"chantier",projet:form.projet||"",note:`missionId:${editing||"new"}`,dateFin:form.dateFin||""};
         if(evExistant){await events.update(evExistant.id,{...evExistant,...evData});}
         else{await events.add(evData);}
       }
@@ -2495,7 +2723,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
 
   // ── Calcul état dépendances chantier ──
   function evalDeps(m){
-    if(moduleType!=="chantier")return[];
+    if(moduleType!=="chantier"&&moduleType!=="atelier")return[];
     const parsed=parseDeps(m.note);
     const jours=diffWorkDays(m.dateDebut);
     return (parsed.deps||[]).map(dep=>{
@@ -2531,12 +2759,12 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
   }
 
   // Toutes les alertes actives (deps pas OK)
-  const toutesAlertes=moduleType==="chantier"?actives.flatMap(m=>
+  const toutesAlertes=(moduleType==="chantier"||moduleType==="atelier")?actives.flatMap(m=>
     evalDeps(m).filter(d=>d.statut!=="ok").map(d=>({...d,mission:m}))
   ):[];
 
   // Ancienne alerte stock unique (compatibilité)
-  const alertesStockSimple=moduleType==="chantier"?actives
+  const alertesStockSimple=(moduleType==="chantier"||moduleType==="atelier")?actives
     .filter(m=>m.stockRef&&m.stockQty>0&&m.dateDebut&&!parseDeps(m.note).deps?.length)
     .map(m=>{
       const s=stocks.rows.find(x=>normRef(x.ref)===normRef(m.stockRef));
@@ -2573,12 +2801,17 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
       </div>
     </FG>
 
-    {/* ── Dépendances chantier ── */}
-    {moduleType==="chantier"&&<>
-      <div style={{fontSize:12,fontWeight:700,color:"#1C1C1C",marginTop:8,marginBottom:6,borderLeft:"3px solid #CC2222",paddingLeft:6}}>Pièces & dépendances nécessaires</div>
+    {/* ── Dépendances chantier & atelier ── */}
+    {(moduleType==="chantier"||moduleType==="atelier")&&<>
+      <div style={{fontSize:12,fontWeight:700,color:"#1C1C1C",marginTop:8,marginBottom:6,borderLeft:"3px solid #CC2222",paddingLeft:6}}>
+        {moduleType==="atelier"?"Commandes liées":"Pièces & dépendances nécessaires"}
+      </div>
+      {moduleType==="atelier"&&<div style={{fontSize:11,color:"#7A7A7A",marginBottom:8}}>
+        Lier une commande en cours — quand elle sera reçue, les articles seront disponibles dans le stock pour cette mission.
+      </div>}
 
-      {/* Stock existant */}
-      <FG label="Pièce stock">
+      {/* Stock existant — chantier uniquement */}
+      {moduleType==="chantier"&&<FG label="Pièce stock">
         <div style={{display:"flex",gap:6,marginBottom:4}}>
           <div style={{flex:1}}>
             <Sel value={form.stockRef} onChange={e=>f("stockRef",e.target.value)}>
@@ -2588,22 +2821,65 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
           <Inp type="number" value={form.stockQty} onChange={e=>f("stockQty",e.target.value)} placeholder="Qté" style={{width:70}}/>
           <button onClick={()=>{if(form.stockRef)addDep({type:"stock",ref:form.stockRef,qty:+form.stockQty||1});}} style={{padding:"6px 10px",background:"#CC2222",color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",flexShrink:0}}>+ Lier</button>
         </div>
-      </FG>
-
-      {/* Commandes en cours */}
-      {commandesEnCours.length>0&&<FG label="Commande en cours">
-        <div style={{display:"flex",gap:6,marginBottom:4}}>
-          <div style={{flex:1}}>
-            <Sel onChange={e=>{if(e.target.value)addDep({type:"commande",id:e.target.value,ref:e.target.options[e.target.selectedIndex].text});e.target.value="";}}>
-              <option value="">— Lier une commande —</option>
-              {commandesEnCours.map(o=><option key={o.id} value={o.id}>{o.article} · {o.fourn}</option>)}
-            </Sel>
-          </div>
-        </div>
       </FG>}
 
-      {/* Missions atelier en cours */}
-      {atelierEnCours.length>0&&<FG label="Mission atelier en cours">
+      {/* Commandes en cours — chantier et atelier */}
+      {commandesEnCours.length>0
+        ?<FG label="Commande en cours">
+          <div style={{display:"flex",gap:6,marginBottom:4,alignItems:"center"}}>
+            <div style={{flex:1}}>
+              <select
+                value={selCmd}
+                onChange={e=>setSelCmd(e.target.value)}
+                style={{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #DDDDDD",background:"#fff",color:selCmd?"#1C1C1C":"#7A7A7A",fontSize:13,fontFamily:"'DM Sans',sans-serif",boxSizing:"border-box"}}>
+                <option value="">— Lier une commande —</option>
+                {commandesEnCours.map(o=><option key={o.id} value={String(o.id)}>{o.article||o.ref} · {o.fourn}</option>)}
+              </select>
+            </div>
+            <input type="number" value={qtyCmd} onChange={e=>setQtyCmd(+e.target.value||1)} placeholder="Qté"
+              style={{width:60,padding:"7px 8px",borderRadius:6,border:"1px solid #DDDDDD",fontSize:13,fontFamily:"'DM Sans',sans-serif",textAlign:"center"}}/>
+            <button onClick={()=>{
+              if(!selCmd)return;
+              const o=commandesEnCours.find(x=>String(x.id)===String(selCmd));
+              if(o){
+                // Calculer la quantité totale de la commande
+                const qtyCommande=getLignes(o).reduce((s,l)=>s+(+l.qty||0),0)||(+o.qty||0);
+                // Calculer ce qui est déjà réservé sur cette commande dans toutes les missions
+                const dejaReserve=(sheet.rows||[]).reduce((total,m)=>{
+                  if(m.statut==="terminé")return total;
+                  try{
+                    const parsed=JSON.parse(m.note&&m.note.startsWith("{")?m.note:"{}");
+                    const dep=(parsed.deps||[]).find(d=>d.type==="commande"&&String(d.id)===String(selCmd));
+                    return total+(dep?.qty||0);
+                  }catch(e){return total;}
+                },0);
+                // Exclure la dépendance déjà liée sur cette mission (si on modifie)
+                const depExistante=deps.find(d=>d.type==="commande"&&String(d.id)===String(selCmd));
+                const dejaReserveSansCette=dejaReserve-(depExistante?.qty||0);
+                const disponible=qtyCommande-dejaReserveSansCette;
+                if(qtyCmd>disponible){
+                  if(!confirm(`⚠ Dépassement détecté
+
+Commande : ${o.article||o.ref} (${qtyCommande} ${o.unit||"pcs"} total)
+Déjà réservé sur d'autres missions : ${dejaReserveSansCette}
+Disponible : ${disponible}
+Demandé : ${qtyCmd}
+
+Voulez-vous quand même lier ${qtyCmd} pièces ?`))return;
+                }
+                addDep({type:"commande",id:selCmd,ref:o.article||o.ref||o.fourn,qty:qtyCmd});
+                setSelCmd("");setQtyCmd(1);
+              }
+            }} style={{padding:"6px 10px",background:selCmd?"#CC2222":"#CCCCCC",color:"#fff",border:"none",borderRadius:4,cursor:selCmd?"pointer":"default",fontSize:12,fontFamily:"'DM Sans',sans-serif",flexShrink:0,whiteSpace:"nowrap"}}>+ Lier</button>
+          </div>
+        </FG>
+        :<div style={{fontSize:12,color:"#7A7A7A",marginBottom:8,padding:"6px 10px",background:"#F9F9F9",borderRadius:4}}>
+          Aucune commande en cours pour le moment.
+        </div>
+      }
+
+      {/* Missions atelier en cours — uniquement pour chantier */}
+      {moduleType==="chantier"&&atelierEnCours.length>0&&<FG label="Mission atelier en cours">
         <div style={{display:"flex",gap:6,marginBottom:4}}>
           <div style={{flex:1}}>
             <Sel onChange={e=>{if(e.target.value)addDep({type:"atelier",id:e.target.value,ref:e.target.options[e.target.selectedIndex].text});e.target.value="";}}>
@@ -2621,7 +2897,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
           return(
             <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 8px",background:"#F9F9F9",borderRadius:4,marginBottom:4,border:"0.5px solid #EEEEEE"}}>
               <span style={{fontSize:12}}>{icon}</span>
-              <span style={{flex:1,fontSize:12,color:"#1C1C1C"}}>{dep.ref||dep.id}{dep.qty>0&&` × ${dep.qty}`}</span>
+              <span style={{flex:1,fontSize:12,color:"#1C1C1C"}}>{dep.ref||dep.id}{dep.qty>0&&<span style={{color:"#7A7A7A",fontFamily:"'DM Mono',monospace"}}> × {dep.qty}</span>}</span>
               <badge style={{fontSize:10,color:"#7A7A7A",background:"#F2F0ED",padding:"1px 6px",borderRadius:3}}>{dep.type}</badge>
               <button onClick={()=>removeDep(dep)} style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:"#CC2222"}}>✕</button>
             </div>
@@ -2809,6 +3085,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
                 <div style={{fontSize:13,color:"#3A3A3A",fontWeight:500}}>{m.description}</div>
                 <div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet}{getMembres(m).length>0&&` · ${getMembres(m).join(", ")}`}</div>
                 {getMissionStockItems(m).length>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:2}}>🔩 {getMissionStockItems(m).map(it=>`${it.ref} ×${it.qty}`).join(" · ")}</div>}
+                {(()=>{const cmds=(parseDeps(m.note).deps||[]).filter(d=>d.type==="commande");return cmds.length>0&&<div style={{fontSize:10,color:"#CC8800",marginTop:2}}>🛒 {cmds.map(d=>`${d.ref||d.id} ×${d.qty}`).join(" · ")}</div>;})()}
                 {(m.dateDebut||m.dateFin)&&<div style={{fontSize:11,color:"#7A7A7A"}}>{m.dateDebut&&fmt(m.dateDebut)}{m.dateFin&&` → ${fmt(m.dateFin)}`}</div>}
               </div>
               <Badge label="Terminé" bg="#F0FFF0" color="#2A7A2A"/>
@@ -3013,7 +3290,11 @@ function Taches({sheet,projects}){
         {[["pending","En cours"],["done","Terminées"],["all","Toutes"]].map(([v,l])=>(
           <button key={v} onClick={()=>setFilter(v)} style={{padding:"5px 12px",borderRadius:4,fontSize:12,cursor:"pointer",border:"1px solid #DDDDDD",background:filter===v?"#CC2222":"#fff",color:filter===v?"#fff":"#3A3A3A",fontFamily:"'DM Sans',sans-serif",fontWeight:filter===v?700:400}}>{l}</button>
         ))}
-        <span style={{fontSize:11,color:"#7A7A7A",marginLeft:8,fontFamily:"'DM Mono',monospace"}}>{sheet.rows.length} tâches chargées</span>
+        <span style={{fontSize:11,color:"#7A7A7A",marginLeft:8,fontFamily:"'DM Mono',monospace"}}>
+          <span style={{color:"#CC2222",fontWeight:700}}>{sheet.rows.filter(t=>!isDone(t)).length}</span> active{sheet.rows.filter(t=>!isDone(t)).length>1?"s":""}
+          <span style={{color:"#CCCCCC",margin:"0 4px"}}>·</span>
+          {sheet.rows.length} total
+        </span>
       </div>
       <Btn primary onClick={()=>{setEditing(null);setForm(ET);setErr("");setOpen(true);}}>+ Nouvelle tâche</Btn>
     </div>
@@ -3144,7 +3425,15 @@ function Calendrier({sheet,projects,atelierChantier}){
   for(let d=1;d<=dim;d++)cells.push({day:d,cur:true});
   while(cells.length%7!==0)cells.push({day:cells.length-firstDow-dim+1,cur:false});
 
+  // Détecter si l'événement édité est auto-généré
+  const evEdite=editing?sheet.rows.find(e=>Number(e.id)===Number(editing)):null;
+  const isAutoEvent=evEdite&&EV_AUTO_TYPES.has(evEdite.type);
   const panel=open&&<SidePanel title={editing?"Modifier l'événement":"Nouvel événement"} onClose={()=>setOpen(false)}>
+    {isAutoEvent&&<div style={{background:"#FFF8EC",border:"1px solid #CC8800",borderLeft:"3px solid #CC8800",borderRadius:6,padding:"10px 12px",marginBottom:12,fontSize:12,lineHeight:1.6}}>
+      <div style={{fontWeight:700,color:"#CC8800",marginBottom:3}}>⚠ Événement synchronisé</div>
+      <div style={{color:"#633806"}}>Cet événement est géré automatiquement depuis le <b>{EV_AUTO_MODULE[evEdite.type]}</b>. Les modifications faites ici ne seront pas répercutées sur la mission ou la commande d'origine.</div>
+      <div style={{color:"#CC8800",marginTop:6,fontWeight:600}}>→ Modifier depuis le {EV_AUTO_MODULE[evEdite.type]} pour une mise à jour complète.</div>
+    </div>}
     <FG label="Titre *"><Inp value={form.title} onChange={e=>f("title",e.target.value)} placeholder="Ex: RDV maître d'ouvrage"/></FG>
     <FG label="Date début *"><Inp type="date" value={form.date} onChange={e=>f("date",e.target.value)}/></FG>
     <FG label="Heure"><Inp type="time" value={form.heure||""} onChange={e=>f("heure",e.target.value)}/></FG>
@@ -3218,12 +3507,13 @@ function Calendrier({sheet,projects,atelierChantier}){
   // Composant événement inline
   const EvChip=({ev,span=1})=>{
     const color=EV_COLORS[ev.type]||"#CC2222"; // fallback rouge HP au lieu de gris
+    const isAuto=EV_AUTO_TYPES.has(ev.type);
     const isMulti=span>1;
     return(
       <div onClick={()=>{setEditing(ev.id);setForm({title:ev.title,date:toISO(ev.date),heure:ev.heure||"",type:ev.type||"rdv",projet:ev.projet||"",note:ev.note||"",dateFin:ev.dateFin?toISO(ev.dateFin):"",});setOpen(true);}}
         style={{background:color,color:"#fff",borderRadius:3,padding:"2px 5px",fontSize:11,marginBottom:2,cursor:"pointer",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",
           ...(isMulti?{borderRadius:"3px 3px 3px 3px",borderRight:`2px solid rgba(0,0,0,.15)`}:{})}}>
-        {ev.heure&&<span style={{opacity:.8,marginRight:4}}>{ev.heure}</span>}{ev.title}{isMulti&&<span style={{opacity:.6,marginLeft:3,fontSize:10}}>{span}j</span>}
+        {ev.heure&&<span style={{opacity:.8,marginRight:4}}>{ev.heure}</span>}{isAuto&&<span style={{opacity:0.7,marginRight:2,fontSize:9}}>🔒</span>}{ev.title}{isMulti&&<span style={{opacity:.6,marginLeft:3,fontSize:10}}>{span}j</span>}
       </div>
     );
   };
@@ -3239,42 +3529,59 @@ function Calendrier({sheet,projects,atelierChantier}){
           <span style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>{MONTHS[month]} {year}</span>
           <button onClick={nextM} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:"#7A7A7A",padding:"0 8px"}}>›</button>
         </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3}}>
+        <div style={{display:"grid",gridTemplateColumns:"28px repeat(7,1fr)",gap:3}}>
+          <div style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#CCCCCC",padding:"4px 0"}}>#</div>
           {["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"].map((d,i)=><div key={i} style={{textAlign:"center",fontSize:11,fontWeight:700,color:"#7A7A7A",padding:"4px 0"}}>{d}</div>)}
-          {cells.map((c,i)=>{
-            const dStr=c.cur?ds(c.day):null;
-            const dow=dStr?new Date(dStr+"T00:00:00").getDay():null; // 0=dim,6=sam
-            const isWeekend=dow===0||dow===6;
-            const isFerie=dStr&&!isWeekend&&joursFeries(year).has(dStr);
-            const evs=(!dStr||isWeekend||isFerie)?[]:sheet.rows.filter(e=>{
-              if(!e.date||!toISO(e.date))return false;
-              const start=toISO(e.date);
-              const end=e.dateFin?toISO(e.dateFin):start;
-              return dStr>=start&&dStr<=end;
-            }).map(e=>{
-              const start=toISO(e.date);
-              const end=e.dateFin?toISO(e.dateFin):start;
-              const span=Math.round((new Date(end+"T00:00:00")-new Date(start+"T00:00:00"))/(86400000))+1;
-              return{...e,_span:span};
+          {(()=>{
+            // Regrouper cells par semaine (7 cellules par ligne)
+            const weeks=[];
+            for(let i=0;i<cells.length;i+=7)weeks.push(cells.slice(i,i+7));
+            return weeks.map((week,wi)=>{
+              // Trouver la première cellule courante pour le numéro de semaine
+              const firstCur=week.find(x=>x.cur);
+              const weekNum=firstCur?(d=>{const jan4=new Date(d.getFullYear(),0,4);const sw=new Date(jan4);sw.setDate(jan4.getDate()-(jan4.getDay()||7)+1);return Math.ceil((d-sw)/(7*86400000))+1;})(new Date(ds(firstCur.day)+"T00:00:00")):null;
+              return(
+                <React.Fragment key={wi}>
+                  <div style={{display:"flex",alignItems:"flex-start",justifyContent:"center",paddingTop:6,fontSize:9,fontWeight:700,color:"#CCCCCC"}}>{weekNum||""}</div>
+                  {week.map((cx,i)=>{
+                    const ci=wi*7+i;
+                    const dStr=cx.cur?ds(cx.day):null;
+                    const dow=dStr?new Date(dStr+"T00:00:00").getDay():null;
+                    const isWeekend=dow===0||dow===6;
+                    const isFerie=dStr&&!isWeekend&&joursFeries(year).has(dStr);
+                    const evs=(!dStr||isWeekend||isFerie)?[]:sheet.rows.filter(e=>{
+                      if(!e.date||!toISO(e.date))return false;
+                      const start=toISO(e.date);
+                      const end=e.dateFin?toISO(e.dateFin):start;
+                      return dStr>=start&&dStr<=end;
+                    }).map(e=>{
+                      const start=toISO(e.date);
+                      const end=e.dateFin?toISO(e.dateFin):start;
+                      const span=Math.round((new Date(end+"T00:00:00")-new Date(start+"T00:00:00"))/(86400000))+1;
+                      return{...e,_span:span};
+                    });
+                    const isT=dStr===TODAY;
+                    return(
+                      <div key={ci} onClick={()=>{if(cx.cur&&!isWeekend&&!isFerie){setSelectedDay(dStr);setView("jour");}}}
+                        style={{minHeight:100,borderRadius:6,padding:"4px 5px",fontSize:12,
+                          color:cx.cur?"#1C1C1C":"#CCCCCC",
+                          background:isT?"#FFF0F0":isWeekend&&cx.cur?"#F7F7F7":isFerie?"#FFF8EC":"#fff",
+                          border:isT?"1px solid #CC2222":"1px solid #EEEEEE",
+                          cursor:(cx.cur&&!isWeekend&&!isFerie)?"pointer":"default",
+                          opacity:isWeekend&&cx.cur?0.5:1,
+                        }}>
+                        <div style={{fontWeight:isT?700:500,color:isT?"#CC2222":isWeekend?"#AAAAAA":isFerie?"#CC8800":"#1C1C1C",marginBottom:2,fontSize:isWeekend?10:12}}>
+                          {cx.day}{isFerie&&<span style={{fontSize:9,color:"#CC8800",marginLeft:2}}>●</span>}
+                        </div>
+                        {!isWeekend&&!isFerie&&evs.slice(0,5).map(ev=><EvChip key={ev.id+dStr} ev={ev} span={ev._span}/>)}
+                        {!isWeekend&&!isFerie&&evs.length>5&&<div style={{fontSize:9,color:"#7A7A7A"}}>+{evs.length-5}</div>}
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              );
             });
-            const isT=dStr===TODAY;
-            return(
-              <div key={i} onClick={()=>{if(c.cur&&!isWeekend&&!isFerie){setSelectedDay(dStr);setView("jour");}}}
-                style={{minHeight:100,borderRadius:6,padding:"4px 5px",fontSize:12,
-                  color:c.cur?"#1C1C1C":"#CCCCCC",
-                  background:isT?"#FFF0F0":isWeekend&&c.cur?"#F7F7F7":isFerie?"#FFF8EC":"#fff",
-                  border:isT?"1px solid #CC2222":"1px solid #EEEEEE",
-                  cursor:(c.cur&&!isWeekend&&!isFerie)?"pointer":"default",
-                  opacity:isWeekend&&c.cur?0.5:1,
-                }}>
-                <div style={{fontWeight:isT?700:500,color:isT?"#CC2222":isWeekend?"#AAAAAA":isFerie?"#CC8800":"#1C1C1C",marginBottom:2,fontSize:isWeekend?10:12}}>
-                  {c.day}{isFerie&&<span style={{fontSize:9,color:"#CC8800",marginLeft:2}}>●</span>}
-                </div>
-                {!isWeekend&&!isFerie&&evs.slice(0,5).map(ev=><EvChip key={ev.id+dStr} ev={ev} span={ev._span}/>)}
-                {!isWeekend&&!isFerie&&evs.length>5&&<div style={{fontSize:9,color:"#7A7A7A"}}>+{evs.length-5}</div>}
-              </div>
-            );
-          })}
+          })()}
         </div>
       </Bd>
     </>}
@@ -3283,7 +3590,10 @@ function Calendrier({sheet,projects,atelierChantier}){
     {view==="semaine"&&<Bd>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,paddingBottom:10,borderBottom:"0.5px solid #EEEEEE"}}>
         <button onClick={prevW} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:"#7A7A7A",padding:"0 8px"}}>‹</button>
-        <span style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>{fmt(weekDays[0])} — {fmt(weekDays[6])}</span>
+        <span style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>
+          <span style={{fontSize:11,fontWeight:400,color:"#7A7A7A",marginRight:8,background:"#F2F0ED",padding:"2px 7px",borderRadius:4}}>S{(d=>{const jan4=new Date(d.getFullYear(),0,4);const sw=new Date(jan4);sw.setDate(jan4.getDate()-(jan4.getDay()||7)+1);return Math.ceil((d-sw)/(7*86400000))+1;})(new Date(weekDays[0]+"T00:00:00"))}</span>
+          {fmt(weekDays[0])} — {fmt(weekDays[6])}
+        </span>
         <button onClick={nextW} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:"#7A7A7A",padding:"0 8px"}}>›</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:6}}>
@@ -3514,7 +3824,7 @@ function Fournisseurs({sheet}){
 
 // ══ STOCKS ══
 const ES={ref:"",cat:"",fourn:"",qty:"",min:"",unit:"pcs",prix:"",loc:"",note:"",tags:"",origine:"",projet:""};
-function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMissions}){
+function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMissions,hideFinances=false}){
   const [filterProjet,setFilterProjet]=useState("");
   const [recalculating,setRecalculating]=useState(false);
 
@@ -3694,7 +4004,7 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
               {[
                 {lbl:"Stock actuel",val:`${s.qty} ${s.unit}`,color:Number(s.qty)===0?"#CC2222":Number(s.qty)<Number(s.min)?"#CC8800":"#2A7A2A"},
                 {lbl:"Seuil min",val:`${s.min} ${s.unit}`,color:"#3A3A3A"},
-                {lbl:"Valeur (prix achat)",val:Number(s.prix)>0?`${(Number(s.qty)*Number(s.prix)).toLocaleString("fr-FR")} €`:"—",color:"#1C1C1C"},
+                {lbl:"Valeur (prix achat)",val:hideFinances?"•••":Number(s.prix)>0?`${(Number(s.qty)*Number(s.prix)).toLocaleString("fr-FR")} €`:"—",color:"#1C1C1C"},
               ].map((k,i)=>(
                 <div key={i} style={{background:"#F9F9F9",borderRadius:8,padding:"10px 12px",border:"0.5px solid #EEEEEE"}}>
                   <div style={{fontSize:10,color:"#7A7A7A",marginBottom:2}}>{k.lbl}</div>
@@ -3709,8 +4019,8 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
                   <div style={{fontSize:10,color:"#CC8800"}}>Informatif — non comptabilisé</div>
                 </div>
                 <div style={{textAlign:"right"}}>
-                  <div style={{fontSize:16,fontWeight:700,color:"#CC8800",fontFamily:"'DM Mono',monospace"}}>{Number(s.prixRevient).toLocaleString("fr-FR")} €</div>
-                  {Number(s.qty)>0&&<div style={{fontSize:11,color:"#CC8800"}}>Total : {(Number(s.prixRevient)*Number(s.qty)).toLocaleString("fr-FR")} €</div>}
+                  <div style={{fontSize:16,fontWeight:700,color:"#CC8800",fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":Number(s.prixRevient).toLocaleString("fr-FR")+' €'}</div>
+                  {Number(s.qty)>0&&<div style={{fontSize:11,color:"#CC8800"}}>Total : {hideFinances?"•••":(Number(s.prixRevient)*Number(s.qty)).toLocaleString("fr-FR")+' €'}</div>}
                 </div>
               </div>
             </div>}
@@ -3738,7 +4048,7 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
     })()}
     <FiltreProjetTag projects={projects} filterProjet={filterProjet} setFilterProjet={setFilterProjet} filterTag={filterTag} setFilterTag={setFilterTag}/>
     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
-      {[{val:stockActif.length+(filteredStock.length!==sheet.rows.length?` / ${sheet.rows.length} total`:""),lbl:"Références"},{val:alerts.length,lbl:"Sous seuil d'alerte",alert:alerts.length>0},{val:valeur.toLocaleString("fr-FR")+" €",lbl:"Valeur totale estimée"}].map((m,i)=>(
+      {[{val:stockActif.length+(filteredStock.length!==sheet.rows.length?` / ${sheet.rows.length} total`:""),lbl:"Références"},{val:alerts.length,lbl:"Sous seuil d'alerte",alert:alerts.length>0},{val:hideFinances?"•••":valeur.toLocaleString("fr-FR")+" €",lbl:"Valeur totale estimée"}].map((m,i)=>(
         <div key={i} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderTop:m.alert?"3px solid #CC2222":"3px solid #F2F0ED",borderRadius:8,padding:"12px 14px"}}>
           <div style={{fontSize:18,fontWeight:700,color:m.alert?"#CC2222":"#1C1C1C"}}>{m.val}</div>
           <div style={{fontSize:12,color:"#7A7A7A",marginTop:2}}>{m.lbl}</div>
@@ -3776,11 +4086,22 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
             )}
           </div>
           <span style={{fontSize:12,color:Number(s.qty)===0?"#CC2222":"#3A3A3A",fontFamily:"'DM Mono',monospace",fontWeight:Number(s.qty)===0?700:400}}>{s.qty}/{s.min} {s.unit}</span>
-          <span style={{fontSize:12,color:"#3A3A3A",fontFamily:"'DM Mono',monospace"}}>{Number(s.prix)>0?Number(s.prix).toLocaleString("fr-FR")+" €":"—"}</span>
-          <span style={{fontSize:12,color:(Number(s.qty)||0)*(Number(s.prix)||0)>0?"#1C1C1C":"#AAAAAA",fontFamily:"'DM Mono',monospace",fontWeight:500}}>{(Number(s.qty)||0)*(Number(s.prix)||0)>0?((Number(s.qty)||0)*(Number(s.prix)||0)).toLocaleString("fr-FR")+" €":"—"}</span>
+          <span style={{fontSize:12,color:"#3A3A3A",fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":Number(s.prix)>0?Number(s.prix).toLocaleString("fr-FR")+" €":"—"}</span>
+          <span style={{fontSize:12,color:(Number(s.qty)||0)*(Number(s.prix)||0)>0?"#1C1C1C":"#AAAAAA",fontFamily:"'DM Mono',monospace",fontWeight:500}}>{(Number(s.qty)||0)*(Number(s.prix)||0)>0?hideFinances?"•••":((Number(s.qty)||0)*(Number(s.prix)||0)).toLocaleString("fr-FR")+" €":"—"}</span>
           <Badge label={sb.lbl} bg={sb.bg} color={sb.tx}/>
           <div style={{display:"flex",gap:4}} onClick={e=>e.stopPropagation()}>
             <button onClick={()=>{setEditing(s.id);setForm({...s,qty:String(s.qty),min:String(s.min),prix:String(s.prix),tags:s.tags||""});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
+            {(()=>{const isLibere=(s.tags||"").split(",").map(t=>t.trim().toLowerCase()).includes("libéré")||(s.tags||"").split(",").map(t=>t.trim().toLowerCase()).includes("libere");return(
+              <button onClick={async()=>{
+                const tagsArr=(s.tags||"").split(",").map(t=>t.trim()).filter(Boolean);
+                let newTags;
+                if(isLibere){newTags=tagsArr.filter(t=>t.toLowerCase()!=="libéré"&&t.toLowerCase()!=="libere");}
+                else{newTags=[...tagsArr.filter(t=>t.toLowerCase()!=="libéré"&&t.toLowerCase()!=="libere"),"libéré"];}
+                await sheet.update(s.id,{...s,tags:newTags.join(",")});
+              }} title={isLibere?"Retirer le statut libéré":"Libérer cet article (visible par tous)"} style={{background:isLibere?"#F0FFF0":"#fff",border:"1px solid",borderColor:isLibere?"#2A7A2A":"#DDDDDD",borderRadius:4,cursor:"pointer",fontSize:10,padding:"2px 5px",color:isLibere?"#2A7A2A":"#7A7A7A",fontFamily:"'DM Sans',sans-serif",whiteSpace:"nowrap"}}>
+                {isLibere?"✓ Libéré":"Libérer"}
+              </button>
+            );})()}
             {(()=>{
               const fourn=fournisseurs.rows.find(f=>(f.nom||"").toLowerCase()===(s.fourn||"").toLowerCase());
               const email=fourn?.contact||"";
@@ -3810,11 +4131,22 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
               {s.origine&&<div style={{fontSize:10,color:"#7A7A7A",fontStyle:"italic"}}>📍 {s.origine}</div>}
             </div>
             <span style={{fontSize:12,color:"#CC2222",fontFamily:"'DM Mono',monospace",fontWeight:700}}>0 / {s.min} {s.unit}</span>
-            <span style={{fontSize:12,color:"#7A7A7A",fontFamily:"'DM Mono',monospace"}}>{Number(s.prix)>0?Number(s.prix).toLocaleString("fr-FR")+" €":"—"}</span>
+            <span style={{fontSize:12,color:"#7A7A7A",fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":Number(s.prix)>0?Number(s.prix).toLocaleString("fr-FR")+" €":"—"}</span>
             <span style={{fontSize:12,color:"#AAAAAA",fontFamily:"'DM Mono',monospace"}}>—</span>
             <Badge label="Épuisé" bg="#FFF0F0" color="#CC2222"/>
             <div style={{display:"flex",gap:4}}>
               <button onClick={()=>{setEditing(s.id);setForm({...s,qty:String(s.qty),min:String(s.min),prix:String(s.prix),tags:s.tags||""});setErr("");setOpen(true);}} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 6px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
+            {(()=>{const isLibere=(s.tags||"").split(",").map(t=>t.trim().toLowerCase()).includes("libéré")||(s.tags||"").split(",").map(t=>t.trim().toLowerCase()).includes("libere");return(
+              <button onClick={async()=>{
+                const tagsArr=(s.tags||"").split(",").map(t=>t.trim()).filter(Boolean);
+                let newTags;
+                if(isLibere){newTags=tagsArr.filter(t=>t.toLowerCase()!=="libéré"&&t.toLowerCase()!=="libere");}
+                else{newTags=[...tagsArr.filter(t=>t.toLowerCase()!=="libéré"&&t.toLowerCase()!=="libere"),"libéré"];}
+                await sheet.update(s.id,{...s,tags:newTags.join(",")});
+              }} title={isLibere?"Retirer le statut libéré":"Libérer cet article (visible par tous)"} style={{background:isLibere?"#F0FFF0":"#fff",border:"1px solid",borderColor:isLibere?"#2A7A2A":"#DDDDDD",borderRadius:4,cursor:"pointer",fontSize:10,padding:"2px 5px",color:isLibere?"#2A7A2A":"#7A7A7A",fontFamily:"'DM Sans',sans-serif",whiteSpace:"nowrap"}}>
+                {isLibere?"✓ Libéré":"Libérer"}
+              </button>
+            );})()}
               <button onClick={()=>sheet.remove(s.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A"}}>✕</button>
             </div>
           </div>
@@ -4058,7 +4390,7 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
               <div key={i} style={{display:"flex",gap:8,padding:"4px 0",borderBottom:"0.5px solid #EEE",fontSize:12}}>
                 <span style={{flex:1}}>{a.article}</span>
                 <span style={{color:"#7A7A7A"}}>{a.qty} {a.unit}</span>
-                <span style={{fontFamily:"'DM Mono',monospace"}}>{(+a.prix*(+a.qty||1)).toLocaleString("fr-FR")} €</span>
+                <span style={{fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":(+a.prix*(+a.qty||1)).toLocaleString("fr-FR")+" €"}</span>
               </div>
             ))}
             <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:12}}>
@@ -4084,7 +4416,7 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
             <div onClick={()=>setGroupeOpen(isOpen?null:titre)} style={{padding:"12px 16px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",background:isOpen?"#F9F9F9":"#fff"}}>
               <div>
                 <div style={{fontSize:14,fontWeight:700,color:"#1C1C1C"}}>{titre}</div>
-                <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{items.length} devis · meilleur prix : {totalDevis(best).toLocaleString("fr-FR")} € ({best.fourn})</div>
+                <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{items.length} devis · meilleur prix : {hideFinances?"•••":totalDevis(best).toLocaleString("fr-FR")+" €"} ({best.fourn})</div>
               </div>
               <div style={{display:"flex",gap:8,alignItems:"center"}}>
                 <button onClick={e=>{e.stopPropagation();openNew(titre);}} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#3A3A3A"}}>+ Devis</button>
@@ -4111,12 +4443,12 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
                       {d.note&&<div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{d.note}</div>}
                     </div>
                     <div style={{fontSize:12,color:"#3A3A3A"}}>{d.delai||"—"}</div>
-                    <div style={{fontSize:13,fontWeight:700,color:isBest?"#2A7A2A":"#1C1C1C",textAlign:"right",fontFamily:"'DM Mono',monospace"}}>{totalDevis(d).toLocaleString("fr-FR")} €</div>
+                    <div style={{fontSize:13,fontWeight:700,color:isBest?"#2A7A2A":"#1C1C1C",textAlign:"right",fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":totalDevis(d).toLocaleString("fr-FR")+' €'}</div>
                     <div style={{fontSize:11}}>
                       {d.statut==="accepté"?<span style={{color:"#2A7A2A",fontWeight:700}}>✓ Accepté</span>:<span style={{color:"#7A7A7A"}}>En attente</span>}
                     </div>
                     <div style={{fontSize:11,color:"#3A3A3A"}}>
-                      {ligs.map((l,i)=><div key={i}>{l.article} · {l.qty} {l.unit}{l.prix?` · ${(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")} €`:""}</div>)}
+                      {ligs.map((l,i)=><div key={i}>{l.article} · {l.qty} {l.unit}{l.prix?(hideFinances?` · •••`:`  · ${(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")} €`):""}</div>)}
                     </div>
                   </div>
                 );
@@ -4141,7 +4473,7 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
         {archives.map(d=>(
           <div key={d.id} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"0.5px solid #EEE",fontSize:12,color:"#7A7A7A"}}>
             <span>{d.titre} — {d.fourn}</span>
-            <span style={{fontFamily:"'DM Mono',monospace"}}>{totalDevis(d).toLocaleString("fr-FR")} €</span>
+            <span style={{fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":totalDevis(d).toLocaleString("fr-FR")+' €'}</span>
             <span style={{color:"#CC2222"}}>Refusé</span>
           </div>
         ))}
@@ -4183,7 +4515,7 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
             <button onClick={addLigne} style={{padding:"5px 12px",borderRadius:4,border:"1px dashed #DDD",background:"#F9F9F9",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#3A3A3A",marginTop:4}}>+ Ajouter un article</button>
           </FG>
           <div style={{background:"#F9F9F9",borderRadius:6,padding:"8px 12px",marginBottom:12,textAlign:"right",fontSize:13,fontWeight:700,fontFamily:"'DM Mono',monospace"}}>
-            Total : {lignesForm.reduce((s,l)=>(+l.prix||0)*(+l.qty||1)+s,0).toLocaleString("fr-FR")} €
+            Total : {hideFinances?"•••":lignesForm.reduce((s,l)=>(+l.prix||0)*(+l.qty||1)+s,0).toLocaleString("fr-FR")+" €"}
           </div>
           <FG label="Note / conditions"><Inp value={form.note||""} onChange={e=>f("note",e.target.value)} placeholder="Conditions de paiement, remarques..."/></FG>
           <FG label="Tags"><TagSelector tags={form.tags||""} onChange={v=>f("tags",v)} projetNom={form.projet||""} projects={projects}/></FG>
@@ -4204,7 +4536,7 @@ const EO={ref:"",fourn:"",article:"",qty:"",unit:"pcs",prix:"",cat:"",loc:"",dat
 const ED={titre:"",fourn:"",projet:"",description:"",lignes:"",prix:"",delai:"",statut:"en attente",date:TODAY,note:"",tags:""};
 // Ligne d'article vide
 const EL={article:"",qty:"",unit:"pcs",prix:"",cat:""};
-function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
+function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChantier,hideFinances=false}){
   const [onglet,setOnglet]=useState("commandes"); // "commandes" | "devis"
   const [filterProjet,setFilterProjet]=useState("");
   const [filterTag,setFilterTag]=useState("");
@@ -4362,7 +4694,6 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
         const tagsNew=(ord.tags||"").split(",").filter(Boolean);
         const tagsMerge=[...new Set([...tagsExist,...tagsNew])].join(",");
         await updateStockQty(stocks,snap,l.article,+l.qty||0,{type:"commande",label:ord.ref||ord.fourn||"",projet:ord.projet||"",date:ord.date||TODAY});
-        // Mettre à jour tags ET projet
         const sUpdated=stocks.rows.find(s=>normRef(s.ref)===normRef(l.article));
         if(sUpdated){
           const needsUpdate=(tagsMerge!==existing.tags)||(ord.projet&&!existing.projet);
@@ -4372,6 +4703,42 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
         const initHist=JSON.stringify([{date:ord.date||TODAY,type:"commande",label:ord.ref||ord.fourn||"",projet:ord.projet||"",fourn:ord.fourn||"",qty:+l.qty||0,qtyApres:+l.qty||0}]);
         await stocks.add({ref:l.article,cat:l.cat||ord.cat||"",qty:+l.qty||0,min:0,unit:l.unit||"pcs",prix:+l.prix||0,loc:ord.loc||"",fourn:ord.fourn||"",tags:ord.tags||"",projet:ord.projet||"",historique:initHist});
       }
+    }
+
+    // ── Q2 : Auto-propager vers les missions liées à cette commande ──
+    // Chercher toutes missions atelier/chantier ayant une dep sur cette commande
+    const missionsConcernees=(atelierChantier?.rows||[]).filter(m=>{
+      if(m.statut==="terminé")return false;
+      try{
+        const parsed=JSON.parse(m.note&&m.note.startsWith("{")?m.note:"{}");
+        const deps=parsed.deps||[];
+        return deps.some(d=>d.type==="commande"&&String(d.id)===String(ord.id));
+      }catch(e){return false;}
+    });
+    for(const mission of missionsConcernees){
+      try{
+        // Trouver la dep pour récupérer qty demandée
+        const parsed=JSON.parse(mission.note.startsWith("{")?mission.note:"{}");
+        const deps=parsed.deps||[];
+        const dep=deps.find(d=>d.type==="commande"&&String(d.id)===String(ord.id));
+        if(!dep)continue;
+        const qtyDemandee=dep.qty||1;
+        // Ajouter les articles dans stockItems de la mission
+        let items=[];
+        try{items=mission.stockItems?JSON.parse(mission.stockItems):[];}catch(e){}
+        for(const l of lignes){
+          if(!l.article)continue;
+          // Ne pas dupliquer si déjà présent
+          const existIdx=items.findIndex(x=>normRef(x.ref)===normRef(l.article));
+          if(existIdx>=0){
+            // Mettre à jour la quantité
+            items[existIdx]={...items[existIdx],qty:items[existIdx].qty};
+          } else {
+            items.push({ref:l.article,qty:qtyDemandee});
+          }
+        }
+        await atelierChantier.update(mission.id,{...mission,stockItems:JSON.stringify(items)});
+      }catch(e){console.warn("Auto-stockItems mission",mission.id,e);}
     }
   }
 
@@ -4452,7 +4819,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
           </div>
           <FG label="Catégorie stock"><Sel value={l.cat||""} onChange={e=>fl(i,"cat",e.target.value)}><option value="">— Choisir —</option>{CATS.map(c=><option key={c}>{c}</option>)}</Sel></FG>
           {l.qty>0&&l.prix>0&&<div style={{fontSize:11,color:"#2A7A2A",textAlign:"right",marginTop:2,fontWeight:600}}>
-            Sous-total : {(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")} €
+            Sous-total : {hideFinances?"•••":(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")+" €"}
           </div>}
         </div>
       ))}
@@ -4461,7 +4828,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
       </button>
       {lignesForm.filter(l=>l.qty>0&&l.prix>0).length>1&&(
         <div style={{textAlign:"right",marginTop:6,fontSize:12,fontWeight:700,color:"#1C1C1C"}}>
-          Total commande : {lignesForm.reduce((s,l)=>s+(+l.prix||0)*(+l.qty||0),0).toLocaleString("fr-FR")} €
+          Total commande : {hideFinances?"•••":lignesForm.reduce((s,l)=>s+(+l.prix||0)*(+l.qty||0),0).toLocaleString("fr-FR")+" €"}
         </div>
       )}
     </div>
@@ -4584,14 +4951,14 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
                 <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C"}}>{l.article}</div>
                 <div style={{fontSize:11,color:"#7A7A7A",display:"flex",gap:10,marginTop:2}}>
                   {l.qty&&<span>{l.qty} {l.unit}</span>}
-                  {l.prix&&<span>{Number(l.prix).toLocaleString("fr-FR")} € /u</span>}
-                  {l.qty&&l.prix&&<span style={{color:"#2A7A2A",fontWeight:600}}>= {(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")} €</span>}
+                  {l.prix&&<span>{hideFinances?"•••":Number(l.prix).toLocaleString("fr-FR")+" €"} /u</span>}
+                  {l.qty&&l.prix&&<span style={{color:"#2A7A2A",fontWeight:600}}>= {hideFinances?"•••":(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")+" €"}</span>}
                   {l.cat&&<span style={{background:"#F2F0ED",padding:"0 5px",borderRadius:3}}>{l.cat}</span>}
                 </div>
               </div>
             ))}
             <div style={{textAlign:"right",marginTop:6,fontSize:12,fontWeight:700,color:"#1C1C1C"}}>
-              Total : {aiPreview.lignes.reduce((s,l)=>s+(+l.prix||0)*(+l.qty||0),0).toLocaleString("fr-FR")} €
+              Total : {hideFinances?"•••":aiPreview.lignes.reduce((s,l)=>s+(+l.prix||0)*(+l.qty||0),0).toLocaleString("fr-FR")+" €"}
             </div>
           </Bd>
 
@@ -4669,11 +5036,11 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
             <div key={i} style={{display:"flex",gap:8,padding:"3px 0",borderBottom:"0.5px solid #F5F5F5",alignItems:"center"}}>
               <span style={{fontSize:11,color:"#1C1C1C",flex:1}}>{l.article}</span>
               <span style={{fontSize:11,color:"#7A7A7A",whiteSpace:"nowrap"}}>{l.qty} {l.unit}</span>
-              {l.prix>0&&<span style={{fontSize:11,color:"#3A3A3A",whiteSpace:"nowrap",fontFamily:"'DM Mono',monospace"}}>{(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")} €</span>}
+              {l.prix>0&&<span style={{fontSize:11,color:"#3A3A3A",whiteSpace:"nowrap",fontFamily:"'DM Mono',monospace"}}>{hideFinances?"•••":(+l.prix*(+l.qty||1)).toLocaleString("fr-FR")+" €"}</span>}
             </div>
           ))}
           {getLignes(o).length>1&&<div style={{textAlign:"right",fontSize:11,fontWeight:700,color:"#1C1C1C",marginTop:3}}>
-            Total : {totalCommande(o).toLocaleString("fr-FR")} €
+            Total : {hideFinances?"•••":totalCommande(o).toLocaleString("fr-FR")+" €"}
           </div>}
           <div style={{display:"flex",gap:16,flexWrap:"wrap",marginTop:6}}>
             <Check checked={isBool(o.recue)} onChange={()=>toggleRecue(o)} label="Reçue → ajout au stock" color="#2A7A2A"/>
@@ -4697,7 +5064,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
             <Badge label="Reçue" bg="#F0FFF0" color="#2A7A2A"/>
           </div>
           <div style={{fontSize:12,color:"#7A7A7A",marginBottom:8,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-            <span>{o.fourn} · {fmt(o.date)} · {totalCommande(o)>0?totalCommande(o).toLocaleString("fr-FR")+" €":""}</span>
+            <span>{o.fourn} · {fmt(o.date)}{!hideFinances&&totalCommande(o)>0&&` · ${totalCommande(o).toLocaleString("fr-FR")} €`}</span>
             {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
             {(o.tags||"").split(",").filter(Boolean).map((t,i)=><span key={i} style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:10}}>{t.trim()}</span>)}
           </div>
@@ -4717,7 +5084,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
           <div style={{flex:1}}>
             <div style={{fontSize:13,color:"#7A7A7A",textDecoration:"line-through"}}>{getLignes(o).length>1?`${getLignes(o).length} articles`:o.article}</div>
             <div style={{fontSize:11,color:"#7A7A7A",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-              <span style={{fontFamily:"'DM Mono',monospace"}}>{o.fourn} · {fmt(o.date)}{totalCommande(o)>0&&` · ${totalCommande(o).toLocaleString("fr-FR")} €`}</span>
+              <span style={{fontFamily:"'DM Mono',monospace"}}>{o.fourn} · {fmt(o.date)}{!hideFinances&&totalCommande(o)>0&&` · ${totalCommande(o).toLocaleString("fr-FR")} €`}</span>
               {o.projet&&<span style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:11,padding:"1px 6px",borderRadius:4,fontWeight:500}}>{o.projet}</span>}
               {(o.tags||"").split(",").filter(Boolean).map((t,i)=><span key={i} style={{background:"#EBF3FF",color:"#1A5DAB",fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:10}}>{t.trim()}</span>)}
             </div>
@@ -4754,6 +5121,132 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis}){
 }
 
 // ══ APP ROOT ══
+
+// ══ UTILISATEURS & AUTH ══
+const USERS=[
+  {pin:"17", nom:"Admin",        role:"admin",         couleur:"#CC2222"},
+  {pin:"99", nom:"Jeffrey Diaz", role:"ingenieur",     couleur:"#1A5DAB"},
+  {pin:"54", nom:"Alexis Neve",  role:"ingenieur",     couleur:"#2A7A2A"},
+  {pin:"75", nom:"Chef Projet",  role:"chef_projet",   couleur:"#7A2A7A"},
+];
+// Rôles distincts pour l'affichage
+const ROLES=[
+  {role:"admin",       label:"👑 Admin",          couleur:"#CC2222"},
+  {role:"ingenieur",   label:"🔧 Ingénieur",       couleur:"#1A5DAB"},
+  {role:"chef_projet", label:"📋 Chef de projet",  couleur:"#7A2A7A"},
+];
+const SESSION_KEY="btp_session_v1";
+
+function getSession(){
+  try{const s=localStorage.getItem(SESSION_KEY);return s?JSON.parse(s):null;}catch(e){return null;}
+}
+function setSession(user){
+  try{localStorage.setItem(SESSION_KEY,JSON.stringify(user));}catch(e){}
+}
+function clearSession(){
+  try{localStorage.removeItem(SESSION_KEY);}catch(e){}
+}
+
+function LoginScreen({onLogin}){
+  const [email,setEmail]=useState("");
+  const [selectedRole,setSelectedRole]=useState(""); // rôle sélectionné (pas le PIN)
+  const [pin,setPin]=useState("");
+  const [err,setErr]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [shake,setShake]=useState(false);
+
+  async function tryLogin(){
+    if(!email.trim()){setErr("Email requis");return;}
+    if(!selectedRole){setErr("Sélectionnez un rôle");return;}
+    if(!pin.trim()){setErr("Code PIN requis");return;}
+    // Vérifier que le PIN correspond à un utilisateur DU RÔLE SÉLECTIONNÉ
+    const u=USERS.find(x=>x.pin===pin.trim()&&x.role===selectedRole);
+    if(!u){
+      setErr("Code PIN incorrect pour ce rôle");setPin("");
+      setShake(true);setTimeout(()=>setShake(false),500);
+      return;
+    }
+    setLoading(true);setErr("");
+    try{
+      setAuthEmail(email.trim());
+      await gasInit();
+      onLogin(u);
+    }catch(e){
+      clearAuth();
+      setErr(e.message||"Email non autorisé — vérifiez votre adresse");
+      setLoading(false);
+    }
+  }
+
+  const rolesDisponibles=ROLES.filter(r=>USERS.some(u=>u.role===r.role));
+
+  return(
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"100vh",background:"#F2F0ED"}}>
+      <div style={{
+        background:"#fff",border:"0.5px solid #DDDDDD",borderTop:"4px solid #CC2222",
+        borderRadius:12,padding:"32px 40px",width:360,boxShadow:"0 4px 24px rgba(0,0,0,0.08)",
+        animation:shake?"shake 0.4s":"none"
+      }}>
+        <style>{`@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}`}</style>
+        <div style={{display:"flex",justifyContent:"center",marginBottom:20}}><HPLogo/></div>
+        <div style={{fontSize:16,fontWeight:700,color:"#1C1C1C",textAlign:"center",marginBottom:4}}>BTP Manager</div>
+        <div style={{fontSize:12,color:"#7A7A7A",textAlign:"center",marginBottom:24}}>Connectez-vous pour accéder</div>
+
+        {/* Sélection rôle — affichage uniquement, ne remplit PAS le PIN */}
+        <div style={{fontSize:11,color:"#7A7A7A",marginBottom:6,fontWeight:500}}>Votre rôle</div>
+        <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+          {rolesDisponibles.map(r=>(
+            <button key={r.role} onClick={()=>setSelectedRole(r.role)} style={{
+              padding:"7px 16px",borderRadius:6,border:"1.5px solid",
+              borderColor:selectedRole===r.role?r.couleur:"#DDDDDD",
+              background:selectedRole===r.role?"#fff":"#FAFAFA",
+              boxShadow:selectedRole===r.role?`0 0 0 2px ${r.couleur}22`:"none",
+              cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",
+              color:selectedRole===r.role?r.couleur:"#7A7A7A",
+              fontWeight:selectedRole===r.role?700:400,
+              transition:"all .15s"
+            }}>{r.label}</button>
+          ))}
+        </div>
+
+        {/* Email */}
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:11,color:"#7A7A7A",marginBottom:4,fontWeight:500}}>Email Google</div>
+          <input
+            type="email" value={email} onChange={e=>setEmail(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&document.getElementById("pin-input").focus()}
+            placeholder="prenom.nom@highpoint-structures.com"
+            style={{width:"100%",padding:"9px 12px",borderRadius:6,border:"1.5px solid #DDDDDD",
+              fontSize:13,fontFamily:"'DM Sans',sans-serif",boxSizing:"border-box",outline:"none"}}
+            autoFocus
+          />
+        </div>
+
+        {/* PIN */}
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:11,color:"#7A7A7A",marginBottom:4,fontWeight:500}}>Code PIN</div>
+          <input
+            id="pin-input"
+            type="password" value={pin} onChange={e=>setPin(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&tryLogin()}
+            placeholder="• • • •"
+            style={{width:"100%",padding:"9px 12px",borderRadius:6,
+              border:`1.5px solid ${err?"#CC2222":"#DDDDDD"}`,
+              fontSize:18,fontFamily:"'DM Mono',monospace",textAlign:"center",
+              boxSizing:"border-box",outline:"none",letterSpacing:6}}
+          />
+          {err&&<div style={{fontSize:12,color:"#CC2222",marginTop:6,textAlign:"center"}}>{err}</div>}
+        </div>
+
+        <button onClick={tryLogin} disabled={loading} style={{
+          width:"100%",padding:"10px",borderRadius:6,border:"none",
+          background:loading?"#AAAAAA":"#CC2222",color:"#fff",fontSize:13,fontWeight:700,
+          cursor:loading?"wait":"pointer",fontFamily:"'DM Sans',sans-serif"
+        }}>{loading?"Vérification...":"Connexion →"}</button>
+      </div>
+    </div>
+  );
+}
 const PANELS=[
   {id:"dashboard",label:"Tableau de bord"},
   {id:"projets",label:"Projets"},
@@ -4769,9 +5262,26 @@ const PANELS=[
 ];
 
 function App(){
+  const [user,setUser]=useState(()=>{
+    // Restaurer session mais vider l'auth GAS (token expiré)
+    const s=getSession();
+    if(s){ /* email restauré au prochain gasGet automatiquement */ }
+    return null; // toujours redemander le login au démarrage pour éviter les problèmes d'auth
+  });
+
+  function handleLogin(u){setUser(u);setSession(u);}
+  function handleLogout(){setUser(null);clearSession();clearAuth();}
+
+  if(!user)return <LoginScreen onLogin={handleLogin}/>;
+  return <AppContent user={user} onLogout={handleLogout}/>;
+}
+
+function AppContent({user,onLogout}){
   const [panel,setPanel]=useState("dashboard");
+  const [hideFinances,setHideFinances]=useState(false);
   const [initializing,setInitializing]=useState(true);
   const [initErr,setInitErr]=useState(null);
+
   const projects=useSheet("projects");
   const tasks=useSheet("tasks");
   const events=useSheet("events");
@@ -4787,6 +5297,39 @@ function App(){
   const atelierChantier=useSheet("atelierChantier");
   const sheets={projects,tasks,events,team,journal,fournisseurs,stocks,orders,notes,prestataires,prestMissions,atelierChantier};
 
+  // ── Filtrage par rôle ──
+  const norm=s=>String(s||"").trim().toLowerCase();
+  const mesProjetIds=user.role==="admin"
+    ? new Set(projects.rows.map(p=>String(p.id)))
+    : new Set(projects.rows.filter(p=>norm(p.ingenieur)===norm(user.nom)).map(p=>String(p.id)));
+  const mesProjetsNoms=user.role==="admin"
+    ? new Set(projects.rows.map(p=>norm(p.name)))
+    : new Set(projects.rows.filter(p=>norm(p.ingenieur)===norm(user.nom)).map(p=>norm(p.name)));
+
+  function filterByProjet(rows, champProjet="projet"){
+    if(user.role==="admin")return rows;
+    return rows.filter(r=>!r[champProjet]||mesProjetsNoms.has(norm(r[champProjet])));
+  }
+  function filterStock(rows){
+    if(user.role==="admin")return rows;
+    return rows.filter(s=>{
+      const tags=(s.tags||"").split(",").map(t=>t.trim().toLowerCase());
+      if(tags.includes("libéré")||tags.includes("libere"))return true;
+      if(!s.projet)return false;
+      return mesProjetsNoms.has(norm(s.projet));
+    });
+  }
+
+  // Vues filtrées
+  const projetsView={...projects,rows:user.role==="admin"?projects.rows:projects.rows.filter(p=>norm(p.ingenieur)===norm(user.nom))};
+  const ordersView={...orders,rows:filterByProjet(orders.rows)};
+  const tasksView={...tasks,rows:filterByProjet(tasks.rows)};
+  const eventsView={...events,rows:filterByProjet(events.rows)};
+  const stocksView={...stocks,rows:filterStock(stocks.rows)};
+  const prestMissionsView={...prestMissions,rows:filterByProjet(prestMissions.rows)};
+  const atelierChantierView={...atelierChantier,rows:filterByProjet(atelierChantier.rows)};
+  const sheetsView={...sheets,projects:projetsView,orders:ordersView,tasks:tasksView,events:eventsView,stocks:stocksView,prestMissions:prestMissionsView,atelierChantier:atelierChantierView};
+
   useEffect(()=>{
     const onUnhandled=(event)=>{
       const msg=event.reason&&event.reason.message?event.reason.message:String(event.reason||"Erreur inattendue");
@@ -4794,11 +5337,13 @@ function App(){
       setInitErr(msg);event.preventDefault();
     };
     window.addEventListener("unhandledrejection",onUnhandled);
-    gasInit().then(()=>setInitializing(false)).catch(e=>{setInitErr(e.message||"Erreur de connexion");setInitializing(false);});
+    // L'email est déjà défini (gasInit appelé dans LoginScreen)
+    // Les useSheet vont se charger automatiquement
+    setInitializing(false);
     return()=>window.removeEventListener("unhandledrejection",onUnhandled);
   },[]);
 
-  const alerts=[...projects.rows.filter(p=>p.statut==="retard"),...stocks.rows.filter(s=>Number(s.qty)<Number(s.min)),...orders.rows.filter(o=>(o.recue===true||o.recue==="TRUE")&&!o.factureCompta&&o.factureCompta!=="TRUE")];
+  const alerts=[...projetsView.rows.filter(p=>p.statut==="retard"),...stocksView.rows.filter(s=>Number(s.qty)<Number(s.min)),...ordersView.rows.filter(o=>(o.recue===true||o.recue==="TRUE")&&!o.factureCompta&&o.factureCompta!=="TRUE")];
 
   if(initializing)return(
     <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",gap:16,background:"#F2F0ED"}}>
@@ -4837,22 +5382,30 @@ function App(){
         ))}
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
           {alerts.length>0&&<span style={{background:"#CC2222",color:"#fff",fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:4}}>{alerts.length} alerte{alerts.length>1?"s":""}</span>}
+          <button onClick={()=>setHideFinances(v=>!v)} title={hideFinances?"Afficher les montants":"Masquer les montants"} style={{padding:"3px 10px",borderRadius:4,border:"0.5px solid #DDDDDD",background:hideFinances?"#F2F0ED":"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#3A3A3A",display:"flex",alignItems:"center",gap:5}}>
+            <span style={{fontSize:13}}>{hideFinances?"🔒":"🔓"}</span>
+            <span>{hideFinances?"Afficher €":"Masquer €"}</span>
+          </button>
+          <div style={{display:"flex",alignItems:"center",gap:6,padding:"3px 10px",borderRadius:4,background:user.role==="admin"?"#FFF0F0":"#F0F4FF",border:"0.5px solid",borderColor:user.role==="admin"?"#FFCCCC":"#C0D4FF"}}>
+            <span style={{fontSize:11,fontWeight:700,color:user.couleur}}>{user.role==="admin"?"👑":""}{user.nom}</span>
+            <button onClick={onLogout} title="Se déconnecter" style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:"#7A7A7A",padding:"0 2px",fontFamily:"'DM Sans',sans-serif"}}>✕</button>
+          </div>
           <span style={{fontSize:10,color:"#7A7A7A",fontFamily:"'DM Mono',monospace",border:"0.5px solid #DDDDDD",borderRadius:4,padding:"2px 6px"}}>{VERSION}</span>
         </div>
       </div>
       {/* Content */}
       <div style={{flex:1,padding:20}}>
-        {panel==="dashboard"      &&<Dashboard sheets={sheets}/>}
-        {panel==="projets"        &&<Projets sheet={projects} notes={notes} tasks={tasks} orders={orders} stocks={stocks} events={events} prestMissions={prestMissions} atelierChantier={atelierChantier} team={team}/>}
-        {panel==="taches"         &&<Taches sheet={tasks} projects={projects}/>}
-        {panel==="calendrier"     &&<Calendrier sheet={events} projects={projects} atelierChantier={atelierChantier}/>}
+        {panel==="dashboard"      &&<Dashboard sheets={sheetsView} hideFinances={hideFinances}/>}
+        {panel==="projets"        &&<Projets sheet={projetsView} notes={notes} tasks={tasksView} orders={ordersView} stocks={stocksView} events={eventsView} prestMissions={prestMissionsView} atelierChantier={atelierChantierView} team={team} hideFinances={hideFinances}/>}
+        {panel==="taches"         &&<Taches sheet={tasksView} projects={projetsView}/>}
+        {panel==="calendrier"     &&<Calendrier sheet={eventsView} projects={projetsView} atelierChantier={atelierChantierView}/>}
         {panel==="equipes"        &&<Equipes sheet={team} journal={journal}/>}
-        {panel==="atelier"        &&<MissionModule moduleType="atelier" sheet={atelierChantier} projects={projects} team={team} stocks={stocks} events={events} fournisseurs={fournisseurs}/>}
-        {panel==="chantier"       &&<MissionModule moduleType="chantier" sheet={atelierChantier} projects={projects} team={team} stocks={stocks} events={events} orders={orders} fournisseurs={fournisseurs}/>}
-        {panel==="prestataires"   &&<Prestataires sheet={prestataires} missions={prestMissions} projects={projects} stocks={stocks} events={events} fournisseurs={fournisseurs}/>}
+        {panel==="atelier"        &&<MissionModule moduleType="atelier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs}/>}
+        {panel==="chantier"       &&<MissionModule moduleType="chantier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs}/>}
+        {panel==="prestataires"   &&<Prestataires sheet={prestataires} missions={prestMissionsView} projects={projetsView} stocks={stocksView} events={eventsView} fournisseurs={fournisseurs} hideFinances={hideFinances}/>}
         {panel==="fournisseurs"   &&<Fournisseurs sheet={fournisseurs}/>}
-        {panel==="stocks"         &&<Stocks sheet={stocks} fournisseurs={fournisseurs} projects={projects} orders={orders} atelierChantier={atelierChantier} prestMissions={prestMissions}/>}
-        {panel==="commandes"      &&<Commandes sheet={orders} stocks={stocks} fournisseurs={fournisseurs} projects={projects} events={events} devis={devis}/>}
+        {panel==="stocks"         &&<Stocks sheet={stocksView} fournisseurs={fournisseurs} projects={projetsView} orders={ordersView} atelierChantier={atelierChantierView} prestMissions={prestMissionsView} hideFinances={hideFinances}/>}
+        {panel==="commandes"      &&<Commandes sheet={ordersView} stocks={stocksView} fournisseurs={fournisseurs} projects={projetsView} events={eventsView} devis={devis} atelierChantier={atelierChantierView} hideFinances={hideFinances}/>}
       </div>
       {/* Footer */}
       <div style={{textAlign:"center",padding:"10px 20px",fontSize:10,color:"#7A7A7A",borderTop:"0.5px solid #DDDDDD",background:"#fff",fontFamily:"'DM Sans',sans-serif"}}>
@@ -4860,7 +5413,9 @@ function App(){
       </div>
     </div>
   );
-}
+} // fin AppContent
+
+function AppOuter(){return <App/>;}
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <ErrorBoundary><App/></ErrorBoundary>
