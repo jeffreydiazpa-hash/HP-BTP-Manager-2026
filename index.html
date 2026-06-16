@@ -42,7 +42,12 @@
 const { useState, useEffect, useCallback } = React;
 
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v2.9.9";
+const VERSION = "v3.2.2";
+// Fonction de journalisation — appelée après chaque action d'un membre atelier
+async function logAction(journal, user, texte, projet=""){
+  if(!journal||!user)return;
+  await journal.add({date:TODAY,texte:`[${user.nom}] ${texte}`,projet:projet||""});
+}
 
 // ── Système d'authentification ──
 // Token stocké en mémoire uniquement, expire toutes les 5 minutes
@@ -230,7 +235,7 @@ const EV_COLORS={rdv:"#2A7A2A",deadline:"#CC2222",chantier:"#1A5DAB",livraison:"
 const EV_AUTO_TYPES=new Set(["chantier","prestation","livraison"]);
 const EV_AUTO_MODULE={chantier:"module Chantier",prestation:"module Prestataires",livraison:"module Commandes"};
 const EV_LABELS={rdv:"RDV",deadline:"Deadline",chantier:"Chantier",livraison:"Livraison",deplacement:"Déplacement",prestation:"Prestation"};
-const CATS=["Visserie & fixations","Profilés aluminium","Membranes ETFE","Acier structure","Structure bois","Étanchéité & joints","Câblerie & électricité","Plomberie & fluides","Revêtements & finitions","Matériaux isolants","Consommables atelier","Outillage","EPI & sécurité","Fournitures de bureau","Transport & logistique","Autre"];
+const CATS=["Visserie & fixations","Profilés aluminium extrudés","Membranes (ETFE, PVC, etc)","Éléments métalliques","Éléments en bois","Étanchéité & joints","Câblerie & électricité","Plomberie & fluides","Revêtements & finitions","Matériaux isolants","Consommables atelier","Outillage","EPI & sécurité","Fournitures de bureau","Transport & logistique","Autre"];
 const UNITS=["pcs","m²","ml","barres","kg","rouleaux","cartouches","boîtes"];
 
 // ── Intervenants BTP ──
@@ -2976,7 +2981,833 @@ function serializeDeps(deps,noteTexte){
   return JSON.stringify({deps,noteTexte:noteTexte||""});
 }
 
-function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,fournisseurs}){
+
+// ══════════════════════════════════════════════════════
+// COMPOSANT GANTT — Vue planning par membre
+// ══════════════════════════════════════════════════════
+
+// Composant pour éditer une phase entière (toutes ses opérations groupées)
+function PhaseItem({ph, suiviFab, allLignes}){
+  const [editing,setEditing]=useState(false);
+  const [editForm,setEditForm]=useState({famille:ph.famille,phase:ph.phase,deadline:ph.deadline||"",nb_unites:ph.nb_unites,type_unite:ph.type_unite});
+  const [editOps,setEditOps]=useState(ph.ops.map(o=>({id:o.id,operation:o.operation,_delete:false})));
+  const ef=(k,v)=>setEditForm(f=>({...f,[k]:v}));
+
+  if(editing) return(
+    <div style={{border:"1px solid #CC2222",borderRadius:8,padding:"12px",marginBottom:10,background:"#FFF8F8"}}>
+      <div style={{fontSize:12,fontWeight:700,marginBottom:10,color:"#CC2222"}}>Modifier la phase</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
+        <FG label="Famille"><Inp value={editForm.famille} onChange={e=>ef("famille",e.target.value)}/></FG>
+        <FG label="Phase"><Inp value={editForm.phase} onChange={e=>ef("phase",e.target.value)}/></FG>
+        <FG label="Deadline"><Inp type="date" value={editForm.deadline} onChange={e=>ef("deadline",e.target.value)}/></FG>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+        <FG label="Nb unités"><Inp type="number" value={editForm.nb_unites} onChange={e=>ef("nb_unites",+e.target.value||10)} min="1" max="100"/></FG>
+        <FG label="Type">
+          <select value={editForm.type_unite} onChange={e=>ef("type_unite",e.target.value)} style={{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #DDD",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>
+            <option value="num">Numérique</option>
+            <option value="alpha">Alphabétique</option>
+          </select>
+        </FG>
+      </div>
+      <div style={{fontSize:11,fontWeight:700,color:"#7A7A7A",marginBottom:6}}>OPÉRATIONS</div>
+      {editOps.map((op,i)=>(
+        <div key={i} style={{display:"flex",gap:6,marginBottom:6,alignItems:"center",opacity:op._delete?0.4:1}}>
+          <Inp value={op.operation} onChange={e=>{const a=[...editOps];a[i]={...a[i],operation:e.target.value};setEditOps(a);}} style={{textDecoration:op._delete?"line-through":"none"}}/>
+          <button onClick={()=>{const a=[...editOps];a[i]={...a[i],_delete:!a[i]._delete};setEditOps(a);}}
+            style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:op._delete?"#2A7A2A":"#CC2222",flexShrink:0}}>
+            {op._delete?"↩":"✕"}
+          </button>
+        </div>
+      ))}
+      <button onClick={()=>setEditOps(l=>[...l,{id:null,operation:"",_delete:false}])}
+        style={{padding:"3px 10px",borderRadius:4,border:"1px dashed #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#7A7A7A",marginBottom:10}}>+ Opération</button>
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+        <button onClick={()=>setEditing(false)} style={{padding:"5px 12px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
+        <button onClick={async()=>{
+          const newNb=editForm.nb_unites;
+          for(const op of editOps){
+            if(op._delete&&op.id){await suiviFab.remove(op.id);}
+            else if(!op._delete&&op.id){
+              // Mettre à jour l'opération existante
+              const l=ph.ops.find(x=>x.id===op.id);
+              if(!l)continue;
+              let vals=[];try{vals=[...JSON.parse(l.valeurs||"[]")];}catch(e){}
+              if(newNb>ph.nb_unites){while(vals.length<newNb)vals.push(0);}
+              else if(newNb<ph.nb_unites){vals=vals.slice(0,newNb);}
+              await suiviFab.update(op.id,{...l,famille:editForm.famille,phase:editForm.phase,deadline:editForm.deadline,nb_unites:newNb,type_unite:editForm.type_unite,operation:op.operation,valeurs:JSON.stringify(vals)});
+            } else if(!op._delete&&!op.id&&op.operation.trim()){
+              // Nouvelle opération
+              await suiviFab.add({mission_id:ph.ops[0]?.mission_id||"",famille:editForm.famille,phase:editForm.phase,deadline:editForm.deadline,nb_unites:newNb,type_unite:editForm.type_unite,operation:op.operation,valeurs:JSON.stringify(Array(newNb).fill(0))});
+            }
+          }
+          setEditing(false);
+        }} style={{padding:"5px 12px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>Enregistrer</button>
+      </div>
+    </div>
+  );
+
+  const dl=ph.deadline;
+  const dlISO=toISO(dl||"");
+  const retard=dlISO&&dlISO<TODAY;
+  const proche=dlISO&&!retard&&dlISO<=((()=>{const x=new Date(TODAY+"T00:00:00");x.setDate(x.getDate()+7);return x.toISOString().split("T")[0];})());
+  return(
+    <div style={{border:"0.5px solid #EEEEEE",borderRadius:6,padding:"10px 12px",marginBottom:8,background:"#fff"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#1C1C1C"}}>{ph.famille} <span style={{color:"#AAAAAA"}}>›</span> {ph.phase}</div>
+          <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>{ph.nb_unites} unités {ph.type_unite==="alpha"?"(A-Z)":"(1-N)"} · {ph.ops.length} opération{ph.ops.length>1?"s":""}</div>
+          {dl&&<div style={{fontSize:10,marginTop:2,padding:"2px 6px",borderRadius:3,display:"inline-block",fontWeight:600,background:retard?"#FFF0F0":proche?"#FFF8EC":"#F2F0ED",color:retard?"#CC2222":proche?"#CC8800":"#7A7A7A"}}>
+            {retard?"⚠ ":"⏱ "}Deadline : {fmt(dl)}
+          </div>}
+        </div>
+        <button onClick={()=>setEditing(true)} style={{padding:"4px 10px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#3A3A3A"}}>Mod.</button>
+        <button onClick={async()=>{if(confirm(`Supprimer la phase "${ph.phase}" et toutes ses opérations ?`)){for(const op of ph.ops)await suiviFab.remove(op.id);}}}
+          style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#CCCCCC"}}>✕</button>
+      </div>
+      <div style={{fontSize:11,color:"#7A7A7A"}}>{ph.ops.map(o=>o.operation).join(" · ")}</div>
+    </div>
+  );
+}
+
+// Sous-composant pour l'édition inline d'une opération
+function OperationItem({l,suiviFab}){
+  const [editing,setEditing]=useState(false);
+  const [editForm,setEditForm]=useState({famille:l.famille,phase:l.phase,operation:l.operation,nb_unites:Number(l.nb_unites)||10,type_unite:l.type_unite||"num"});
+  if(editing) return(
+    <div style={{border:"1px solid #CC2222",borderRadius:6,padding:"10px",marginBottom:6,background:"#FFF8F8"}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:6}}>
+        <FG label="Famille"><Inp value={editForm.famille} onChange={e=>setEditForm(f=>({...f,famille:e.target.value}))}/></FG>
+        <FG label="Phase"><Inp value={editForm.phase} onChange={e=>setEditForm(f=>({...f,phase:e.target.value}))}/></FG>
+      </div>
+      <FG label="Opération"><Inp value={editForm.operation} onChange={e=>setEditForm(f=>({...f,operation:e.target.value}))}/></FG>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>
+        <FG label="Nb unités"><Inp type="number" value={editForm.nb_unites} onChange={e=>setEditForm(f=>({...f,nb_unites:+e.target.value||10}))} min="1" max="100"/></FG>
+        <FG label="Type">
+          <select value={editForm.type_unite} onChange={e=>setEditForm(f=>({...f,type_unite:e.target.value}))} style={{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #DDD",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>
+            <option value="num">Numérique</option>
+            <option value="alpha">Alphabétique</option>
+          </select>
+        </FG>
+      </div>
+      <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+        <button onClick={()=>setEditing(false)} style={{padding:"4px 10px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
+        <button onClick={async()=>{
+          const oldNb=Number(l.nb_unites)||0;
+          const newNb=editForm.nb_unites;
+          let vals=[];try{vals=[...JSON.parse(l.valeurs||"[]")];}catch(e){}
+          if(newNb>oldNb){while(vals.length<newNb)vals.push(0);}
+          else if(newNb<oldNb){vals=vals.slice(0,newNb);}
+          await suiviFab.update(l.id,{...l,...editForm,valeurs:JSON.stringify(vals)});
+          setEditing(false);
+        }} style={{padding:"4px 10px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>Enregistrer</button>
+      </div>
+    </div>
+  );
+  return(
+    <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",border:"0.5px solid #EEEEEE",borderRadius:4,marginBottom:4,background:"#fff"}}>
+      <div style={{flex:1,fontSize:11}}>
+        <span style={{color:"#7A7A7A"}}>{l.famille} → {l.phase} → </span>
+        <span style={{fontWeight:600,color:"#1C1C1C"}}>{l.operation}</span>
+        <span style={{color:"#AAAAAA",marginLeft:8}}>{l.nb_unites} unités {l.type_unite==="alpha"?"(A-Z)":"(1-N)"}</span>
+      </div>
+      <button onClick={()=>setEditing(true)} style={{background:"none",border:"1px solid #DDDDDD",borderRadius:4,cursor:"pointer",fontSize:11,padding:"2px 8px",color:"#3A3A3A",fontFamily:"'DM Sans',sans-serif"}}>Mod.</button>
+      <button onClick={async()=>{if(confirm("Supprimer cette opération ?"))await suiviFab.remove(l.id);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#CCCCCC"}}>✕</button>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════
+// COMPOSANT SUIVI FAB — Grille de production unité par unité
+// ══════════════════════════════════════════════════════
+function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, user}){
+  const [onglet,setOnglet]=useState("grille");
+  const [saving,setSaving]=useState(false);
+  const [templateNom,setTemplateNom]=useState("");
+  const [savingTemplate,setSavingTemplate]=useState(false);
+  // Nouvelle phase
+  const [newPhaseForm,setNewPhaseForm]=useState({famille:"",phase:"",deadline:"",nb_unites:10,type_unite:"num"});
+  const [newPhaseOps,setNewPhaseOps]=useState([""]); // liste d'opérations à ajouter
+  const npf=(k,v)=>setNewPhaseForm(f=>({...f,[k]:v}));
+
+  // Lignes du suivi fab pour cette mission
+  const lignes=(suiviFab?.rows||[]).filter(r=>String(r.mission_id)===String(mission.id));
+
+  // Calcul progression globale
+  const progressionGlobale=()=>{
+    if(!lignes.length)return 0;
+    let total=0,fait=0;
+    for(const l of lignes){
+      const nb=Number(l.nb_unites)||0;
+      const vals=[];try{vals.push(...JSON.parse(l.valeurs||"[]"));}catch(e){}
+      total+=nb;
+      fait+=vals.filter(v=>v===1).length;
+    }
+    return total>0?Math.round(fait/total*100):0;
+  };
+
+  // Générer les labels d'unités
+  const getLabels=(nb,type)=>{
+    if(type==="alpha"){
+      const alpha=["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z","Omega","Delta","Phi","Psi","Sigma","Lambda"];
+      return Array.from({length:nb},(_,i)=>alpha[i]||String(i+1));
+    }
+    return Array.from({length:nb},(_,i)=>String(i+1));
+  };
+
+  // Grouper lignes par famille puis phase
+  const grouped={};
+  for(const l of lignes){
+    const fam=l.famille||"Sans famille";
+    const ph=l.phase||"Sans phase";
+    if(!grouped[fam])grouped[fam]={};
+    if(!grouped[fam][ph])grouped[fam][ph]=[];
+    grouped[fam][ph].push(l);
+  }
+
+  // Cocher/décocher une unité
+  async function toggleUnite(ligne,idx){
+    const vals=[];try{vals.push(...JSON.parse(ligne.valeurs||"[]"));}catch(e){}
+    while(vals.length<Number(ligne.nb_unites))vals.push(0);
+    const newVal=vals[idx]===1?0:1;
+    vals[idx]=newVal;
+    // Stocker aussi l'historique des coches : [{idx, val, who, when}]
+    let historique=[];try{historique=JSON.parse(ligne.historique_coches||"[]");}catch(e){}
+    const now=new Date();
+    const horodatage=now.toISOString().slice(0,16).replace("T"," ");
+    if(newVal===1){
+      historique.push({idx,who:user?.nom||"?",when:horodatage});
+    } else {
+      historique=historique.filter(h=>h.idx!==idx); // retirer la coche
+    }
+    await suiviFab.update(ligne.id,{...ligne,valeurs:JSON.stringify(vals),historique_coches:JSON.stringify(historique)});
+    if(user){
+      const labels=getLabels(Number(ligne.nb_unites)||0,ligne.type_unite||"num");
+      await logAction(journal,user,`${newVal===1?"✓ Coché":"✗ Décoché"} ${ligne.famille} / ${ligne.phase} / ${ligne.operation} — unité ${labels[idx]} (${horodatage})`,mission.projet||"");
+    }
+  }
+
+  // Ajouter une opération
+  async function addPhase(){
+    if(!newPhaseForm.famille.trim()||!newPhaseForm.phase.trim()){alert("Famille et phase obligatoires.");return;}
+    const ops=newPhaseOps.map(o=>o.trim()).filter(Boolean);
+    if(!ops.length){alert("Ajoute au moins une opération.");return;}
+    const nb=newPhaseForm.nb_unites||10;
+    const valeurs=JSON.stringify(Array(nb).fill(0));
+    setSaving(true);
+    for(const op of ops){
+      await suiviFab.add({mission_id:String(mission.id),famille:newPhaseForm.famille,phase:newPhaseForm.phase,operation:op,nb_unites:nb,type_unite:newPhaseForm.type_unite,deadline:newPhaseForm.deadline||"",valeurs});
+    }
+    setNewPhaseForm({famille:newPhaseForm.famille,phase:"",deadline:"",nb_unites:newPhaseForm.nb_unites,type_unite:newPhaseForm.type_unite});
+    setNewPhaseOps([""]);
+    setSaving(false);
+  }
+
+  // Appliquer un template
+  async function appliquerTemplate(t){
+    let config=[];try{config=JSON.parse(t.config||"[]");}catch(e){}
+    setSaving(true);
+    for(const op of config){
+      await suiviFab.add({mission_id:String(mission.id),famille:op.famille,phase:op.phase,operation:op.operation,nb_unites:op.nb_unites||10,type_unite:op.type_unite||"num",valeurs:JSON.stringify(Array(op.nb_unites||10).fill(0))});
+    }
+    setSaving(false);setOnglet("grille");
+  }
+
+  // Sauvegarder template depuis config actuelle
+  async function sauvegarderTemplate(){
+    if(!templateNom.trim()){alert("Donne un nom au template.");return;}
+    const nom=templateNom; // capturer avant reset
+    const config=lignes.map(l=>({famille:l.famille,phase:l.phase,operation:l.operation,nb_unites:Number(l.nb_unites)||10,type_unite:l.type_unite||"num",deadline:l.deadline||""}));
+    setSavingTemplate(true);
+    try{
+      await templates.add({nom,module:moduleType,config:JSON.stringify(config)});
+      setTemplateNom("");
+      alert("Template '"+nom+"' sauvegardé !");
+    }catch(e){alert("Erreur : "+e.message);}
+    setSavingTemplate(false);
+  }
+
+  const pct=progressionGlobale();
+  const familles=[...new Set(lignes.map(l=>l.famille||"Sans famille"))];
+  const templatesModule=(templates?.rows||[]).filter(t=>t.module===moduleType||!t.module);
+
+  return(
+    <div>
+      {/* KPI progression + alertes deadlines */}
+      {(()=>{
+        const phases={};
+        for(const l of lignes){const k=`${l.famille}|||${l.phase}`;if(!phases[k])phases[k]={phase:l.phase,famille:l.famille,deadline:l.deadline||""};};
+        const alertes=Object.values(phases).filter(ph=>{const d=toISO(ph.deadline);return d&&d<TODAY;});
+        const proches=Object.values(phases).filter(ph=>{const d=toISO(ph.deadline);const semaine=((x=>{const x2=new Date(TODAY+"T00:00:00");x2.setDate(x2.getDate()+7);return x2.toISOString().split("T")[0];})()); return d&&d>=TODAY&&d<=semaine;});
+        return(<>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:alertes.length||proches.length?8:12,padding:"10px 12px",background:"#F9F9F9",borderRadius:8,border:"0.5px solid #EEEEEE"}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:11,color:"#7A7A7A",marginBottom:4}}>Avancement production</div>
+              <div style={{height:8,borderRadius:4,background:"#EEEEEE"}}>
+                <div style={{height:"100%",width:pct+"%",background:pct===100?"#2A7A2A":pct>50?"#CC8800":"#CC2222",borderRadius:4,transition:"width .3s"}}/>
+              </div>
+            </div>
+            <div style={{fontSize:20,fontWeight:700,color:pct===100?"#2A7A2A":pct>50?"#CC8800":"#CC2222",minWidth:50,textAlign:"right"}}>{pct}%</div>
+          </div>
+          {alertes.map((ph,i)=>(
+            <div key={i} style={{background:"#FFF0F0",border:"0.5px solid #FFCCCC",borderLeft:"3px solid #CC2222",borderRadius:6,padding:"6px 10px",marginBottom:6,fontSize:12,color:"#CC2222",fontWeight:600}}>
+              ⚠ Phase en retard : {ph.famille} / {ph.phase} — deadline {fmt(ph.deadline)}
+            </div>
+          ))}
+          {proches.map((ph,i)=>(
+            <div key={i} style={{background:"#FFF8EC",border:"0.5px solid #FFDD99",borderLeft:"3px solid #CC8800",borderRadius:6,padding:"6px 10px",marginBottom:6,fontSize:12,color:"#CC8800"}}>
+              ⏱ Deadline proche : {ph.famille} / {ph.phase} — {fmt(ph.deadline)}
+            </div>
+          ))}
+        </>);
+      })()}
+
+      {/* Onglets */}
+      <div style={{display:"flex",gap:0,borderBottom:"2px solid #EEEEEE",marginBottom:12}}>
+        {[["grille","📊 Grille"],["config","⚙ Configuration"],["templates","📋 Templates"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setOnglet(id)} style={{padding:"6px 14px",border:"none",background:"none",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",fontWeight:onglet===id?700:400,color:onglet===id?"#CC2222":"#7A7A7A",borderBottom:onglet===id?"2px solid #CC2222":"2px solid transparent",marginBottom:-2}}>{lbl}</button>
+        ))}
+      </div>
+
+      {/* ── Onglet Templates ── */}
+      {onglet==="templates"&&<div>
+        {/* Appliquer un template */}
+        {templatesModule.length>0&&<div style={{marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Templates disponibles</div>
+          {templatesModule.map(t=>{
+            let config=[];try{config=JSON.parse(t.config||"[]");}catch(e){}
+            return(
+              <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",border:"0.5px solid #EEEEEE",borderRadius:6,marginBottom:6,background:"#fff"}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,fontWeight:600}}>{t.nom}</div>
+                  <div style={{fontSize:11,color:"#7A7A7A"}}>{config.length} opération{config.length>1?"s":""}</div>
+                </div>
+                <button disabled={saving} onClick={()=>appliquerTemplate(t)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>Appliquer</button>
+                <button onClick={async()=>{if(confirm("Supprimer ce template ?"))await templates.remove(t.id);}} style={{padding:"4px 8px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,color:"#7A7A7A"}}>✕</button>
+              </div>
+            );
+          })}
+        </div>}
+        {/* Sauvegarder config actuelle comme template */}
+        {lignes.length>0&&<div style={{background:"#F9F9F9",borderRadius:8,padding:"12px",border:"0.5px solid #EEEEEE"}}>
+          <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Sauvegarder la configuration actuelle</div>
+          <div style={{display:"flex",gap:8}}>
+            <Inp value={templateNom} onChange={e=>setTemplateNom(e.target.value)} placeholder="Nom du template (ex: Toiture textile 30u)"/>
+            <button disabled={savingTemplate} onClick={sauvegarderTemplate} style={{padding:"7px 14px",borderRadius:4,border:"none",background:"#1A5DAB",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700,flexShrink:0}}>{savingTemplate?"...":"Sauvegarder"}</button>
+          </div>
+        </div>}
+        {!templatesModule.length&&!lignes.length&&<div style={{fontSize:13,color:"#7A7A7A",textAlign:"center",padding:"24px 0"}}>Aucun template. Configure d'abord des opérations puis sauvegarde comme template.</div>}
+      </div>}
+
+      {/* ── Onglet Configuration ── */}
+      {onglet==="config"&&<div>
+        {/* Formulaire ajout phase */}
+        <div style={{background:"#F9F9F9",borderRadius:8,padding:"12px",marginBottom:16,border:"0.5px solid #EEEEEE"}}>
+          <div style={{fontSize:12,fontWeight:700,marginBottom:10,color:"#1C1C1C"}}>Ajouter une phase</div>
+          {/* Famille + Phase + Deadline */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
+            <FG label="Famille">
+              <Inp value={newPhaseForm.famille} onChange={e=>npf("famille",e.target.value)} placeholder="Ex: Toitures textiles"
+                list="familles-list"/>
+              <datalist id="familles-list">{[...new Set(lignes.map(l=>l.famille).filter(Boolean))].map(f=><option key={f} value={f}/>)}</datalist>
+            </FG>
+            <FG label="Phase"><Inp value={newPhaseForm.phase} onChange={e=>npf("phase",e.target.value)} placeholder="Ex: Découpe"/></FG>
+            <FG label="Deadline phase"><Inp type="date" value={newPhaseForm.deadline} onChange={e=>npf("deadline",e.target.value)}/></FG>
+          </div>
+          {/* Nb unités + Type */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            <FG label="Nombre d'unités (partagé par toutes les opérations)">
+              <Inp type="number" value={newPhaseForm.nb_unites} onChange={e=>npf("nb_unites",+e.target.value||10)} min="1" max="100"/>
+            </FG>
+            <FG label="Type d'unités">
+              <select value={newPhaseForm.type_unite} onChange={e=>npf("type_unite",e.target.value)} style={{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #DDD",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>
+                <option value="num">Numérique (1, 2, 3...)</option>
+                <option value="alpha">Alphabétique (A, B, C...)</option>
+              </select>
+            </FG>
+          </div>
+          {/* Opérations de la phase */}
+          <div style={{fontSize:11,fontWeight:700,color:"#7A7A7A",marginBottom:6}}>OPÉRATIONS DE CETTE PHASE</div>
+          {newPhaseOps.map((op,i)=>(
+            <div key={i} style={{display:"flex",gap:6,marginBottom:6,alignItems:"center"}}>
+              <Inp value={op} onChange={e=>{const a=[...newPhaseOps];a[i]=e.target.value;setNewPhaseOps(a);}}
+                placeholder={`Opération ${i+1} (ex: Couture laizes)`}/>
+              {newPhaseOps.length>1&&<button onClick={()=>setNewPhaseOps(l=>l.filter((_,j)=>j!==i))}
+                style={{background:"none",border:"none",cursor:"pointer",color:"#CCCCCC",fontSize:14,flexShrink:0}}>✕</button>}
+            </div>
+          ))}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
+            <button onClick={()=>setNewPhaseOps(l=>[...l,""])} style={{padding:"4px 10px",borderRadius:4,border:"1px dashed #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#7A7A7A"}}>+ Opération</button>
+            <button disabled={saving} onClick={addPhase} style={{padding:"7px 16px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>{saving?"...":"Enregistrer la phase →"}</button>
+          </div>
+        </div>
+
+        {/* Phases configurées — groupées */}
+        {lignes.length>0&&<div>
+          <div style={{fontSize:12,fontWeight:700,marginBottom:10}}>Phases configurées</div>
+          {(()=>{
+            // Grouper par famille+phase
+            const phases={};
+            for(const l of lignes){
+              const key=`${l.famille}|||${l.phase}`;
+              if(!phases[key])phases[key]={famille:l.famille,phase:l.phase,deadline:l.deadline||"",nb_unites:Number(l.nb_unites)||10,type_unite:l.type_unite||"num",ops:[]};
+              phases[key].ops.push(l);
+            }
+            return Object.values(phases).map((ph,pi)=>(
+              <PhaseItem key={pi} ph={ph} suiviFab={suiviFab} allLignes={lignes}/>
+            ));
+          })()}
+        </div>}
+      </div>}
+
+      {/* ── Onglet Grille ── */}
+      {onglet==="grille"&&<div>
+        {!lignes.length&&<div style={{textAlign:"center",padding:"32px 0",color:"#7A7A7A",fontSize:13}}>
+          Aucune opération configurée.<br/>
+          <button onClick={()=>setOnglet("config")} style={{marginTop:12,padding:"7px 16px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>⚙ Configurer</button>
+          {templatesModule.length>0&&<button onClick={()=>setOnglet("templates")} style={{marginTop:12,marginLeft:8,padding:"7px 16px",borderRadius:4,border:"1px solid #1A5DAB",background:"#fff",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#1A5DAB",fontWeight:700}}>📋 Appliquer un template</button>}
+        </div>}
+
+        {Object.entries(grouped).map(([famille,phases])=>(
+          <div key={famille} style={{marginBottom:20}}>
+            {/* Titre famille */}
+            <div style={{fontSize:13,fontWeight:700,color:"#1C1C1C",borderLeft:"3px solid #CC2222",paddingLeft:8,marginBottom:10}}>{famille}</div>
+
+            {Object.entries(phases).map(([phase,ops])=>{
+              // Calculer les unités max pour cette phase (toutes ops ont le même nb)
+              const maxNb=Math.max(...ops.map(o=>Number(o.nb_unites)||0));
+              const labels=getLabels(maxNb,ops[0]?.type_unite||"num");
+
+              return(
+                <div key={phase} style={{marginBottom:12}}>
+                  {/* Titre phase + deadline */}
+                  {(()=>{
+                    const dl=ops[0]?.deadline;
+                    const dlISO=dl?toISO(dl):"";
+                    const retard=dlISO&&dlISO<TODAY;
+                    const proche=dlISO&&!retard&&dlISO<=((d=>{const x=new Date(TODAY+"T00:00:00");x.setDate(x.getDate()+7);return x.toISOString().split("T")[0];})()); 
+                    return(
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                        <div style={{fontSize:11,fontWeight:700,color:"#7A7A7A",letterSpacing:"0.04em",textTransform:"uppercase"}}>{phase}</div>
+                        {dlISO&&<div style={{fontSize:10,padding:"2px 6px",borderRadius:3,fontWeight:600,background:retard?"#FFF0F0":proche?"#FFF8EC":"#F2F0ED",color:retard?"#CC2222":proche?"#CC8800":"#7A7A7A",border:`0.5px solid ${retard?"#FFCCCC":proche?"#FFDD99":"#DDDDDD"}`}}>
+                          {retard?"⚠ ":"⏱ "}Deadline : {fmt(dl)}
+                        </div>}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Table grille */}
+                  <div style={{overflowX:"auto",borderRadius:6,border:"0.5px solid #DDDDDD"}}>
+                    <table style={{borderCollapse:"collapse",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>
+                      <thead>
+                        <tr style={{background:"#F9F9F9",borderBottom:"1px solid #DDDDDD"}}>
+                          <th style={{padding:"5px 10px",textAlign:"left",fontWeight:700,color:"#3A3A3A",minWidth:160,position:"sticky",left:0,background:"#F9F9F9",zIndex:2,borderRight:"1px solid #DDDDDD"}}>Opération</th>
+                          <th style={{padding:"5px 6px",textAlign:"center",fontWeight:700,color:"#1A5DAB",minWidth:50,borderRight:"1px solid #DDDDDD"}}>Fait</th>
+                          <th style={{padding:"5px 6px",textAlign:"center",fontWeight:700,color:"#CC2222",minWidth:50,borderRight:"1px solid #DDDDDD"}}>Manq.</th>
+                          {labels.map(lbl=>(
+                            <th key={lbl} style={{padding:"4px 3px",textAlign:"center",fontWeight:600,color:"#7A7A7A",minWidth:28,borderRight:"0.5px solid #EEEEEE"}}>{lbl}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ops.map(op=>{
+                          const nb=Number(op.nb_unites)||0;
+                          const vals=[];try{vals.push(...JSON.parse(op.valeurs||"[]"));}catch(e){}
+                          while(vals.length<nb)vals.push(0);
+                          const fait=vals.filter(v=>v===1).length;
+                          const manq=nb-fait;
+                          return(
+                            <tr key={op.id} style={{borderBottom:"0.5px solid #EEEEEE"}}>
+                              <td style={{padding:"5px 10px",color:"#1C1C1C",fontWeight:500,position:"sticky",left:0,background:"#fff",zIndex:1,borderRight:"1px solid #DDDDDD",whiteSpace:"nowrap"}}>{op.operation}</td>
+                              <td style={{padding:"4px 6px",textAlign:"center",fontWeight:700,color:"#1A5DAB",background:"#EBF3FF",borderRight:"1px solid #DDDDDD"}}>{fait}</td>
+                              <td style={{padding:"4px 6px",textAlign:"center",fontWeight:700,color:manq>0?"#CC2222":"#2A7A2A",background:manq>0?"#FFF0F0":"#F0FFF0",borderRight:"1px solid #DDDDDD"}}>{manq}</td>
+                              {Array.from({length:nb},(_,i)=>{
+                                let histo=[];try{histo=JSON.parse(op.historique_coches||"[]");}catch(e){}
+                                const h=histo.find(x=>x.idx===i);
+                                const tooltip=vals[i]===1?`✓ Fait${h?` — ${h.who} le ${h.when}`:""}  (cliquer pour décocher)`:`À faire — cliquer pour cocher`;
+                                return(
+                                  <td key={i}
+                                    onClick={()=>toggleUnite(op,i)}
+                                    style={{padding:"3px",textAlign:"center",cursor:"pointer",background:vals[i]===1?"#2A7A2A":"#fff",borderRight:"0.5px solid #EEEEEE",minWidth:28,transition:"background .1s",position:"relative"}}
+                                    title={tooltip}>
+                                    {vals[i]===1&&<span style={{color:"#fff",fontSize:12,lineHeight:1}}>✓</span>}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>}
+    </div>
+  );
+}
+function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMembres,barColor,suiviFab,templates,journal,user}){
+  const [granularite,setGranularite]=useState("semaine"); // "jour" | "semaine"
+  const [missionDetail,setMissionDetail]=useState(null); // mission sélectionnée
+  const [detailOnglet,setDetailOnglet]=useState("fab"); // "fab" | "etapes"
+  const [etapeForm,setEtapeForm]=useState({titre:"",responsable:"",dateDebut:TODAY,dateFin:"",statut:"à faire",note:""});
+  const [showAddEtape,setShowAddEtape]=useState(false);
+  const [savingEtape,setSavingEtape]=useState(false);
+
+  // Calcul de la fenêtre temporelle
+  const toDate=s=>{if(!s)return null;try{return new Date(toISO(s)+"T00:00:00");}catch(e){return null;}};
+  const toutesLesMs=[...actives,...terminees];
+  const dates=toutesLesMs.flatMap(m=>[toDate(m.dateDebut),toDate(m.dateFin)]).filter(Boolean);
+  const today=new Date(TODAY+"T00:00:00");
+  // Fenêtre fixe : 3 mois avant aujourd'hui → 6 mois après
+  const start=new Date(today); start.setMonth(start.getMonth()-3); start.setDate(1);
+  // Aller au lundi de cette semaine
+  const startDay=start.getDay()||7; start.setDate(start.getDate()-(startDay-1));
+  const end=new Date(today); end.setMonth(end.getMonth()+6); end.setDate(end.getDate()+7);
+
+  // Générer les colonnes selon granularité
+  const cols=[];
+  const cur=new Date(start);
+  while(cur<=end){
+    if(granularite==="jour"){
+      const dow=cur.getDay();
+      if(dow!==0&&dow!==6) cols.push(new Date(cur)); // skip weekends
+    } else {
+      // Semaine : lundi uniquement
+      if(cur.getDay()===1) cols.push(new Date(cur));
+    }
+    cur.setDate(cur.getDate()+1);
+  }
+
+  const totalJours=Math.round((end-start)/86400000)+1;
+  const pct=d=>{
+    if(!d)return null;
+    const dt=toDate(d);
+    if(!dt)return null;
+    return Math.max(0,Math.min(100,Math.round((dt-start)/86400000/totalJours*100)));
+  };
+  const pctDur=(d1,d2)=>{
+    const s=toDate(d1),e=toDate(d2);
+    if(!s||!e)return 0;
+    return Math.max(1,Math.round((e-s)/86400000/totalJours*100));
+  };
+
+  // Membres avec missions
+  const membresAvecMissions=team.rows.filter(t=>
+    toutesLesMs.some(m=>getMembres(m).includes(t.nom))
+  );
+
+  // Étapes d'une mission
+  const etapesMission=m=>(etapes?.rows||[]).filter(e=>String(e.mission_id)===String(m.id));
+
+  // Aujourd'hui position
+  const todayPct=pct(TODAY);
+
+  // Couleur statut étape
+  const etapeColor=s=>s==="terminé"?"#2A7A2A":s==="en cours"?"#CC2222":"#7A7A7A";
+
+  if(missionDetail){
+    const m=missionDetail;
+    const etapes_m=etapesMission(m);
+    const nbTerminees=etapes_m.filter(e=>e.statut==="terminé").length;
+    // Progression : suivi fab en priorité, sinon étapes, sinon statut
+    const lignesFab=(suiviFab?.rows||[]).filter(r=>String(r.mission_id)===String(m.id));
+    const avancementFab=(()=>{
+      if(!lignesFab.length)return null;
+      let total=0,fait=0;
+      for(const l of lignesFab){
+        const nb=Number(l.nb_unites)||0;
+        const vals=[];try{vals.push(...JSON.parse(l.valeurs||"[]"));}catch(e){}
+        total+=nb;fait+=vals.filter(v=>v===1).length;
+      }
+      return total>0?Math.round(fait/total*100):0;
+    })();
+    const avancement=avancementFab!==null?avancementFab:etapes_m.length>0?Math.round(nbTerminees/etapes_m.length*100):m.statut==="terminé"?100:m.statut==="en cours"?50:0;
+    const enRetard=etapes_m.filter(e=>e.statut!=="terminé"&&e.dateFin&&toISO(e.dateFin)<TODAY);
+
+    return(
+      <div>
+        <button onClick={()=>setMissionDetail(null)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#7A7A7A",marginBottom:12,fontFamily:"'DM Sans',sans-serif",display:"flex",alignItems:"center",gap:4}}>← Retour au Gantt</button>
+
+        {/* En-tête mission */}
+        <Bd>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+            <div>
+              <div style={{fontSize:15,fontWeight:700,color:"#1C1C1C"}}>{m.description}</div>
+              <div style={{fontSize:12,color:"#7A7A7A",marginTop:2}}>{m.projet&&`${m.projet} · `}{fmt(m.dateDebut)} → {fmt(m.dateFin)}</div>
+              <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>👥 {getMembres(m).join(", ")}</div>
+            </div>
+            <Badge label={m.statut} bg={m.statut==="terminé"?"#F0FFF0":m.statut==="en cours"?"#FFF0F0":"#F2F0ED"} color={m.statut==="terminé"?"#2A7A2A":m.statut==="en cours"?"#CC2222":"#7A7A7A"}/>
+          </div>
+          {/* Barre progression */}
+          <div style={{marginBottom:4,display:"flex",justifyContent:"space-between",fontSize:11,color:"#7A7A7A"}}>
+            <span>Avancement</span><span style={{fontWeight:700,color:"#1C1C1C"}}>{avancement}%</span>
+          </div>
+          <div style={{height:6,borderRadius:3,background:"#EEEEEE",marginBottom:12}}>
+            <div style={{height:"100%",width:avancement+"%",background:avancement===100?"#2A7A2A":"#CC2222",borderRadius:3,transition:"width .3s"}}/>
+          </div>
+          {enRetard.length>0&&<div style={{background:"#FFF0F0",border:"0.5px solid #FFCCCC",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#CC2222",marginBottom:8}}>⚠ {enRetard.length} étape{enRetard.length>1?"s":""} en retard</div>}
+        </Bd>
+
+        {/* Onglets Suivi fab / Étapes */}
+        <div style={{display:"flex",gap:0,borderBottom:"2px solid #EEEEEE",marginBottom:12}}>
+          {[["fab","📊 Suivi fab"],["etapes","📋 Étapes & jalons"]].map(([id,lbl])=>(
+            <button key={id} onClick={()=>setDetailOnglet(id)} style={{padding:"7px 16px",border:"none",background:"none",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",fontWeight:detailOnglet===id?700:400,color:detailOnglet===id?"#CC2222":"#7A7A7A",borderBottom:detailOnglet===id?"2px solid #CC2222":"2px solid transparent",marginBottom:-2}}>{lbl}</button>
+          ))}
+        </div>
+
+        {/* Suivi fab */}
+        {detailOnglet==="fab"&&<SuiviFabComponent mission={m} suiviFab={suiviFab} templates={templates} moduleType={moduleType} journal={journal} user={user}/>}
+
+        {/* Étapes */}
+        {detailOnglet==="etapes"&&<Bd>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <SecTitle>Étapes ({etapes_m.length})</SecTitle>
+            <button onClick={()=>setShowAddEtape(v=>!v)} style={{padding:"5px 12px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>+ Étape</button>
+          </div>
+
+          {/* Formulaire ajout étape */}
+          {showAddEtape&&<div style={{background:"#F9F9F9",borderRadius:8,padding:"12px",marginBottom:12,border:"0.5px solid #EEEEEE"}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+              <FG label="Titre"><Inp value={etapeForm.titre} onChange={e=>setEtapeForm(f=>({...f,titre:e.target.value}))} placeholder="Ex: Découpe des pièces"/></FG>
+              <FG label="Responsable">
+                <select value={etapeForm.responsable} onChange={e=>setEtapeForm(f=>({...f,responsable:e.target.value}))} style={{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #DDD",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>
+                  <option value="">— Choisir —</option>
+                  {getMembres(m).map(nom=><option key={nom}>{nom}</option>)}
+                  {team.rows.filter(t=>!getMembres(m).includes(t.nom)).map(t=><option key={t.id}>{t.nom}</option>)}
+                </select>
+              </FG>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
+              <FG label="Début"><Inp type="date" value={etapeForm.dateDebut} onChange={e=>setEtapeForm(f=>({...f,dateDebut:e.target.value}))}/></FG>
+              <FG label="Fin (deadline)"><Inp type="date" value={etapeForm.dateFin} onChange={e=>setEtapeForm(f=>({...f,dateFin:e.target.value}))}/></FG>
+              <FG label="Statut">
+                <select value={etapeForm.statut} onChange={e=>setEtapeForm(f=>({...f,statut:e.target.value}))} style={{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #DDD",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>
+                  {["à faire","en cours","terminé"].map(s=><option key={s}>{s}</option>)}
+                </select>
+              </FG>
+            </div>
+            <FG label="Note"><Inp value={etapeForm.note} onChange={e=>setEtapeForm(f=>({...f,note:e.target.value}))} placeholder="Optionnel"/></FG>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>setShowAddEtape(false)} style={{padding:"5px 12px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
+              <button disabled={savingEtape} onClick={async()=>{
+                if(!etapeForm.titre.trim())return;
+                setSavingEtape(true);
+                await etapes.add({...etapeForm,mission_id:String(m.id),module:moduleType});
+                // Ajouter au calendrier si date de fin
+                if(etapeForm.dateFin&&events){
+                  await events.add({title:`[${moduleType}] ${etapeForm.titre}`,date:etapeForm.dateFin,heure:"",type:"deadline",projet:m.projet||"",note:`etapeId:${m.id}`,dateFin:etapeForm.dateFin});
+                }
+                setShowAddEtape(false);setSavingEtape(false);
+                setEtapeForm({titre:"",responsable:"",dateDebut:TODAY,dateFin:"",statut:"à faire",note:""});
+              }} style={{padding:"5px 12px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>{savingEtape?"...":"Ajouter"}</button>
+            </div>
+          </div>}
+
+          {!etapes_m.length&&<div style={{fontSize:13,color:"#7A7A7A",textAlign:"center",padding:"16px 0"}}>Aucune étape. Ajoutez des étapes pour suivre l'avancement.</div>}
+          {etapes_m.map(e=>{
+            const retard=e.statut!=="terminé"&&e.dateFin&&toISO(e.dateFin)<TODAY;
+            return(
+              <div key={e.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+                <button onClick={async()=>{
+                  const nStatut=e.statut==="terminé"?"à faire":"terminé";
+                  await etapes.update(e.id,{...e,statut:nStatut});
+                }} style={{width:18,height:18,borderRadius:3,border:`2px solid ${etapeColor(e.statut)}`,background:e.statut==="terminé"?etapeColor(e.statut):"#fff",cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                  {e.statut==="terminé"&&<span style={{color:"#fff",fontSize:10,lineHeight:1}}>✓</span>}
+                </button>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,fontWeight:500,color:e.statut==="terminé"?"#7A7A7A":"#1C1C1C",textDecoration:e.statut==="terminé"?"line-through":"none"}}>{e.titre}</div>
+                  <div style={{fontSize:10,color:"#7A7A7A",marginTop:1}}>
+                    {e.responsable&&<span>👤 {e.responsable}</span>}
+                    {e.dateDebut&&<span style={{marginLeft:8}}>📅 {fmt(e.dateDebut)}</span>}
+                    {e.dateFin&&<span style={{marginLeft:4,color:retard?"#CC2222":"#7A7A7A"}}>→ {fmt(e.dateFin)}{retard?" ⚠":""}</span>}
+                  </div>
+                </div>
+                <select value={e.statut} onChange={async ev=>{await etapes.update(e.id,{...e,statut:ev.target.value});}} style={{padding:"3px 6px",borderRadius:4,border:"1px solid #DDD",fontSize:10,fontFamily:"'DM Sans',sans-serif",color:etapeColor(e.statut)}}>
+                  {["à faire","en cours","terminé"].map(s=><option key={s}>{s}</option>)}
+                </select>
+                <button onClick={async()=>{if(confirm("Supprimer cette étape ?"))await etapes.remove(e.id);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#CCCCCC"}}>✕</button>
+              </div>
+            );
+          })}
+        </Bd>}
+      </div>
+    );
+  }
+
+  // ── Vue Gantt principale ──
+  const MEMBRE_H=64;
+  const LEFT_W=150;
+  const COL_W=granularite==="jour"?44:100;
+
+  // Positionnement en pixels basé sur les colonnes réelles
+  const dateToCol=d=>{
+    if(!d)return null;
+    const dt=toDate(d);
+    if(!dt)return null;
+    if(granularite==="jour"){
+      // Trouver l'index du jour dans cols
+      const iso=dt.toISOString().split("T")[0];
+      const idx=cols.findIndex(c=>c.toISOString().split("T")[0]===iso);
+      if(idx>=0)return idx*COL_W;
+      // Interpoler si le jour est un weekend
+      const diff=Math.round((dt-cols[0])/86400000);
+      return diff*COL_W*5/7; // approximation
+    } else {
+      // Semaine: trouver la semaine correspondante
+      const lundi=new Date(dt);
+      lundi.setDate(dt.getDate()-(dt.getDay()||7)+1);
+      const lunIso=lundi.toISOString().split("T")[0];
+      const idx=cols.findIndex(c=>c.toISOString().split("T")[0]===lunIso);
+      if(idx>=0){
+        const jourDansSemaine=(dt.getDay()||7)-1; // 0=lun,6=dim
+        return idx*COL_W + Math.round(jourDansSemaine/7*COL_W);
+      }
+      // Avant ou après la plage
+      const diffSem=Math.round((lundi-cols[0])/(7*86400000));
+      return diffSem*COL_W;
+    }
+  };
+
+  const dateRangeToWidth=(d1,d2)=>{
+    if(!d1||!d2)return COL_W;
+    const dt1=toDate(d1),dt2=toDate(d2);
+    if(!dt1||!dt2)return COL_W;
+    const diffJours=Math.max(1,Math.round((dt2-dt1)/86400000)+1);
+    return granularite==="jour"
+      ?Math.round(diffJours*COL_W*5/7) // jours ouvrés approx
+      :Math.round(diffJours/7*COL_W);
+  };
+
+  // Position aujourd'hui en px
+  const todayPx=dateToCol(TODAY);
+  const totalWidth=cols.length*COL_W;
+
+  return(
+    <div>
+      {/* Contrôles */}
+      <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center"}}>
+        <div style={{fontSize:13,fontWeight:700,color:"#1C1C1C",flex:1}}>Planning {moduleType} — {toutesLesMs.length} missions</div>
+        {[["jour","Jours"],["semaine","Semaines"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setGranularite(v)} style={{padding:"5px 12px",borderRadius:4,border:"1px solid",borderColor:granularite===v?"#CC2222":"#DDDDDD",background:granularite===v?"#CC2222":"#fff",color:granularite===v?"#fff":"#3A3A3A",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",fontWeight:granularite===v?700:400}}>{l}</button>
+        ))}
+      </div>
+
+      {!membresAvecMissions.length&&<Bd style={{textAlign:"center",padding:24,color:"#7A7A7A",fontSize:13}}>Aucune mission avec membres assignés.</Bd>}
+
+      {membresAvecMissions.length>0&&<div style={{border:"0.5px solid #DDDDDD",borderRadius:8,overflowX:"auto"}}>
+        {/* Table Gantt — un seul conteneur scrollable */}
+        <table style={{borderCollapse:"collapse",width:LEFT_W+totalWidth,tableLayout:"fixed"}}>
+          {/* Header */}
+          <thead>
+            <tr style={{background:"#F9F9F9",borderBottom:"1px solid #DDDDDD"}}>
+              {/* Cellule MEMBRE sticky */}
+              <th style={{width:LEFT_W,minWidth:LEFT_W,position:"sticky",left:0,zIndex:15,background:"#F9F9F9",padding:"8px 10px",fontSize:10,fontWeight:700,color:"#7A7A7A",textAlign:"left",borderRight:"1px solid #DDDDDD",boxShadow:"2px 0 4px rgba(0,0,0,0.06)"}}>MEMBRE</th>
+              {/* Cellules semaines/jours */}
+              {cols.map((col,i)=>{
+                const isThisWeek=granularite==="semaine"&&todayPx!==null&&i*COL_W<=todayPx&&todayPx<(i+1)*COL_W;
+                const label=granularite==="jour"
+                  ?`${col.getDate()}/${col.getMonth()+1}`
+                  :`S${(d=>{const j=new Date(d.getFullYear(),0,4);const s=new Date(j);s.setDate(j.getDate()-(j.getDay()||7)+1);return Math.ceil((d-s)/(7*86400000))+1;})(col)}`;
+                return(
+                  <th key={i} style={{width:COL_W,minWidth:COL_W,padding:"6px 2px",fontSize:10,textAlign:"center",fontWeight:isThisWeek?700:400,color:isThisWeek?"#CC2222":"#7A7A7A",borderRight:"0.5px solid #EEEEEE",background:isThisWeek?"#FFF5F5":"#F9F9F9"}}>
+                    {label}
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          {/* Body */}
+          <tbody>
+            {membresAvecMissions.map(membre=>{
+              const missionsPersonne=toutesLesMs.filter(m=>getMembres(m).includes(membre.nom));
+              const rowH=Math.max(MEMBRE_H,16+missionsPersonne.length*30);
+              return(
+                <tr key={membre.id} style={{borderBottom:"0.5px solid #EEEEEE"}}>
+                  {/* Cellule membre sticky */}
+                  <td style={{position:"sticky",left:0,zIndex:10,background:"#FAFAFA",padding:"10px 10px",verticalAlign:"top",borderRight:"1px solid #EEEEEE",boxShadow:"2px 0 4px rgba(0,0,0,0.04)",minWidth:LEFT_W,width:LEFT_W}}>
+                    <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
+                      <div style={{width:32,height:32,borderRadius:"50%",background:"#CC2222",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2}}>
+                        <span style={{fontSize:11,fontWeight:700,color:"#fff"}}>{initials(membre.nom)}</span>
+                      </div>
+                      <div style={{minWidth:0}}>
+                        <div style={{fontSize:12,fontWeight:700,color:"#1C1C1C",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{membre.nom}</div>
+                        <div style={{fontSize:10,color:"#7A7A7A"}}>{missionsPersonne.length} mission{missionsPersonne.length>1?"s":""}</div>
+                      </div>
+                    </div>
+                  </td>
+                  {/* Cellule barres — colspan total */}
+                  <td colSpan={cols.length} style={{padding:0,position:"relative",height:rowH,verticalAlign:"top"}}>
+                    {/* Grille fond */}
+                    {cols.map((col,i)=>{
+                      const isThisWeek=granularite==="semaine"&&todayPx!==null&&i*COL_W<=todayPx&&todayPx<(i+1)*COL_W;
+                      return <div key={i} style={{position:"absolute",left:i*COL_W,top:0,bottom:0,width:COL_W,borderRight:"0.5px solid #F2F2F2",background:isThisWeek?"rgba(204,34,34,0.03)":"transparent",pointerEvents:"none"}}/>;
+                    })}
+                    {/* Ligne aujourd'hui */}
+                    {todayPx!==null&&<div style={{position:"absolute",left:todayPx,top:0,bottom:0,width:2,background:"#CC2222",opacity:0.6,zIndex:5,pointerEvents:"none"}}/>}
+                    {/* Barres missions */}
+                    {missionsPersonne.map((m,mi)=>{
+                      const leftPx=dateToCol(m.dateDebut)||0;
+                      const widthPx=Math.max(COL_W*0.8,dateRangeToWidth(m.dateDebut,m.dateFin||m.dateDebut));
+                      const etapes_m=etapesMission(m);
+                      const lignesFab=(suiviFab?.rows||[]).filter(r=>String(r.mission_id)===String(m.id));
+                      const avancement=(()=>{
+                        if(lignesFab.length){
+                          let total=0,fait=0;
+                          for(const l of lignesFab){const nb=Number(l.nb_unites)||0;const vals=[];try{vals.push(...JSON.parse(l.valeurs||"[]"));}catch(e){}total+=nb;fait+=vals.filter(v=>v===1).length;}
+                          return total>0?Math.round(fait/total*100):0;
+                        }
+                        return etapes_m.length>0?Math.round(etapes_m.filter(e=>e.statut==="terminé").length/etapes_m.length*100):m.statut==="terminé"?100:m.statut==="en cours"?50:0;
+                      })();
+                      const retardEtapes=etapes_m.some(e=>e.statut!=="terminé"&&e.dateFin&&toISO(e.dateFin)<TODAY);
+                      const color=barColor(m.statut);
+                      return(
+                        <div key={m.id} onClick={()=>setMissionDetail(m)} title={m.description}
+                          style={{position:"absolute",left:leftPx,width:widthPx,top:6+mi*30,height:22,
+                            background:color,borderRadius:4,cursor:"pointer",overflow:"hidden",
+                            display:"flex",alignItems:"center",zIndex:3,
+                            boxShadow:"0 1px 3px rgba(0,0,0,0.2)",
+                            outline:retardEtapes?"2px solid #FF6600":"none"}}>
+                          <div style={{position:"absolute",inset:0,width:avancement+"%",background:"rgba(0,0,0,0.18)",borderRadius:4,pointerEvents:"none"}}/>
+                          <span style={{fontSize:10,color:"#fff",padding:"0 6px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",position:"relative",zIndex:1,fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>
+                            {retardEtapes&&"⚠ "}{m.description}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>}
+
+      {/* Légende */}
+      <div style={{display:"flex",gap:16,marginTop:10,fontSize:11,color:"#7A7A7A",flexWrap:"wrap"}}>
+        {[["#7A7A7A","Planifié"],["#CC2222","En cours"],["#2A7A2A","Terminé"]].map(([col,lbl])=>(
+          <div key={lbl} style={{display:"flex",alignItems:"center",gap:4}}>
+            <div style={{width:14,height:8,borderRadius:2,background:col}}/>
+            {lbl}
+          </div>
+        ))}
+        <div style={{display:"flex",alignItems:"center",gap:4}}>
+          <div style={{width:14,height:8,borderRadius:2,background:"#CC2222",border:"2px solid #CC2222"}}/>
+          Étape en retard
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:4}}>
+          <div style={{width:2,height:14,background:"#CC2222",opacity:0.6}}/>
+          Aujourd'hui
+        </div>
+        <span style={{color:"#AAAAAA"}}>Cliquer sur une barre pour voir le détail et gérer les étapes</span>
+      </div>
+    </div>
+  );
+}
+function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,fournisseurs,etapes,suiviFab,templates,journal,user}){
   const [filterProjet,setFilterProjet]=useState("");
   const [filterTag,setFilterTag]=useState("");
   const [showAllTerminees,setShowAllTerminees]=useState(false);
@@ -3027,8 +3858,10 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
         note:noteSerialized};
       if(editing){
         await sheet.update(editing,item);
+        if(user?.role==="atelier")await logAction(journal,user,`Modification mission : ${item.description}`,item.projet||"");
       } else {
         await sheet.add(item);
+        if(user?.role==="atelier")await logAction(journal,user,`Nouvelle mission : ${item.description}`,item.projet||"");
       }
       // Sync événement calendrier pour chantier
       if(moduleType==="chantier"&&events&&form.dateDebut){
@@ -3310,7 +4143,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`))return;
         })}
       </div>}
 
-      <FG label="Note"><Inp value={noteTexte} onChange={e=>setNoteTexte(e.target.value)} placeholder="Notes internes..."/></FG>
+      <FG label="Note / Observations"><Inp value={noteTexte} onChange={e=>setNoteTexte(e.target.value)} placeholder="Notes internes..."/></FG>
     </>}
 
     {moduleType==="atelier"&&<>
@@ -3337,7 +4170,6 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`))return;
           </>);
         })()}
       </FG>
-      <FG label="Note"><Inp value={form.note||""} onChange={e=>f("note",e.target.value)} placeholder="Optionnel"/></FG>
     </>}
 
     <FG label="Statut"><Sel value={form.statut} onChange={e=>f("statut",e.target.value)}>
@@ -3381,7 +4213,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`))return;
           Missions {label} ({fActives.length} actives)
         </div>
         <div style={{display:"flex",border:"1px solid #DDDDDD",borderRadius:6,overflow:"hidden"}}>
-          {[["liste","≡ Liste"],["planning","▦ Planning"]].map(([v,l])=>(
+          {[["liste","≡ Liste"],["planning","▦ Vue planning"]].map(([v,l])=>(
             <button key={v} onClick={()=>setVue(v)} style={{padding:"4px 12px",fontSize:12,cursor:"pointer",border:"none",background:vue===v?"#CC2222":"#fff",color:vue===v?"#fff":"#3A3A3A",fontFamily:"'DM Sans',sans-serif",fontWeight:vue===v?700:400}}>{l}</button>
           ))}
         </div>
@@ -3516,132 +4348,21 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`))return;
     </>}
 
     {/* ══ VUE PLANNING ══ */}
-    {vue==="planning"&&<>
-      {!membresActifs.length&&(
-        <Bd style={{textAlign:"center",padding:24,color:"#7A7A7A",fontSize:13}}>
-          Aucun membre assigné aux missions actives. Assigne des membres depuis la vue Liste.
-        </Bd>
-      )}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-        {membresActifs.map(membre=>{
-          const missionsPersonne=actives.filter(m=>getMembres(m).includes(membre.nom));
-          const nTerminees=terminees.filter(m=>getMembres(m).includes(membre.nom)).length;
-          const nTotal=missionsPersonne.length+nTerminees;
-          const pct=nTotal>0?Math.round(nTerminees/nTotal*100):0;
-          const enCours=missionsPersonne.filter(m=>m.statut==="en cours").length;
-          const planifiees=missionsPersonne.filter(m=>m.statut==="planifié").length;
-
-          return(
-            <Bd key={membre.id}>
-              {/* En-tête membre */}
-              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,paddingBottom:10,borderBottom:"1px solid #EEEEEE"}}>
-                <div style={{width:36,height:36,borderRadius:"50%",background:"#CC2222",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-                  <span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{initials(membre.nom)}</span>
-                </div>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>{membre.nom}</div>
-                  {membre.role&&<div style={{fontSize:11,color:"#7A7A7A"}}>{membre.role}</div>}
-                </div>
-                <div style={{textAlign:"right"}}>
-                  <div style={{fontSize:11,color:"#7A7A7A"}}>{missionsPersonne.length} mission{missionsPersonne.length>1?"s":""} active{missionsPersonne.length>1?"s":""}</div>
-                  {enCours>0&&<div style={{fontSize:11,color:"#CC2222",fontWeight:600}}>{enCours} en cours</div>}
-                </div>
-              </div>
-
-              {/* Barre de progression globale */}
-              {nTotal>0&&<div style={{marginBottom:12}}>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#7A7A7A",marginBottom:4}}>
-                  <span>Avancement global</span>
-                  <span style={{fontWeight:600,color:"#1C1C1C"}}>{pct}%</span>
-                </div>
-                <div style={{height:4,borderRadius:2,background:"#EEEEEE",overflow:"hidden"}}>
-                  <div style={{height:"100%",width:pct+"%",background:pct===100?"#2A7A2A":"#CC2222",borderRadius:2,transition:"width .3s"}}/>
-                </div>
-                <div style={{display:"flex",gap:10,marginTop:5,fontSize:10,color:"#7A7A7A"}}>
-                  {planifiees>0&&<span style={{color:"#7A7A7A"}}>● {planifiees} planifiée{planifiees>1?"s":""}</span>}
-                  {enCours>0&&<span style={{color:"#CC2222"}}>● {enCours} en cours</span>}
-                  {nTerminees>0&&<span style={{color:"#2A7A2A"}}>● {nTerminees} terminée{nTerminees>1?"s":""}</span>}
-                </div>
-              </div>}
-
-              {/* Liste des missions */}
-              {missionsPersonne.map(m=>{
-                const s=sb(m.statut);
-                const autresMembres=getMembres(m).filter(x=>x!==membre.nom);
-                return(
-                  <div key={m.id} style={{padding:"9px 0",borderBottom:"0.5px solid #EEEEEE"}}>
-                    <div style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:4}}>
-                      <div style={{width:3,background:barColor(m.statut),borderRadius:2,alignSelf:"stretch",flexShrink:0,minHeight:16}}/>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C",marginBottom:2}}>{m.description}</div>
-                        {m.projet&&<div style={{fontSize:11,color:"#7A7A7A"}}>{m.projet}</div>}
-                        {(m.dateDebut||m.dateFin)&&(
-                          <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>
-                            {m.dateDebut&&fmt(m.dateDebut)}{m.dateFin&&` → ${fmt(m.dateFin)}`}
-                          </div>
-                        )}
-                        {autresMembres.length>0&&(
-                          <div style={{fontSize:10,color:"#AAAAAA",marginTop:3}}>
-                            avec {autresMembres.join(", ")}
-                          </div>
-                        )}
-                      </div>
-                      <Badge label={m.statut} bg={s.bg} color={s.tx}/>
-                    </div>
-                    {/* Actions rapides */}
-                    {m.statut!=="terminé"&&(
-                      <div style={{display:"flex",gap:6,paddingLeft:11,marginTop:4}}>
-                        <button onClick={()=>sheet.update(m.id,{...m,statut:"en cours",membres:getMembres(m).join(",")})}
-                          style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"1px solid #DDDDDD",background:m.statut==="en cours"?"#FFF0F0":"#fff",color:m.statut==="en cours"?"#CC2222":"#3A3A3A",cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>
-                          En cours
-                        </button>
-                        <button onClick={()=>terminer(m)}
-                          style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"1px solid #2A7A2A",background:"#F0FFF0",color:"#2A7A2A",cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>
-                          ✓ Terminé
-                        </button>
-                      </div>
-                    )}
-                    {m.statut==="terminé"&&(
-                      <div style={{paddingLeft:11,marginTop:3,fontSize:10,color:"#2A7A2A",fontWeight:600}}>✓ Mission terminée</div>
-                    )}
-                  </div>
-                );
-              })}
-
-              {/* Si toutes terminées pour cette personne */}
-              {missionsPersonne.length===0&&(
-                <div style={{fontSize:12,color:"#2A7A2A",fontWeight:500,padding:"8px 0"}}>✓ Toutes les missions sont terminées.</div>
-              )}
-            </Bd>
-          );
-        })}
-      </div>
-
-      {/* Membres sans mission active mais avec historique */}
-      {team.rows.filter(t=>!membresActifs.find(m=>m.id===t.id)&&terminees.some(m=>getMembres(m).includes(t.nom))).length>0&&(
-        <div style={{marginTop:16}}>
-          <div style={{fontSize:13,fontWeight:700,color:"#7A7A7A",borderLeft:"3px solid #DDDDDD",paddingLeft:8,marginBottom:10}}>
-            Membres sans mission active
-          </div>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            {team.rows.filter(t=>!membresActifs.find(m=>m.id===t.id)&&terminees.some(m=>getMembres(m).includes(t.nom))).map(t=>{
-              const n=terminees.filter(m=>getMembres(m).includes(t.nom)).length;
-              return(
-                <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",background:"#F9F9F9",borderRadius:8,border:"0.5px solid #EEEEEE"}}>
-                  <div style={{width:28,height:28,borderRadius:"50%",background:"#DDDDDD",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                    <span style={{fontSize:11,fontWeight:700,color:"#7A7A7A"}}>{initials(t.nom)}</span>
-                  </div>
-                  <div>
-                    <div style={{fontSize:12,fontWeight:600,color:"#3A3A3A"}}>{t.nom}</div>
-                    <div style={{fontSize:11,color:"#7A7A7A"}}>{n} mission{n>1?"s":""} terminée{n>1?"s":""}</div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </>}
+    {vue==="planning"&&<GanttView
+      sheet={sheet}
+      team={team}
+      etapes={etapes}
+      events={events}
+      moduleType={moduleType}
+      actives={actives}
+      terminees={terminees}
+      getMembres={getMembres}
+      barColor={barColor}
+      suiviFab={suiviFab}
+      templates={templates}
+      journal={journal}
+      user={user}
+    />}
   </WithPanel>;
 }
 const ET={text:"",projet:"",due:""};
@@ -4289,6 +5010,8 @@ const ES={ref:"",cat:"",fourn:"",qty:"",min:"",unit:"pcs",prix:"",loc:"",note:""
 function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMissions,hideFinances=false}){
   const [filterProjet,setFilterProjet]=useState("");
   const [recalculating,setRecalculating]=useState(false);
+  const [diagnostic,setDiagnostic]=useState(null); // null | {incoherences:[]}
+  const [diagRunning,setDiagRunning]=useState(false);
 
   const isBoolS=v=>v===true||String(v).toUpperCase()==="TRUE";
   async function recalculerStock(){
@@ -4394,6 +5117,97 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
       alert(`Recalcul terminé — ${updated} article${updated!==1?"s":""} mis à jour (quantités + coûts de revient).`);
     }catch(e){alert("Erreur : "+e.message);}
     setRecalculating(false);
+  }
+
+  function lancerDiagnostic(){
+    setDiagRunning(true);
+    const incoherences=[];
+
+    // Pour chaque article en stock, calculer le prix moyen pondéré théorique
+    // depuis les commandes reçues, et comparer avec le prix actuel
+    for(const s of sheet.rows){
+      if(!s.ref)continue;
+      const commandesRef=(orders?.rows||[]).filter(o=>
+        isBoolS(o.recue)&&
+        getLignes(o).some(l=>normRef(l.article)===normRef(s.ref))
+      );
+      if(!commandesRef.length)continue;
+
+      // Calculer PMP théorique depuis toutes les commandes reçues
+      let totalValeur=0; let totalQty=0;
+      for(const o of commandesRef){
+        const ligne=getLignes(o).find(l=>normRef(l.article)===normRef(s.ref));
+        if(!ligne||!+ligne.prix)continue;
+        totalValeur+=(+ligne.qty||0)*(+ligne.prix||0);
+        totalQty+=(+ligne.qty||0);
+      }
+      const pmpTheorique=totalQty>0?Math.round(totalValeur/totalQty*100)/100:null;
+      const prixActuel=Number(s.prix)||0;
+
+      // Incohérence prix : écart > 1% entre PMP théorique et prix stock
+      if(pmpTheorique!==null&&Math.abs(pmpTheorique-prixActuel)>Math.max(prixActuel*0.01,0.01)){
+        incoherences.push({
+          type:"prix",
+          ref:s.ref,
+          prixStock:prixActuel,
+          pmpTheorique,
+          ecart:Math.round((pmpTheorique-prixActuel)*100)/100,
+          nbCommandes:commandesRef.length
+        });
+      }
+
+      // Incohérence quantité : qty stock vs somme des réceptions - utilisations
+      const qtyRecues=commandesRef.reduce((sum,o)=>{
+        const l=getLignes(o).find(l=>normRef(l.article)===normRef(s.ref));
+        return sum+(+l?.qty||0);
+      },0);
+      const qtyStock=Number(s.qty)||0;
+      // Note: qty stock peut être différente si des articles ont été utilisés (missions)
+      // On signale seulement si qty stock > qty reçues (impossible normalement)
+      if(qtyStock>qtyRecues+0.01){
+        incoherences.push({
+          type:"quantite",
+          ref:s.ref,
+          qtyStock,
+          qtyRecues,
+          ecart:Math.round((qtyStock-qtyRecues)*100)/100
+        });
+      }
+    }
+
+    // Articles en stock sans aucune commande reçue liée
+    for(const s of sheet.rows){
+      if(!s.ref)continue;
+      const hasCmd=(orders?.rows||[]).some(o=>
+        isBoolS(o.recue)&&
+        getLignes(o).some(l=>normRef(l.article)===normRef(s.ref))
+      );
+      if(!hasCmd&&Number(s.qty)>0&&!(s.origine||"").startsWith("Fabriqué")){
+        const tag=(s.tags||"").split(",").map(t=>t.trim().toLowerCase());
+        if(!tag.includes("libéré")&&!tag.includes("libere")){
+          incoherences.push({type:"orphelin",ref:s.ref,qty:Number(s.qty)});
+        }
+      }
+    }
+
+    setDiagnostic({incoherences,date:new Date().toLocaleTimeString("fr-FR")});
+    setDiagRunning(false);
+  }
+
+  async function corrigerPrix(inc){
+    const s=sheet.rows.find(x=>normRef(x.ref)===normRef(inc.ref));
+    if(!s)return;
+    await sheet.update(s.id,{...s,prix:inc.pmpTheorique});
+    setDiagnostic(d=>({...d,incoherences:d.incoherences.filter(x=>!(x.ref===inc.ref&&x.type==="prix"))}));
+  }
+
+  async function toutCorrigerPrix(){
+    const aCorr=diagnostic?.incoherences.filter(i=>i.type==="prix")||[];
+    for(const inc of aCorr){
+      const s=sheet.rows.find(x=>normRef(x.ref)===normRef(inc.ref));
+      if(s)await sheet.update(s.id,{...s,prix:inc.pmpTheorique});
+    }
+    setDiagnostic(d=>({...d,incoherences:d.incoherences.filter(i=>i.type!=="prix")}));
   }
   const [filterTag,setFilterTag]=useState("");
   const [open,setOpen]=useState(false);
@@ -4518,12 +5332,53 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
       ))}
     </div>
     {alerts.length>0&&<div style={{background:"#FFF0F0",border:"0.5px solid #CC2222",borderLeft:"3px solid #CC2222",borderRadius:6,padding:"8px 12px",marginBottom:12,fontSize:13,color:"#CC2222"}}>Références sous seuil : {alerts.map(s=>s.ref).join(", ")}</div>}
+
+    {/* ── Panneau diagnostic ── */}
+    {diagnostic&&<div style={{background:"#F9F9F9",border:"0.5px solid #DDDDDD",borderRadius:8,padding:"14px 16px",marginBottom:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div style={{fontSize:13,fontWeight:700,color:"#1C1C1C"}}>🔍 Diagnostic stock — {diagnostic.date}</div>
+        <div style={{display:"flex",gap:8}}>
+          {diagnostic.incoherences.filter(i=>i.type==="prix").length>0&&
+            <button onClick={toutCorrigerPrix} style={{padding:"5px 12px",borderRadius:4,border:"none",background:"#1A5DAB",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>
+              ✓ Corriger tous les prix ({diagnostic.incoherences.filter(i=>i.type==="prix").length})
+            </button>}
+          <button onClick={()=>setDiagnostic(null)} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#7A7A7A"}}>✕ Fermer</button>
+        </div>
+      </div>
+
+      {!diagnostic.incoherences.length
+        ?<div style={{fontSize:13,color:"#2A7A2A",fontWeight:500}}>✓ Aucune incohérence détectée — stock cohérent avec les commandes.</div>
+        :<>
+          <div style={{fontSize:12,color:"#CC2222",marginBottom:10}}>{diagnostic.incoherences.length} incohérence(s) trouvée(s)</div>
+          {diagnostic.incoherences.map((inc,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",borderRadius:6,background:"#fff",border:"0.5px solid #EEEEEE",marginBottom:6}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,fontWeight:600,color:"#1C1C1C"}}>{inc.ref}</div>
+                {inc.type==="prix"&&<div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>
+                  💰 Prix stock : <b>{inc.prixStock.toLocaleString("fr-FR")} €</b> · PMP théorique : <b style={{color:"#1A5DAB"}}>{inc.pmpTheorique.toLocaleString("fr-FR")} €</b> · Écart : <b style={{color:inc.ecart>0?"#CC8800":"#CC2222"}}>{inc.ecart>0?"+":""}{inc.ecart.toLocaleString("fr-FR")} €</b> · {inc.nbCommandes} commande(s)
+                </div>}
+                {inc.type==="quantite"&&<div style={{fontSize:11,color:"#CC2222",marginTop:2}}>
+                  📦 Qté stock ({inc.qtyStock}) supérieure aux réceptions ({inc.qtyRecues}) — écart : +{inc.ecart}
+                </div>}
+                {inc.type==="orphelin"&&<div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>
+                  🔎 Article en stock (qté {inc.qty}) sans commande reçue liée — vérifier l'origine
+                </div>}
+              </div>
+              {inc.type==="prix"&&<button onClick={()=>corrigerPrix(inc)} style={{padding:"4px 10px",borderRadius:4,border:"none",background:"#1A5DAB",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",flexShrink:0}}>Corriger</button>}
+            </div>
+          ))}
+        </>
+      }
+    </div>}
     <Bd>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <SecTitle>Inventaire</SecTitle>
         <div style={{display:"flex",gap:8}}>
           <button onClick={recalculerStock} disabled={recalculating} title="Recalcule les quantités depuis les commandes reçues et missions terminées" style={{padding:"6px 12px",borderRadius:4,border:"1px solid #CC8800",background:"#FFF8EC",cursor:recalculating?"wait":"pointer",fontSize:12,color:"#CC8800",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>
             {recalculating?"⟳ Calcul...":"⟳ Recalculer"}
+          </button>
+          <button onClick={lancerDiagnostic} disabled={diagRunning} title="Vérifie les incohérences entre commandes et stock" style={{padding:"6px 12px",borderRadius:4,border:"1px solid #1A5DAB",background:"#EBF3FF",cursor:diagRunning?"wait":"pointer",fontSize:12,color:"#1A5DAB",fontFamily:"'DM Sans',sans-serif",fontWeight:600}}>
+            {diagRunning?"🔍 Analyse...":"🔍 Diagnostic"}
           </button>
           <Btn primary onClick={()=>{setEditing(null);setForm(ES);setErr("");setOpen(true);}}>+ Nouvel article</Btn>
         </div>
@@ -4690,7 +5545,11 @@ async function addStockHistorique(stocks,ref,entry){
 // ═══════════════════════════════════════════════
 // MODULE DEVIS
 // ═══════════════════════════════════════════════
-function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
+const EO={ref:"",fourn:"",article:"",qty:"",unit:"pcs",prix:"",cat:"",loc:"",date:TODAY,dateLivraison:"",lieuLivraison:"La Rochelle",projet:"",lignes:"",tags:""};
+const ED={titre:"",fourn:"",projet:"",description:"",lignes:"",prix:"",delai:"",statut:"en attente",date:TODAY,note:"",tags:""};
+const EL={article:"",qty:"",unit:"pcs",prix:"",cat:""};
+
+function ModuleDevis({devis,fournisseurs,projects,onAccepter,hideFinances=false}){
   const [groupeOpen,setGroupeOpen]=useState(null); // id du groupe ouvert
   const [formOpen,setFormOpen]=useState(false);
   const [form,setForm]=useState(ED);
@@ -4710,8 +5569,9 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
   const removeLigne=i=>setLignesForm(ls=>ls.length>1?ls.filter((_,j)=>j!==i):ls);
 
   // Grouper les devis par titre
-  const actifs=devis.rows.filter(d=>d.statut!=="refusé");
-  const archives=devis.rows.filter(d=>d.statut==="refusé");
+  const devisRows=devis?.rows||[];
+  const actifs=devisRows.filter(d=>d.statut!=="refusé");
+  const archives=devisRows.filter(d=>d.statut==="refusé");
   const groupes=[...new Set(actifs.map(d=>d.titre).filter(Boolean))];
 
   function openNew(titre){
@@ -4742,7 +5602,7 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
   async function accepter(d){
     if(!confirm(`Accepter le devis de "${d.fourn}" et le convertir en commande ?`))return;
     // Archiver les autres devis du même groupe
-    for(const other of devis.rows.filter(x=>x.titre===d.titre&&x.id!==d.id)){
+    for(const other of (devis?.rows||[]).filter(x=>x.titre===d.titre&&x.id!==d.id)){
       await devis.update(other.id,{...other,statut:"refusé"});
     }
     await devis.update(d.id,{...d,statut:"accepté"});
@@ -4994,10 +5854,6 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter}){
   );
 }
 
-const EO={ref:"",fourn:"",article:"",qty:"",unit:"pcs",prix:"",cat:"",loc:"",date:TODAY,dateLivraison:"",lieuLivraison:"La Rochelle",projet:"",lignes:"",tags:""};
-const ED={titre:"",fourn:"",projet:"",description:"",lignes:"",prix:"",delai:"",statut:"en attente",date:TODAY,note:"",tags:""};
-// Ligne d'article vide
-const EL={article:"",qty:"",unit:"pcs",prix:"",cat:""};
 function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChantier,hideFinances=false}){
   const [onglet,setOnglet]=useState("commandes"); // "commandes" | "devis"
   const [filterProjet,setFilterProjet]=useState("");
@@ -5152,14 +6008,26 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
       if(!l.article)continue;
       const existing=snap.find(s=>normRef(s.ref)===normRef(l.article));
       if(existing){
-        const tagsExist=(existing.tags||"").split(",").filter(Boolean);
-        const tagsNew=(ord.tags||"").split(",").filter(Boolean);
-        const tagsMerge=[...new Set([...tagsExist,...tagsNew])].join(",");
         await updateStockQty(stocks,snap,l.article,+l.qty||0,{type:"commande",label:ord.ref||ord.fourn||"",projet:ord.projet||"",date:ord.date||TODAY});
         const sUpdated=stocks.rows.find(s=>normRef(s.ref)===normRef(l.article));
         if(sUpdated){
-          const needsUpdate=(tagsMerge!==existing.tags)||(ord.projet&&!existing.projet);
-          if(needsUpdate)await stocks.update(sUpdated.id,{...sUpdated,tags:tagsMerge,projet:sUpdated.projet||ord.projet||""});
+          const tagsExist=(existing.tags||"").split(",").filter(Boolean);
+          const tagsNew=(ord.tags||"").split(",").filter(Boolean);
+          const tagsMerge=[...new Set([...tagsExist,...tagsNew])].join(",");
+          // Prix Moyen Pondéré (PMP)
+          const qtyExist=Number(existing.qty)||0;
+          const prixExist=Number(existing.prix)||0;
+          const qtyNouvelle=+l.qty||0;
+          const prixNouvelle=+l.prix||0;
+          const pmp=prixNouvelle>0
+            ?(qtyExist*prixExist+qtyNouvelle*prixNouvelle)/(qtyExist+qtyNouvelle)
+            :prixExist;
+          const pmpArrondi=Math.round(pmp*100)/100;
+          await stocks.update(sUpdated.id,{...sUpdated,
+            prix:pmpArrondi||prixExist,
+            tags:tagsMerge,
+            projet:sUpdated.projet||ord.projet||""
+          });
         }
       } else {
         const initHist=JSON.stringify([{date:ord.date||TODAY,type:"commande",label:ord.ref||ord.fourn||"",projet:ord.projet||"",fourn:ord.fourn||"",qty:+l.qty||0,qtyApres:+l.qty||0}]);
@@ -5230,6 +6098,30 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
       if(editing){await sheet.update(editing,data);}
       else{await sheet.add({...data,recue:false,factureCompta:false});}
       if(form.dateLivraison){await syncEvenementLivraison({...form,article:l0.article},form.dateLivraison);}
+
+      // ── Sync prix → stock (PMP) si commande reçue modifiée ──
+      if(editing&&isBool(form.recue)){
+        const ordOriginal=sheet.rows.find(o=>String(o.id)===String(editing));
+        const lignes=lignesForm.filter(l=>l.article&&+l.prix>0);
+        for(const l of lignes){
+          const stockItem=stocks.rows.find(s=>normRef(s.ref)===normRef(l.article));
+          if(!stockItem)continue;
+          const ancienPrix=ordOriginal?+getLignes(ordOriginal).find(ol=>normRef(ol.article)===normRef(l.article))?.prix||0:0;
+          const nouveauPrix=+l.prix;
+          if(ancienPrix===nouveauPrix)continue; // pas de changement
+          const qtyStock=Number(stockItem.qty)||0;
+          const prixStock=Number(stockItem.prix)||0;
+          const qty=+l.qty||0;
+          // Recalculer PMP : retirer l'ancienne valeur, ajouter la nouvelle
+          const valeurTotale=qtyStock*prixStock;
+          const valeurAncienne=qty*ancienPrix;
+          const valeurNouvelle=qty*nouveauPrix;
+          const nouvellValeurTotale=valeurTotale-valeurAncienne+valeurNouvelle;
+          const pmp=qtyStock>0?Math.round(nouvellValeurTotale/qtyStock*100)/100:nouveauPrix;
+          await stocks.update(stockItem.id,{...stockItem,prix:pmp>0?pmp:nouveauPrix});
+        }
+      }
+
       setOpen(false);setEditing(null);setForm(EO);setLignesForm([{...EL}]);
     }catch(e){setErr(e.message);}setSaving(false);
   }
@@ -5316,6 +6208,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
       devis={devis}
       fournisseurs={fournisseurs}
       projects={projects}
+      hideFinances={hideFinances}
       onAccepter={async(d,ligs)=>{
         // Créer la commande depuis le devis accepté
         const cmd={...EO,
@@ -5586,16 +6479,24 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
 
 // ══ UTILISATEURS & AUTH ══
 const USERS=[
-  {pin:"17", nom:"Admin",        role:"admin",         couleur:"#CC2222"},
-  {pin:"99", nom:"Jeffrey Diaz", role:"ingenieur",     couleur:"#1A5DAB"},
-  {pin:"54", nom:"Alexis Neve",  role:"ingenieur",     couleur:"#2A7A2A"},
-  {pin:"75", nom:"Chef Projet",  role:"chef_projet",   couleur:"#7A2A7A"},
+  {pin:"17", nom:"Admin",              role:"admin",         couleur:"#CC2222"},
+  {pin:"99", nom:"Jeffrey Diaz",       role:"ingenieur",     couleur:"#1A5DAB"},
+  {pin:"54", nom:"Alexis Neve",        role:"ingenieur",     couleur:"#2A7A2A"},
+  {pin:"75", nom:"Chef Projet",        role:"chef_projet",   couleur:"#7A2A7A"},
+  // Membres atelier
+  {pin:"17", nom:"Léo Menard",         role:"atelier",       couleur:"#CC8800"},
+  {pin:"99", nom:"Ivonne Rodriguez",   role:"atelier",       couleur:"#CC8800"},
+  {pin:"85", nom:"Coline Marolleau",   role:"atelier",       couleur:"#CC8800"},
+  {pin:"50", nom:"Louise Gravestock",  role:"atelier",       couleur:"#CC8800"},
+  {pin:"75", nom:"Alexandre Marivint", role:"atelier",       couleur:"#CC8800"},
+  {pin:"16", nom:"Cyriac Chaigneau",   role:"atelier",       couleur:"#CC8800"},
 ];
 // Rôles distincts pour l'affichage
 const ROLES=[
   {role:"admin",       label:"👑 Admin",          couleur:"#CC2222"},
   {role:"ingenieur",   label:"🔧 Ingénieur",       couleur:"#1A5DAB"},
   {role:"chef_projet", label:"📋 Chef de projet",  couleur:"#7A2A7A"},
+  {role:"atelier",     label:"🔨 Atelier",         couleur:"#CC8800"},
 ];
 const SESSION_KEY="btp_session_v1";
 
@@ -5710,18 +6611,19 @@ function LoginScreen({onLogin}){
   );
 }
 const PANELS=[
-  {id:"dashboard",label:"Tableau de bord"},
-  {id:"projets",label:"Projets"},
-  {id:"taches",label:"Tâches"},
-  {id:"calendrier",label:"Calendrier"},
-  {id:"equipes",label:"Équipe"},
-  {id:"atelier",label:"Atelier"},
-  {id:"chantier",label:"Chantier"},
-  {id:"prestataires",label:"Prestataires"},
-  {id:"fournisseurs",label:"Fournisseurs"},
-  {id:"stocks",label:"Stocks"},
-  {id:"commandes",label:"Commandes"},
+  {id:"dashboard",label:"Tableau de bord",  roles:["admin","ingenieur","chef_projet"]},
+  {id:"projets",label:"Projets",            roles:["admin","ingenieur","chef_projet"]},
+  {id:"taches",label:"Tâches",              roles:["admin","ingenieur","chef_projet"]},
+  {id:"calendrier",label:"Calendrier",      roles:["admin","ingenieur","chef_projet"]},
+  {id:"equipes",label:"Équipe",             roles:["admin","ingenieur","chef_projet","atelier"]},
+  {id:"atelier",label:"Atelier",            roles:["admin","ingenieur","chef_projet","atelier"]},
+  {id:"chantier",label:"Chantier",          roles:["admin","ingenieur","chef_projet"]},
+  {id:"prestataires",label:"Prestataires",  roles:["admin","ingenieur","chef_projet"]},
+  {id:"fournisseurs",label:"Fournisseurs",  roles:["admin","ingenieur","chef_projet","atelier"]},
+  {id:"stocks",label:"Stocks",              roles:["admin","ingenieur","chef_projet","atelier"]},
+  {id:"commandes",label:"Commandes",        roles:["admin","ingenieur","chef_projet","atelier"]},
 ];
+const getPanelsForRole=(role)=>PANELS.filter(p=>p.roles.includes(role));
 
 function App(){
   const [user,setUser]=useState(()=>{
@@ -5739,7 +6641,7 @@ function App(){
 }
 
 function AppContent({user,onLogout}){
-  const [panel,setPanel]=useState("dashboard");
+  const [panel,setPanel]=useState(user.role==="atelier"?"atelier":"dashboard");
   const [hideFinances,setHideFinances]=useState(false);
   const [initializing,setInitializing]=useState(true);
   const [initErr,setInitErr]=useState(null);
@@ -5749,15 +6651,20 @@ function AppContent({user,onLogout}){
   const events=useSheet("events");
   const team=useSheet("team");
   const journal=useSheet("journal");
+  const journalAtelier=useSheet("journalAtelier");
+  const journalChantier=useSheet("journalChantier");
   const fournisseurs=useSheet("fournisseurs");
   const stocks=useSheet("stocks");
   const orders=useSheet("orders");
-  const devis=useSheet("Devis");
+  const devis=useSheet("devis");
   const notes=useSheet("notes");
   const prestataires=useSheet("prestataires");
   const prestMissions=useSheet("prestMissions");
   const atelierChantier=useSheet("atelierChantier");
   const cr=useSheet("cr");
+  const etapes=useSheet("etapes");
+  const suiviFab=useSheet("suiviFab");
+  const templates=useSheet("templates");
   const sheets={projects,tasks,events,team,journal,fournisseurs,stocks,orders,notes,prestataires,prestMissions,atelierChantier,cr};
 
   // ── Filtrage par rôle ──
@@ -5769,12 +6676,14 @@ function AppContent({user,onLogout}){
     ? new Set(projects.rows.map(p=>norm(p.name)))
     : new Set(projects.rows.filter(p=>norm(p.ingenieur)===norm(user.nom)).map(p=>norm(p.name)));
 
+  const isFullAccess=user.role==="admin"||user.role==="atelier";
+
   function filterByProjet(rows, champProjet="projet"){
-    if(user.role==="admin")return rows;
+    if(isFullAccess)return rows;
     return rows.filter(r=>!r[champProjet]||mesProjetsNoms.has(norm(r[champProjet])));
   }
   function filterStock(rows){
-    if(user.role==="admin")return rows;
+    if(isFullAccess)return rows;
     return rows.filter(s=>{
       const tags=(s.tags||"").split(",").map(t=>t.trim().toLowerCase());
       if(tags.includes("libéré")||tags.includes("libere"))return true;
@@ -5784,7 +6693,7 @@ function AppContent({user,onLogout}){
   }
 
   // Vues filtrées
-  const projetsView={...projects,rows:user.role==="admin"?projects.rows:projects.rows.filter(p=>norm(p.ingenieur)===norm(user.nom))};
+  const projetsView={...projects,rows:isFullAccess?projects.rows:projects.rows.filter(p=>norm(p.ingenieur)===norm(user.nom))};
   const ordersView={...orders,rows:filterByProjet(orders.rows)};
   const tasksView={...tasks,rows:filterByProjet(tasks.rows)};
   const eventsView={...events,rows:filterByProjet(events.rows)};
@@ -5841,7 +6750,7 @@ function AppContent({user,onLogout}){
       <div style={{display:"flex",alignItems:"center",padding:"10px 20px",borderBottom:"1.5px solid #CC2222",background:"#fff",flexWrap:"wrap",gap:4,position:"sticky",top:0,zIndex:10}}>
         <HPLogo/>
         <div style={{width:1,height:24,background:"#DDDDDD",margin:"0 12px"}}/>
-        {PANELS.map(p=>(
+        {getPanelsForRole(user.role).map(p=>(
           <button key={p.id} onClick={()=>setPanel(p.id)} style={{
             background:"none",border:"none",cursor:"pointer",
             padding:"6px 12px",borderRadius:4,fontSize:12,
@@ -5857,8 +6766,8 @@ function AppContent({user,onLogout}){
             <span style={{fontSize:13}}>{hideFinances?"🔒":"🔓"}</span>
             <span>{hideFinances?"Afficher €":"Masquer €"}</span>
           </button>
-          <div style={{display:"flex",alignItems:"center",gap:6,padding:"3px 10px",borderRadius:4,background:user.role==="admin"?"#FFF0F0":"#F0F4FF",border:"0.5px solid",borderColor:user.role==="admin"?"#FFCCCC":"#C0D4FF"}}>
-            <span style={{fontSize:11,fontWeight:700,color:user.couleur}}>{user.role==="admin"?"👑":""}{user.nom}</span>
+          <div style={{display:"flex",alignItems:"center",gap:6,padding:"3px 10px",borderRadius:4,background:user.role==="admin"?"#FFF0F0":user.role==="atelier"?"#FFF8EC":"#F0F4FF",border:"0.5px solid",borderColor:user.role==="admin"?"#FFCCCC":user.role==="atelier"?"#FFD580":"#C0D4FF"}}>
+            <span style={{fontSize:11,fontWeight:700,color:user.couleur}}>{user.role==="admin"?"👑 ":user.role==="atelier"?"🔨 ":""}{user.nom}</span>
             <button onClick={onLogout} title="Se déconnecter" style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:"#7A7A7A",padding:"0 2px",fontFamily:"'DM Sans',sans-serif"}}>✕</button>
           </div>
           <span style={{fontSize:10,color:"#7A7A7A",fontFamily:"'DM Mono',monospace",border:"0.5px solid #DDDDDD",borderRadius:4,padding:"2px 6px"}}>{VERSION}</span>
@@ -5871,8 +6780,8 @@ function AppContent({user,onLogout}){
         {panel==="taches"         &&<Taches sheet={tasksView} projects={projetsView}/>}
         {panel==="calendrier"     &&<Calendrier sheet={eventsView} projects={projetsView} atelierChantier={atelierChantierView} cr={cr} tasks={tasksView}/>}
         {panel==="equipes"        &&<Equipes sheet={team} journal={journal}/>}
-        {panel==="atelier"        &&<MissionModule moduleType="atelier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs}/>}
-        {panel==="chantier"       &&<MissionModule moduleType="chantier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs}/>}
+        {panel==="atelier"        &&<MissionModule moduleType="atelier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs} etapes={etapes} suiviFab={suiviFab} templates={templates} journal={journalAtelier} user={user}/>}
+        {panel==="chantier"       &&<MissionModule moduleType="chantier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs} etapes={etapes} suiviFab={suiviFab} templates={templates} journal={journalChantier} user={user}/>}
         {panel==="prestataires"   &&<Prestataires sheet={prestataires} missions={prestMissionsView} projects={projetsView} stocks={stocksView} events={eventsView} fournisseurs={fournisseurs} hideFinances={hideFinances}/>}
         {panel==="fournisseurs"   &&<Fournisseurs sheet={fournisseurs}/>}
         {panel==="stocks"         &&<Stocks sheet={stocksView} fournisseurs={fournisseurs} projects={projetsView} orders={ordersView} atelierChantier={atelierChantierView} prestMissions={prestMissionsView} hideFinances={hideFinances}/>}
