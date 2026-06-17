@@ -44,20 +44,17 @@
 const { useState, useEffect, useCallback } = React;
 
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.0.5";
-// Fonction de journalisation — appelée après chaque action d'un membre atelier
+const VERSION = "v4.0.7";
+
 async function logAction(journal, user, texte, projet=""){
   if(!journal||!user)return;
   await journal.add({date:TODAY,texte:`[${user.nom}] ${texte}`,projet:projet||""});
 }
 
-// ── Système d'authentification ──
-// Token stocké en mémoire uniquement, expire toutes les 5 minutes
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
 
-// Fonction pour définir l'email depuis l'écran de login
 function setAuthEmail(email){ _authEmail=email.trim().toLowerCase(); _authToken=null; _tokenExpiry=0; }
 function clearAuth(){ _authEmail=null; _authToken=null; _tokenExpiry=0; }
 
@@ -77,7 +74,6 @@ async function ensureAuth() {
   return { email: _authEmail, token: _authToken };
 }
 
-// ── API via JSONP ──
 function jsonp(params) {
   return new Promise((resolve, reject) => {
     const cb = "cb_" + Math.random().toString(36).slice(2);
@@ -121,22 +117,22 @@ const gasInit=async()=>{const a=await ensureAuth();return jsonp({action:"init",e
 const TODAY=new Date().toISOString().split("T")[0];
 const todayDate=new Date(TODAY+"T00:00:00");
 const MONTHS=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
-// Formate une date quelle que soit sa forme (ISO, DD/MM/YYYY, timestamp Google Sheets)
+
 function fmt(d){
   if(!d||d==="—")return"—";
-  // Déjà au format JJ/MM/AAAA
+
   if(typeof d==="string"&&/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(d)){
     const[day,m,y]=d.split("/");
     if(parseInt(y)<2000)return"—";
     return d;
   }
-  // Format ISO YYYY-MM-DD
+
   if(typeof d==="string"&&/^\d{4}-\d{2}-\d{2}/.test(d)){
     const[y,m,day]=d.split("T")[0].split("-");
     if(parseInt(y)<2000)return"—";
     return`${parseInt(day)}/${parseInt(m)}/${y}`;
   }
-  // Timestamp numérique (Google Sheets serial date)
+
   if(!isNaN(d)&&Number(d)>0){
     const x=new Date(Math.round((Number(d)-25569)*86400000));
     if(x.getUTCFullYear()<2000)return"—";
@@ -144,7 +140,7 @@ function fmt(d){
   }
   return"—";
 }
-// Normalise une date en YYYY-MM-DD pour les comparaisons
+
 function toISO(d){
   if(!d)return"";
   if(typeof d==="string"&&/^\d{4}-\d{2}-\d{2}/.test(d)){
@@ -164,9 +160,9 @@ function toISO(d){
   }
   return"";
 }
-// ── Jours fériés français (fixes + Pâques mobile) ──
+
 function joursFeries(year){
-  // Pâques (algorithme de Butcher)
+
   const a=year%19,b=Math.floor(year/100),c=year%100;
   const d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25);
   const g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30;
@@ -190,15 +186,15 @@ function isWorkDay(iso){
   const d=new Date(iso+"T00:00:00");
   const dow=d.getDay();
   if(dow===0||dow===6)return false;
-  // Utiliser la date locale pour vérifier le férié
+
   const localISO=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
   return!joursFeries(d.getFullYear()).has(localISO);
 }
-// Nombre de jours ouvrés entre aujourd'hui et une date cible (négatif = retard)
+
 function diffWorkDays(d){
   const iso=toISO(d);
   if(!iso)return 999;
-  // Utiliser des dates locales strictement (pas UTC) pour éviter le décalage +2h
+
   const localISO=d2=>`${d2.getFullYear()}-${String(d2.getMonth()+1).padStart(2,"0")}-${String(d2.getDate()).padStart(2,"0")}`;
   const todayISO=localISO(todayDate);
   if(iso===todayISO)return 0;
@@ -215,7 +211,6 @@ function diffWorkDays(d){
 }
 function diffDays(d){return diffWorkDays(d);}
 
-// Urgence automatique selon échéance (en jours ouvrés)
 function autoUrgence(due, done){
   if(done===true||done==="TRUE")return"low";
   const d=diffWorkDays(due);
@@ -233,14 +228,13 @@ const UC={
   done:{bg:"#EBF3FF",tx:"#1A5DAB",lbl:"Terminée"},
 };
 const EV_COLORS={rdv:"#2A7A2A",deadline:"#CC2222",chantier:"#1A5DAB",livraison:"#7A4A00",deplacement:"#7A2A7A",prestation:"#CC6600"};
-// Types d'événements auto-générés depuis d'autres modules — ne pas modifier directement
+
 const EV_AUTO_TYPES=new Set(["chantier","prestation","livraison"]);
 const EV_AUTO_MODULE={chantier:"module Chantier",prestation:"module Prestataires",livraison:"module Commandes"};
 const EV_LABELS={rdv:"RDV",deadline:"Deadline",chantier:"Chantier",livraison:"Livraison",deplacement:"Déplacement",prestation:"Prestation"};
 const CATS=["Visserie & fixations","Profilés aluminium extrudés","Membranes (ETFE, PVC, etc)","Éléments métalliques","Éléments en bois","Étanchéité & joints","Câblerie & électricité","Plomberie & fluides","Revêtements & finitions","Matériaux isolants","Consommables atelier","Outillage","EPI & sécurité","Fournitures de bureau","Transport & logistique","Autre"];
 const UNITS=["pcs","m²","ml","barres","kg","rouleaux","cartouches","boîtes"];
 
-// ── Intervenants BTP ──
 const ROLES_INTERVENANT=[
   {groupe:"Maîtrise & pilotage", roles:["Client / MOA","AMO","MOE","MOEX","OPC","Économiste de la construction"]},
   {groupe:"Conception", roles:["Architecte","BET Structure","BET Fluides / CVC","BET Électricité","BET Acoustique / Thermique","Paysagiste","Géomètre"]},
@@ -251,7 +245,6 @@ const ALL_ROLES_INTERVENANT=ROLES_INTERVENANT.flatMap(g=>g.roles);
 const PROJ_STATUTS=["en cours","démarrage","finition","retard","terminé","en pause"];
 const STATUTS_TEAM=["chantier","atelier","bureau","congé","déplacement"];
 
-// ── UI atoms ──
 const Bd=({children,style,onClick})=><div onClick={onClick} style={{background:"#fff",border:"0.5px solid #DDDDDD",borderRadius:10,padding:14,...style}}>{children}</div>;
 
 const Badge=({label,bg,color})=><span style={{background:bg,color,fontSize:11,fontWeight:500,padding:"2px 8px",borderRadius:4,whiteSpace:"nowrap",fontFamily:"'DM Sans',sans-serif"}}>{label}</span>;
@@ -288,8 +281,6 @@ const ErrMsg=({msg})=>msg?<div style={{background:"#FFF0F0",color:"#CC2222",bord
 
 const SecTitle=({children})=><div className="hp-section-title">{children}</div>;
 
-// Logo HP fidèle à la charte
-// LOGO_B64 défini dans le script global ci-dessus
 const HPLogo=({size=1})=>{
   const h=Math.round(72*size);
   const w=Math.round(h*3.2); // ratio largeur/hauteur du logo
@@ -351,7 +342,6 @@ function WithPanel({panel,children}){
   return <div style={{display:"flex",gap:14,alignItems:"flex-start"}}><div style={{flex:1,minWidth:0}}>{children}</div>{panel}</div>;
 }
 
-// ── Hook générique ──
 function useSheet(key){
   const [rows,setRows]=useState([]);
   const [loading,setLoading]=useState(true);
@@ -369,7 +359,6 @@ function useSheet(key){
   return{rows,setRows,loading,error,reload:load,add,update,remove};
 }
 
-// Statut badge HP
 function statutBadge(s){
   const m={
     "retard":{bg:"#FFF0F0",tx:"#CC2222"},
@@ -382,7 +371,6 @@ function statutBadge(s){
   return m[s]||{bg:"#F2F0ED",tx:"#3A3A3A"};
 }
 
-// Couleurs étendues pour statuts projets
 const STATUT_COLORS={
   "en cours":  {bg:"#EBF3FF",tx:"#1A5DAB",dot:"#1A5DAB"},
   "démarrage": {bg:"#F2F0ED",tx:"#3A3A3A",dot:"#3A3A3A"},
@@ -393,8 +381,6 @@ const STATUT_COLORS={
 };
 function statutColor(s){return STATUT_COLORS[s]||{bg:"#F2F0ED",tx:"#3A3A3A",dot:"#3A3A3A"};}
 
-
-// ── Calcul avancement composite ──
 function calcAvancement(p, atelierChantier){
   const missions=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name);
   const missAtelier=missions.filter(m=>m.type==="atelier");
@@ -417,9 +403,7 @@ function calcAvancement(p, atelierChantier){
   const global=Math.round(facteurs.reduce((s,f)=>s+f.val*poids/100,0));
   return{global,facteurs};
 }
-// ── Calcul dépenses projet — fonction globale (utilisée par Dashboard ET Projets) ──
-// Compte TOUTES les commandes et prestations assignées au projet
-// Ne PAS filtrer ici par statut projet — chaque appelant applique sa propre règle
+
 function calcDepensesProjet(p, orders, prestMissions){
   const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
   const normP=s=>String(s||"").trim().toLowerCase();
@@ -432,7 +416,6 @@ function calcDepensesProjet(p, orders, prestMissions){
   return{engagees:cmdEngagees,recues:cmdRecues,prest:prestTotal,prestTerminees,total:cmdEngagees+prestTotal};
 }
 
-// ══ DASHBOARD ══
 function Dashboard({sheets,hideFinances=false,timesheets,user,team}){
   const {projects,tasks,stocks,orders,events,prestMissions,atelierChantier,journal}=sheets;
   const pending=tasks.rows.filter(t=>!t.done&&t.done!=="TRUE");
@@ -440,7 +423,6 @@ function Dashboard({sheets,hideFinances=false,timesheets,user,team}){
   const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
   async function toggleTask(t){await tasks.update(t.id,{...t,done:!isDone(t)});}
 
-  // Séparation claire retard / urgent
   const tachesRetard=[...pending].filter(t=>autoUrgence(t.due,t.done)==="critique")
     .sort((a,b)=>toISO(a.due).localeCompare(toISO(b.due)));
   const tachesUrgent=[...pending].filter(t=>autoUrgence(t.due,t.done)==="high")
@@ -461,7 +443,6 @@ function Dashboard({sheets,hideFinances=false,timesheets,user,team}){
     setSavingNote(false);
   }
 
-  // ── Finances globales — projets non terminés uniquement ──
   const projetsActifsFinance=projects.rows.filter(p=>p.statut!=="terminé");
   const totalCA=projetsActifsFinance.reduce((s,p)=>s+Number(p.budget||0),0);
   const allDep=projetsActifsFinance.map(p=>calcDepensesProjet(p,orders,prestMissions));
@@ -528,30 +509,25 @@ function Dashboard({sheets,hideFinances=false,timesheets,user,team}){
         const pctDep=totalCA>0?Math.min(Math.round(totalDepenses/totalCA*100),100):0;
         const soldeColor=solde<0?"#CC2222":solde<totalCA*0.1?"#CC8800":"#2A7A2A";
 
-        // ── Vue détaillée finances ──
         if(showFinances){
-          // Données par projet pour graphique
+
           const projData=projetsActifsFinance.map(p=>{
             const d=calcDepensesProjet(p,orders,prestMissions);
             return{name:p.name,ca:Number(p.budget)||0,dep:d.engagees+d.prest,cmd:d.engagees,prest:d.prest};
           }).filter(x=>x.ca>0||x.dep>0).sort((a,b)=>b.ca-a.ca);
 
-          // Graphique barres horizontales par projet
           const maxVal=Math.max(...projData.map(x=>Math.max(x.ca,x.dep)),1);
           const barW=420;
 
-          // Répartition dépenses
           const partCmd=totalDepenses>0?Math.round(totalEngagees/totalDepenses*100):0;
           const partPrest=totalDepenses>0?Math.round(totalPrest/totalDepenses*100):0;
 
-          // Top commandes par montant
           const topCmd=[...orders.rows]
             .filter(o=>{if(!o.projet)return true;const p=projetsActifsFinance.find(x=>x.name===o.projet);return!!p;})
             .map(o=>({...o,total:(+o.prix||0)*(+o.qty||0)}))
             .filter(x=>x.total>0)
             .sort((a,b)=>b.total-a.total).slice(0,5);
 
-          // Top prestations par montant
           const topPrest=[...(prestMissions?.rows||[])]
             .filter(m=>{if(!m.projet)return true;const p=projetsActifsFinance.find(x=>x.name===m.projet);return!!p;})
             .filter(m=>Number(m.prix)>0)
@@ -617,7 +593,7 @@ function Dashboard({sheets,hideFinances=false,timesheets,user,team}){
                     const r=52,cx=68,cy=68,circ=2*Math.PI*r;
                     const cmdArc=totalEngagees/totalDepenses*circ;
                     const prestArc=totalPrest/totalDepenses*circ;
-                    // Évolution mensuelle — 6 derniers mois
+
                     const now=new Date(TODAY+"T00:00:00");
                     const moisLabels=[];const moisCmd=[];const moisPrest=[];
                     for(let i=5;i>=0;i--){
@@ -937,7 +913,6 @@ function Dashboard({sheets,hideFinances=false,timesheets,user,team}){
           );
         }
 
-        // ── Bloc résumé cliquable ──
         return(
           <div onClick={()=>setShowFinances(true)} style={{
             background:"#fff",border:"0.5px solid #DDDDDD",borderRadius:10,padding:"14px 18px",
@@ -1153,10 +1128,10 @@ function Dashboard({sheets,hideFinances=false,timesheets,user,team}){
         {(()=>{
           const moisActuel=new Date().toLocaleString("fr-FR",{month:"long"});
           const moisPrecedent=(()=>{const d=new Date();d.setMonth(d.getMonth()-1);return d.toLocaleString("fr-FR",{month:"long"});})();
-          // J+5 du mois : alerte si on est après le 5
+
           const joursEcoules=new Date().getDate();
           if(joursEcoules<5)return null; // pas encore d'alerte
-          // Membres qui doivent uploader
+
           const membresActifs=(team?.rows||[]).filter(t=>t.statut!=="inactif");
           const tsRows=timesheets?.rows||[];
           const manquants=membresActifs.filter(m=>{
@@ -1216,8 +1191,6 @@ function Dashboard({sheets,hideFinances=false,timesheets,user,team}){
   );
 }
 
-// ══ PROJETS ══
-// Composant slider avancement études — état local pour l'affichage, save au relâchement
 function SliderEtudes({val,onSave}){
   const [localVal,setLocalVal]=useState(val);
   return(
@@ -1231,7 +1204,6 @@ function SliderEtudes({val,onSave}){
   );
 }
 
-// Composant champ tag avec état local
 function TagInput({tags,onChange}){
   const [val,setVal]=useState("");
   function addTag(){
@@ -1261,14 +1233,12 @@ function TagInput({tags,onChange}){
   );
 }
 
-// Retourne les tags d'un projet donné
 function getTagsProjet(projetNom, projects){
   if(!projetNom||!projects)return[];
   const p=projects.rows.find(x=>x.name===projetNom);
   return(p?.tags||"").split(",").map(t=>t.trim()).filter(Boolean);
 }
 
-// Sélecteur de tags (tags disponibles du projet + tags libres)
 function TagSelector({tags,onChange,projetNom,projects}){
   const [val,setVal]=useState("");
   const tagsProjet=getTagsProjet(projetNom,projects);
@@ -1311,7 +1281,6 @@ function TagSelector({tags,onChange,projetNom,projects}){
   );
 }
 
-// Barre de filtre projet + tag
 function FiltreProjetTag({projects,filterProjet,setFilterProjet,filterTag,setFilterTag}){
   const tagsDispos=getTagsProjet(filterProjet,projects);
   return(
@@ -1331,25 +1300,22 @@ function FiltreProjetTag({projects,filterProjet,setFilterProjet,filterTag,setFil
   );
 }
 
-// ── Normalisation des refs stock : UNE SEULE méthode partout ──
 function normRef(s){return String(s||"").trim().toLowerCase().replace(/\s+/g," ");}
-// Masque les montants si hideFinances est activé
+
 const hideMoney=(val,hide,placeholder="••••")=>hide?<span style={{color:"#CCCCCC",userSelect:"none",letterSpacing:2}}>{placeholder}</span>:val;
 
-// Parse les pièces stock d'une mission (nouveau format JSON ou ancien stockRef/stockQty)
 function getMissionStockItems(m){
-  // Si stockItems est défini (même vide []), c'est la source de vérité — ignorer stockRef
+
   if(m.stockItems!==undefined&&m.stockItems!==null&&m.stockItems!==""){
     try{const p=JSON.parse(m.stockItems);if(Array.isArray(p))return p.filter(x=>x.ref&&x.qty);}catch(e){}
   }
-  // Fallback legacy : ancien champ stockRef (missions avant le multi-pièces)
+
   if(m.stockRef)return [{ref:m.stockRef,qty:Number(m.stockQty)||1}];
   return[];
 }
 
 const EP={name:"",statut:"en cours",avancement:0,equipe:0,budget:"",depense:"",client:"",lieu:"",note:"",ingenieur:"",tags:""};
 
-// ── Sélecteur participants avec intervenants du projet ──
 function ParticipantsSelector({value,onChange,projet}){
   const [saisie,setSaisie]=useState("");
   const liste=value?value.split(",").map(s=>s.trim()).filter(Boolean):[];
@@ -1385,9 +1351,6 @@ function ParticipantsSelector({value,onChange,projet}){
   );
 }
 
-// ══════════════════════════════════════════
-// COMPOSANT CR DE RÉUNION
-// ══════════════════════════════════════════
 const IMPORT_AI_PROMPT_CR=`Tu es un assistant qui analyse des comptes-rendus de réunion BTP.
 Extrais les informations suivantes et réponds UNIQUEMENT en JSON valide sans markdown :
 {
@@ -1407,7 +1370,6 @@ function ModuleCR({cr, projet, projects, team, tasks, events, onClose}){
   const [aiPreview,setAiPreview]=useState(null);
   const [aiErr,setAiErr]=useState("");
 
-  // Formulaire CR interne
   const EC={titre:"",date:TODAY,participants:"",contenu:"",actions:"[]"};
   const [form,setForm]=useState(EC);
   const [actionsForm,setActionsForm]=useState([{texte:"",responsable:"",echeance:""}]);
@@ -1429,7 +1391,6 @@ function ModuleCR({cr, projet, projects, team, tasks, events, onClose}){
     }
   }
 
-  // Import IA
   function analyserIA(){
     if(!aiText.trim()){setAiErr("Colle le texte généré par Claude.");return;}
     setAiErr("");setAiPreview(null);
@@ -1490,7 +1451,7 @@ function ModuleCR({cr, projet, projects, team, tasks, events, onClose}){
   }
 
   if(vue==="nouveau_interne"){
-    // RDV du projet pour la liaison
+
     const rdvDuProjet=(events?.rows||[]).filter(ev=>ev.type==="rdv"&&ev.projet===projet?.name).sort((a,b)=>b.date?.localeCompare(a.date||"")||0).slice(0,10);
     return(
       <div>
@@ -1584,7 +1545,6 @@ function ModuleCR({cr, projet, projects, team, tasks, events, onClose}){
     );
   }
 
-  // Vue liste
   return(
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -1615,11 +1575,6 @@ function ModuleCR({cr, projet, projects, team, tasks, events, onClose}){
   );
 }
 
-// ══════════════════════════════════════════════════════
-// COMPOSANT SUIVI HEURES PROJET
-// ══════════════════════════════════════════════════════
-
-// Parser Excel heures (format HP)
 function parseExcelHeures(arrayBuffer, moisFiltre=null){
   const wb=XLSX.read(arrayBuffer,{type:"array"});
   const mois=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
@@ -1633,16 +1588,16 @@ function parseExcelHeures(arrayBuffer, moisFiltre=null){
       const row=rows[i];
       const dateRaw=row[0];const projetRaw=String(row[1]||"").trim();const heuresRaw=row[6];
       if(!dateRaw||!projetRaw||!heuresRaw)continue;
-      // Convertir date Excel serial
+
       let dateStr="";
       try{
         const d=new Date((dateRaw-25569)*86400000);
         dateStr=d.toISOString().split("T")[0];
       }catch(e){continue;}
-      // Convertir heures (fraction de jour → heures)
+
       const heures=Math.round(Number(heuresRaw)*24*100)/100;
       if(heures<=0)continue;
-      // Séparer projets multiples : "Alcov - Byzance" → ["Alcov","Byzance"]
+
       const projets=projetRaw.split(/\s*-\s*(?=[A-Z])/u).map(p=>p.trim()).filter(Boolean);
       const hParProjet=Math.round(heures/projets.length*100)/100;
       const rd=String(row[2]||"").includes("R&D")?true:false;
@@ -1656,16 +1611,14 @@ function parseExcelHeures(arrayBuffer, moisFiltre=null){
   return lignes;
 }
 
-// Normaliser un nom de projet pour le matching
 function normProjet(s){return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"");}
 
-// Score de similarité entre deux strings normalisés
 function similarite(a,b){
   const na=normProjet(a),nb=normProjet(b);
   if(!na||!nb)return 0;
   if(na===nb)return 1;
   if(na.includes(nb)||nb.includes(na))return 0.85;
-  // Jaccard sur bigrammes
+
   const bigrams=s=>{const bg=new Set();for(let i=0;i<s.length-1;i++)bg.add(s[i]+s[i+1]);return bg;};
   const ba=bigrams(na),bb=bigrams(nb);
   let inter=0;for(const g of ba)if(bb.has(g))inter++;
@@ -1684,11 +1637,9 @@ function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,
   const [budgetForm,setBudgetForm]=useState({membre:"",heures:""});
   const [savingBudget,setSavingBudget]=useState(false);
 
-  // Données filtrées pour ce projet
   const tsProjet=(timesheets?.rows||[]).filter(r=>String(r.projet_id)===String(projet.id)||normL(r.projet)===normL(projet.name));
   const budgets=(budgetHeures?.rows||[]).filter(r=>String(r.projet_id)===String(projet.id));
 
-  // Total heures par membre
   const heuresParMembre={};
   for(const t of tsProjet){
     const k=t.membre||"—";
@@ -1696,12 +1647,10 @@ function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,
   }
   const totalConsomme=Object.values(heuresParMembre).reduce((a,b)=>a+b,0);
 
-  // Budget total
   const budgetTotal=budgets.reduce((a,b)=>a+Number(b.heures||0),0);
   const budgetPool=budgets.find(b=>!b.membre)?.heures||0;
   const pctConsomme=budgetTotal>0?Math.round(totalConsomme/budgetTotal*100):null;
 
-  // Heures estimées atelier (depuis coches) pour ce projet
   const missionsProjet=(atelierChantier?.rows||[]).filter(m=>normL(m.projet)===normL(projet.name));
   const heuresEstimAtelier=(()=>{
     let total=0;
@@ -1713,14 +1662,13 @@ function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,
         const vals=[];try{vals.push(...JSON.parse(l.valeurs||"[]"));}catch(e){}
         totalCoches+=vals.filter(v=>v===1).length;totalOps+=nb;
       }
-      // Si budget renseigné : heures = budget × (coches/total)
+
       const budgetMission=budgetTotal>0&&totalOps>0?budgetTotal*(totalCoches/Math.max(totalOps,1)):0;
       total+=budgetMission;
     }
     return Math.round(total*10)/10;
   })();
 
-  // Upload Excel
   const handleUpload=async(e)=>{
     const file=e.target.files[0];
     if(!file)return;
@@ -1729,22 +1677,22 @@ function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,
       const buf=await file.arrayBuffer();
       const lignes=parseExcelHeures(buf);
       if(!lignes.length){alert("Aucune donnée trouvée dans ce fichier.");setUploadState("idle");return;}
-      // Auto-matching
+
       const projetsConnus={};
-      // Charger le mapping sauvegardé (localStorage)
+
       try{const saved=localStorage.getItem("hp_projet_mapping");if(saved)Object.assign(projetsConnus,JSON.parse(saved));}catch(e){}
       const newMap={};
       const nomsExcel=[...new Set(lignes.map(l=>l.projet))];
       for(const nom of nomsExcel){
         if(projetsConnus[normProjet(nom)]){newMap[nom]=projetsConnus[normProjet(nom)];continue;}
-        // Chercher le meilleur match
+
         let best=null,bestScore=0;
-        // On cherche dans les timesheets existants si ce nom a déjà été mappé
+
         const existingTs=tsProjet.find(t=>normProjet(t.projet)===normProjet(nom));
         if(existingTs){newMap[nom]=existingTs.projet_id||nom;continue;}
         newMap[nom]=""; // à confirmer manuellement
       }
-      // Déduire le mois depuis les données
+
       const moisData=[...new Set(lignes.map(l=>l.mois))].join(", ");
       setMatchMap(newMap);
       setParsedLignes(lignes);
@@ -1754,31 +1702,29 @@ function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,
     e.target.value="";
   };
 
-  // Confirmer le mapping et enregistrer
   const confirmerImport=async()=>{
     if(!uploadMembre){alert("Sélectionne le membre concerné.");return;}
     setSaving(true);
-    // Sauvegarder le mapping pour la prochaine fois
+
     const mapping={};
     try{const s=localStorage.getItem("hp_projet_mapping");if(s)Object.assign(mapping,JSON.parse(s));}catch(e){}
     for(const [nom,mapped] of Object.entries(matchMap)){
       if(mapped)mapping[normProjet(nom)]=mapped;
     }
     try{localStorage.setItem("hp_projet_mapping",JSON.stringify(mapping));}catch(e){}
-    // Supprimer les anciens imports du même membre/mois
+
     const toDelete=(timesheets?.rows||[]).filter(r=>r.membre===uploadMembre&&r.mois===uploadMois&&r.type==="import");
     for(const r of toDelete)await timesheets.remove(r.id);
-    // Enregistrer les nouvelles lignes
+
     for(const l of parsedLignes){
       const projetMapped=matchMap[l.projet]||l.projet;
-      // Seulement les lignes du projet courant (ou non mappées)
+
       await timesheets.add({membre:uploadMembre,date:l.date,projet:projetMapped,heures:l.heures,type:"import",mois:l.mois,note:l.note,rd:l.rd?"oui":"",projet_id:String(projet.id)});
     }
     setSaving(false);setUploadState("done");
     setTimeout(()=>setUploadState("idle"),2000);
   };
 
-  // KPIs par mois
   const parMois={};
   for(const t of tsProjet){
     const k=t.mois||t.date?.slice(0,7)||"—";
@@ -1787,7 +1733,6 @@ function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,
     if(t.membre)parMois[k].membres.add(t.membre);
   }
 
-  // Rapport PDF pour CE projet
   const genRapportProjet=()=>{
     const pct=budgetTotal>0?Math.min(999,Math.round(totalConsomme/budgetTotal*100)):null;
     const restant=budgetTotal>0?Math.round((budgetTotal-totalConsomme)*10)/10:null;
@@ -1824,7 +1769,7 @@ function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,
       ${heuresEstimAtelier>0?`<div class="kpi"><div class="kpi-val" style="color:#CC8800;">~${heuresEstimAtelier}h</div><div class="kpi-lbl">Estimation atelier (coches)</div></div>`:""}
     </div>`;
     if(pct!==null){html+=`<div class="prog-bar"><div class="prog-fill" style="width:${Math.min(100,pct)}%;background:${couleurPct};"></div></div>`;}
-    // Détail par membre
+
     html+=`<h2>Détail par membre</h2>
     <table><thead><tr><th>Membre</th><th style="text-align:right;">Consommé</th><th style="text-align:right;">Budget</th><th style="text-align:right;">Restant</th><th style="text-align:right;">%</th></tr></thead><tbody>`;
     for(const[membre,h] of Object.entries(heuresParMembre).sort((a,b)=>b[1]-a[1])){
@@ -1837,7 +1782,7 @@ function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,
     }
     html+=`<tr class="total-row"><td>TOTAL</td><td style="text-align:right;">${Math.round(totalConsomme*10)/10}h</td><td style="text-align:right;">${budgetTotal?budgetTotal+"h":"—"}</td><td style="text-align:right;" class="${pct!==null&&pct>100?"retard":""}">${restant!==null?restant+"h":"—"}</td><td style="text-align:right;">${pct!==null?pct+"%":"—"}</td></tr>`;
     html+=`</tbody></table>`;
-    // Par mois
+
     if(Object.keys(parMois).length>0){
       html+=`<h2>Évolution mensuelle</h2>
       <table><thead><tr><th>Mois</th><th style="text-align:right;">Heures</th><th>Membres actifs</th></tr></thead><tbody>`;
@@ -1946,7 +1891,7 @@ function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,
           <FG label="Heures budgétées"><Inp type="number" value={budgetForm.heures} onChange={e=>setBudgetForm(f=>({...f,heures:e.target.value}))} placeholder="Ex: 80" min="0"/></FG>
           <button disabled={savingBudget||!budgetForm.heures} onClick={async()=>{
             setSavingBudget(true);
-            // Vérifier si déjà un budget pour ce membre
+
             const existing=budgets.find(b=>(b.membre||"")===(budgetForm.membre||""));
             if(existing){await budgetHeures.update(existing.id,{...existing,heures:Number(budgetForm.heures)});}
             else{await budgetHeures.add({projet_id:String(projet.id),membre:budgetForm.membre,heures:Number(budgetForm.heures)});}
@@ -2036,7 +1981,7 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
   const [editingOrder,setEditingOrder]=useState(null);
   const [orderForm,setOrderForm]=useState({});
   const [ongletDetail,setOngletDetail]=useState("infos"); // "infos" | "cr" | "intervenants" | "heures"
-  // Intervenants
+
   const [intervenants,setIntervenants]=useState([]);
   const [showAddIntervenant,setShowAddIntervenant]=useState(false);
   const [formIntervenant,setFormIntervenant]=useState({role:"Client / MOA",nom:"",societe:"",email:"",tel:""});
@@ -2094,7 +2039,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
     setDetail(null);
   }
 
-  // Sauvegarde commande modifiée depuis vue détail
   async function saveOrder(){
     if(!editingOrder)return;
     await orders.update(editingOrder,{...orderForm,qty:+orderForm.qty||0,prix:+orderForm.prix||0});
@@ -2102,10 +2046,8 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
     setOrderForm({});
   }
 
-  // Délègue à la fonction globale
   function calcDepensesReelles(p){return calcDepensesProjet(p,orders,prestMissions);}
 
-  // Calcule l'équipe automatique d'un projet (membres distincts des missions liées)
   function calcEquipeAuto(p){
     const missions=(atelierChantier?.rows||[]).filter(m=>m.projet===p.name);
     const membres=new Set();
@@ -2116,7 +2058,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
     return Array.from(membres);
   }
 
-  // Liste des ingénieurs (filtre sur le rôle depuis le module Équipe)
   const ingenieurs=(team?.rows||[]).filter(t=>{
     const r=(t.role||t.poste||"").toLowerCase();
     return r.includes("ingénieur")||r.includes("ingenieur")||r.includes("engineer")||r.includes("be ")||r.includes("bureau d'études");
@@ -2125,7 +2066,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
   const actifs=sheet.rows.filter(p=>p.statut!=="terminé");
   const historique=sheet.rows.filter(p=>p.statut==="terminé");
 
-  // ── Panel latéral nouveau/modifier projet ──
   const panel=open&&<SidePanel title={editing?"Modifier le projet":"Nouveau projet"} onClose={()=>{setOpen(false);setEditing(null);}}>
     <FG label="Nom du projet *"><Inp value={form.name} onChange={e=>f("name",e.target.value)} placeholder="Ex: Façade ETFE Lyon"/></FG>
     <FG label="Client / maître d'ouvrage"><Inp value={form.client||""} onChange={e=>f("client",e.target.value)} placeholder="Ex: Société ABC"/></FG>
@@ -2150,7 +2090,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
     <PanelBtns onCancel={()=>{setOpen(false);setEditing(null);}} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Créer"}/>
   </SidePanel>;
 
-  // ══ VUE DÉTAIL ══
   if(detail){
     const p=sheet.rows.find(x=>Number(x.id)===Number(detail));
     if(!p){setDetail(null);return null;}
@@ -2162,7 +2101,7 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
       if(e.projet!==p.name)return false;
       const iso=toISO(e.date);
       if(!iso)return false;
-      // Garder si date >= aujourd'hui (ou si dateFin couvre encore aujourd'hui)
+
       const fin=e.dateFin?toISO(e.dateFin):iso;
       return fin>=TODAY;
     }).sort((a,b)=>toISO(a.date).localeCompare(toISO(b.date)));
@@ -2199,10 +2138,8 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
 
       const table=(headers,rows)=>`<table style="width:100%;border-collapse:collapse;border:0.5px solid #DDDDDD;border-radius:6px;overflow:hidden;margin-bottom:12px;"><thead>${tableRow(headers,true)}</thead><tbody>${rows.map(r=>tableRow(r)).join("")}</tbody></table>`;
 
-      // Sections
       let sections="";
 
-      // 1. Résumé financier
       if(caVal>0||dep.total>0){
         sections+=secTitle(1,"Résumé financier");
         sections+=`<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:14px;">`;
@@ -2218,7 +2155,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         if(caVal>0){sections+=`<div style="font-size:9pt;color:#7A7A7A;margin-bottom:3px;font-family:'DM Sans',Arial,sans-serif;">Consommation CA : ${pct}%</div>${pbar(pct)}<div style="margin-bottom:14px;"></div>`;}
       }
 
-      // 2. Tâches
       if(projTasks.length){
         sections+=secTitle(2,`Tâches (${projTasks.length})`);
         sections+=table(["Description","Échéance","Statut"],
@@ -2230,7 +2166,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         );
       }
 
-      // 3. Calendrier
       if(projEvents.length){
         sections+=secTitle(3,`Calendrier (${projEvents.length})`);
         sections+=table(["Événement","Date","Heure","Type"],
@@ -2238,7 +2173,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         );
       }
 
-      // 4. Commandes
       if(projOrders.length){
         sections+=secTitle(4,`Commandes (${projOrders.length})`);
         sections+=table(["Article","Fournisseur","Qté","Prix unitaire","Total","Statut"],
@@ -2251,7 +2185,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         );
       }
 
-      // 5. Prestations
       if(projPrest.length){
         sections+=secTitle(5,`Prestations (${projPrest.length})`);
         sections+=table(["Description","Prestataire","Période","Prix","Statut"],
@@ -2264,7 +2197,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         );
       }
 
-      // 6. Missions atelier
       if(projAtelier.length){
         sections+=secTitle(6,`Atelier (${projAtelier.length})`);
         sections+=table(["Description","Membres","Période","Statut"],
@@ -2275,7 +2207,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         );
       }
 
-      // 7. Missions chantier
       if(projChantier.length){
         sections+=secTitle(7,`Chantier (${projChantier.length})`);
         sections+=table(["Description","Membres","Période","Statut"],
@@ -2286,7 +2217,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         );
       }
 
-      // 8. Notes
       if(projNotes.length){
         sections+=secTitle(8,`Notes (${projNotes.length})`);
         projNotes.forEach(n=>{
@@ -2298,7 +2228,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         });
       }
 
-      // Intervenants
       let invs=[];try{invs=JSON.parse(p.intervenants||"[]");}catch(e){}
       if(invs.length){
         sections+=secTitle(9,`Intervenants (${invs.length})`);
@@ -2315,7 +2244,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         sections+=`</div>`;
       }
 
-      // Comptes-rendus
       const projCR=(cr?.rows||[]).filter(r=>r.id&&String(r.projet_id)===String(p.id)).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
       if(projCR.length){
         sections+=secTitle(10,`Comptes-rendus (${projCR.length})`);
@@ -2340,7 +2268,6 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
         });
       }
 
-      // Logo SVG inline
       const logoSVG=`<img src="${LOGO_B64}" height="50" style="object-fit:contain;display:block;"/>`;
 
       const html=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"/><title>Fiche projet — ${p.name}</title>
@@ -2536,7 +2463,7 @@ ${sections}
           {(()=>{
             let invs=[];try{invs=JSON.parse(p.intervenants||"[]");}catch(e){}
             if(!invs.length)return <div style={{fontSize:13,color:"#7A7A7A",textAlign:"center",padding:"20px 0"}}>Aucun intervenant. Ajoutez-en un ci-dessus.</div>;
-            // Grouper par groupe de rôle
+
             const grouped={};
             for(const inv of invs){
               const g=ROLES_INTERVENANT.find(gr=>gr.roles.includes(inv.role))?.groupe||"Autre";
@@ -2766,7 +2693,6 @@ ${sections}
     );
   }
 
-  // ══ VUE LISTE ══
   return <WithPanel panel={panel}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
       <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -2838,7 +2764,6 @@ ${sections}
   </WithPanel>;
 }
 
-// ══ PRESTATAIRES ══
 const EPREST={nom:"",specialite:"",contact:"",tel:"",note:""};
 const EPREST_MISSION={prestataire:"",projet:"",description:"",dateDebut:"",dateFin:"",prix:"",statut:"planifié",stockRef:"",stockQty:"",tags:"",stockItems:""};
 
@@ -2889,7 +2814,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
     try{
       const item={...missionForm,prix:+missionForm.prix||0,stockQty:+missionForm.stockQty||0};
       if(missionEditing){
-        // Si la mission est déjà terminée et qu'on ajoute/modifie une pièce stock → déduire du stock
+
         const ancienne=missions.rows.find(x=>Number(x.id)===Number(missionEditing));
         if(ancienne&&ancienne.statut==="terminé"){
           const ancItems=getMissionStockItems(ancienne);
@@ -2898,9 +2823,9 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
           const ancStr=JSON.stringify(ancItems.map(x=>normRef(x.ref)+"_"+x.qty).sort());
           const newStr=JSON.stringify(newItemsSave.map(x=>normRef(x.ref)+"_"+x.qty).sort());
           if(ancStr!==newStr){
-            // SNAPSHOT avant toute mutation
+
             const snap=[...stocks.rows];
-            // Vérifier disponibilité D'ABORD
+
             for(const it of newItemsSave){
               if(!it.ref||!it.qty)continue;
               const ancQty=ancItems.find(a=>normRef(a.ref)===normRef(it.ref))?.qty||0;
@@ -2911,14 +2836,14 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
                 setSavingM(false);return;
               }
             }
-            // Remettre les anciennes pièces (lecture depuis snap)
+
             for(const it of ancItems){
               if(!it.ref||!it.qty)continue;
               await updateStockQty(stocks,snap,it.ref,+it.qty,{type:"correction",label:`Annulation mission : ${missionForm.description}`});
             }
-            // Snapshot mis à jour manuellement pour les déductions
+
             const snap2=snap.map(s=>ancItems.find(a=>normRef(a.ref)===normRef(s.ref))?{...s,qty:Number(s.qty)+(ancItems.find(a=>normRef(a.ref)===normRef(s.ref))?.qty||0)}:s);
-            // Déduire les nouvelles pièces (lecture depuis snap2)
+
             for(const it of newItemsSave){
               if(!it.ref||!it.qty)continue;
               await updateStockQty(stocks,snap2,it.ref,-it.qty,{type:"prestation",label:missionForm.description,projet:missionForm.projet});
@@ -2929,7 +2854,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
       } else {
         await missions.add(item);
       }
-      // Sync événement calendrier — création ET modification
+
       if(events&&missionForm.dateDebut){
         const evExistant=events.rows.find(e=>
           e.type==="prestation"&&e.title===missionForm.description
@@ -2944,7 +2869,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
           dateFin:missionForm.dateFin||"",
         };
         if(evExistant){
-          // Mettre à jour l'événement existant avec les nouvelles dates
+
           await events.update(evExistant.id,{...evExistant,...evData});
         } else {
           await events.add(evData);
@@ -2956,7 +2881,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
 
   async function terminerMission(m){
     if(!confirm(`Marquer la prestation "${m.description}" comme terminée ?`))return;
-    // Ouvrir le modal de création stock (même logique que missions atelier/chantier)
+
     setStockModalPrest({mission:m, stockForm:{
       ref:m.description,
       qty:1,
@@ -2972,17 +2897,17 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
     setSavingStockPrest(true);
     try{
       const stockItems=getMissionStockItems(m);
-      // SNAPSHOT avant toute mutation
+
       const snap=[...stocks.rows];
       if(!dejaTermine){
-        // Vérifier disponibilité avec snapshot
+
         for(const it of stockItems){
           if(!it.ref||!it.qty)continue;
           const chk=checkStockDispo(snap,it.ref,it.qty);
           if(!chk.ok){alert(chk.msg);setSavingStockPrest(false);setStockModalPrest(null);return;}
         }
       }
-      // Créer/mettre à jour l'article stock produit
+
       if(creerStock&&sf&&sf.ref){
         const existe=snap.find(s=>normRef(s.ref)===normRef(sf.ref));
         if(existe){
@@ -2992,7 +2917,7 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
         }
       }
       if(!dejaTermine){
-        // Déduire les pièces consommées depuis snapshot
+
         for(const it of stockItems){
           if(!it.ref||!it.qty)continue;
           await updateStockQty(stocks,snap,it.ref,-Number(it.qty),{type:"prestation",label:m.description,projet:m.projet||"",prestataire:m.prestataire||""});
@@ -3068,7 +2993,6 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
   });
   const mTerminees=missions.rows.filter(m=>m.statut==="terminé").sort((a,b)=>toISO(b.dateFin||b.dateDebut||"").localeCompare(toISO(a.dateFin||a.dateDebut||"")));
 
-  // ── Finances globales prestations — filtrées si projet actif ──
   const missionsFin=filterProjet?missions.rows.filter(m=>normRef(m.projet)===normRef(filterProjet)):missions.rows;
   const totalPrest=missionsFin.reduce((s,m)=>s+Number(m.prix||0),0);
   const parPrest=sheet.rows.map(p=>{
@@ -3079,7 +3003,6 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
     return{...p,total,nb,pct};
   }).filter(x=>x.nb>0).sort((a,b)=>b.total-a.total);
 
-  // ── Vue détail prestataire ──
   if(detail){
     const p=sheet.rows.find(x=>Number(x.id)===Number(detail));
     if(!p){setDetail(null);return null;}
@@ -3323,10 +3246,8 @@ function Prestataires({sheet,missions,projects,stocks,events,fournisseurs,hideFi
   </WithPanel>;
 }
 
-// ══ ATELIER / CHANTIER (module générique) ══
-// Composant modal pour créer un article stock à la terminaison d'une mission
 function ModalStockTerminaison({mission,moduleType,onCancel,onConfirm,saving,stocks,projects,fournisseurs}){
-  // Calcul du coût de revient automatique
+
   const coutMatieres=(getMissionStockItems(mission)||[]).reduce((sum,it)=>{
     const s=(stocks?.rows||[]).find(x=>normRef(x.ref)===normRef(it.ref));
     return sum+(Number(s?.prix)||0)*Number(it.qty||0);
@@ -3423,35 +3344,26 @@ function ModalStockTerminaison({mission,moduleType,onCancel,onConfirm,saving,sto
 
 const EMISSION={type:"",projet:"",description:"",membres:[],stockRef:"",stockQty:"",dateDebut:"",dateFin:"",statut:"planifié",note:"",tags:"",stockItems:"",deps:""};
 
-// Parse les dépendances stockées en JSON dans le champ note
-// Lire les dépendances depuis la colonne dédiée "deps" (nouveau)
-// ou fallback depuis "note" pour les anciennes données non migrées
 function parseDeps(note, depsCol){
-  // Priorité : colonne deps dédiée
+
   if(depsCol){
     try{
       const d=JSON.parse(depsCol);
       if(Array.isArray(d))return{deps:d,noteTexte:note||""};
-      // Format {"deps":[...],"noteTexte":"..."} — copie directe de note
+
       if(d&&Array.isArray(d.deps))return{deps:d.deps,noteTexte:note||""};
     }catch(e){}
   }
-  // Fallback legacy : deps dans note (avant migration)
+
   if(!note)return{deps:[],noteTexte:""};
   try{const o=JSON.parse(note);if(o&&o.deps)return{deps:o.deps,noteTexte:o.noteTexte||""};}catch(e){}
   return{deps:[],noteTexte:note};
 }
-// Sérialiser : deps dans colonne deps, note reste texte libre
+
 function serializeDeps(deps,noteTexte){
   return {depsJSON:deps&&deps.length?JSON.stringify(deps):"",noteTexte:noteTexte||""};
 }
 
-
-// ══════════════════════════════════════════════════════
-// COMPOSANT GANTT — Vue planning par membre
-// ══════════════════════════════════════════════════════
-
-// Composant pour éditer une phase entière (toutes ses opérations groupées)
 function PhaseItem({ph, suiviFab, allLignes}){
   const [editing,setEditing]=useState(false);
   const [editForm,setEditForm]=useState({famille:ph.famille,phase:ph.phase,deadline:ph.deadline||"",nb_unites:ph.nb_unites,type_unite:ph.type_unite});
@@ -3494,7 +3406,7 @@ function PhaseItem({ph, suiviFab, allLignes}){
           for(const op of editOps){
             if(op._delete&&op.id){await suiviFab.remove(op.id);}
             else if(!op._delete&&op.id){
-              // Mettre à jour l'opération existante
+
               const l=ph.ops.find(x=>x.id===op.id);
               if(!l)continue;
               let vals=[];try{vals=[...JSON.parse(l.valeurs||"[]")];}catch(e){}
@@ -3502,7 +3414,7 @@ function PhaseItem({ph, suiviFab, allLignes}){
               else if(newNb<ph.nb_unites){vals=vals.slice(0,newNb);}
               await suiviFab.update(op.id,{...l,famille:editForm.famille,phase:editForm.phase,deadline:editForm.deadline,nb_unites:newNb,type_unite:editForm.type_unite,operation:op.operation,valeurs:JSON.stringify(vals)});
             } else if(!op._delete&&!op.id&&op.operation.trim()){
-              // Nouvelle opération
+
               await suiviFab.add({mission_id:ph.ops[0]?.mission_id||"",famille:editForm.famille,phase:editForm.phase,deadline:editForm.deadline,nb_unites:newNb,type_unite:editForm.type_unite,operation:op.operation,valeurs:JSON.stringify(Array(newNb).fill(0))});
             }
           }
@@ -3535,7 +3447,6 @@ function PhaseItem({ph, suiviFab, allLignes}){
   );
 }
 
-// Sous-composant pour l'édition inline d'une opération
 function OperationItem({l,suiviFab}){
   const [editing,setEditing]=useState(false);
   const [editForm,setEditForm]=useState({famille:l.famille,phase:l.phase,operation:l.operation,nb_unites:Number(l.nb_unites)||10,type_unite:l.type_unite||"num"});
@@ -3582,23 +3493,18 @@ function OperationItem({l,suiviFab}){
   );
 }
 
-// ══════════════════════════════════════════════════════
-// COMPOSANT SUIVI FAB — Grille de production unité par unité
-// ══════════════════════════════════════════════════════
 function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, user, etapes, events}){
   const [onglet,setOnglet]=useState("grille");
   const [saving,setSaving]=useState(false);
   const [templateNom,setTemplateNom]=useState("");
   const [savingTemplate,setSavingTemplate]=useState(false);
-  // Nouvelle phase
+
   const [newPhaseForm,setNewPhaseForm]=useState({famille:"",phase:"",deadline:"",nb_unites:10,type_unite:"num"});
   const [newPhaseOps,setNewPhaseOps]=useState([""]); // liste d'opérations à ajouter
   const npf=(k,v)=>setNewPhaseForm(f=>({...f,[k]:v}));
 
-  // Lignes du suivi fab pour cette mission
   const lignes=(suiviFab?.rows||[]).filter(r=>String(r.mission_id)===String(mission.id));
 
-  // Calcul progression globale
   const progressionGlobale=()=>{
     if(!lignes.length)return 0;
     let total=0,fait=0;
@@ -3611,7 +3517,6 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
     return total>0?Math.round(fait/total*100):0;
   };
 
-  // Générer les labels d'unités
   const getLabels=(nb,type)=>{
     if(type==="alpha"){
       const alpha=["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z","Omega","Delta","Phi","Psi","Sigma","Lambda"];
@@ -3620,7 +3525,6 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
     return Array.from({length:nb},(_,i)=>String(i+1));
   };
 
-  // Grouper lignes par famille puis phase
   const grouped={};
   for(const l of lignes){
     const fam=l.famille||"Sans famille";
@@ -3630,13 +3534,12 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
     grouped[fam][ph].push(l);
   }
 
-  // Cocher/décocher une unité
   async function toggleUnite(ligne,idx){
     const vals=[];try{vals.push(...JSON.parse(ligne.valeurs||"[]"));}catch(e){}
     while(vals.length<Number(ligne.nb_unites))vals.push(0);
     const newVal=vals[idx]===1?0:1;
     vals[idx]=newVal;
-    // Stocker aussi l'historique des coches : [{idx, val, who, when}]
+
     let historique=[];try{historique=JSON.parse(ligne.historique_coches||"[]");}catch(e){}
     const now=new Date();
     const horodatage=now.toISOString().slice(0,16).replace("T"," ");
@@ -3652,7 +3555,6 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
     }
   }
 
-  // Ajouter une opération
   async function addPhase(){
     if(!newPhaseForm.famille.trim()||!newPhaseForm.phase.trim()){alert("Famille et phase obligatoires.");return;}
     const ops=newPhaseOps.map(o=>o.trim()).filter(Boolean);
@@ -3663,7 +3565,7 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
     for(const op of ops){
       await suiviFab.add({mission_id:String(mission.id),famille:newPhaseForm.famille,phase:newPhaseForm.phase,operation:op,nb_unites:nb,type_unite:newPhaseForm.type_unite,deadline:newPhaseForm.deadline||"",valeurs});
     }
-    // Créer étape + événement calendrier si deadline définie
+
     if(newPhaseForm.deadline){
       const titreJalon=`${newPhaseForm.famille} — ${newPhaseForm.phase}`;
       await etapes.add({mission_id:String(mission.id),module:moduleType,titre:titreJalon,responsable:"",dateDebut:TODAY,dateFin:newPhaseForm.deadline,statut:"à faire",note:`fab:${newPhaseForm.famille}|||${newPhaseForm.phase}`});
@@ -3674,19 +3576,18 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
     setSaving(false);
   }
 
-  // Appliquer un template
   async function appliquerTemplate(t){
     let config=[];try{config=JSON.parse(t.config||"[]");}catch(e){}
     setSaving(true);
     for(const item of config){
-      // Nouveau format groupé : {f,p,n,t,o:[operations]}
+
       if(item.o&&Array.isArray(item.o)){
         const nb=item.n||10;
         for(const operation of item.o){
           await suiviFab.add({mission_id:String(mission.id),famille:item.f,phase:item.p,operation,nb_unites:nb,type_unite:item.t||"num",deadline:"",valeurs:JSON.stringify(Array(nb).fill(0))});
         }
       } else {
-        // Ancien format : {famille,phase,operation,nb_unites,type_unite}
+
         const nb=item.nb_unites||10;
         await suiviFab.add({mission_id:String(mission.id),famille:item.famille,phase:item.phase,operation:item.operation,nb_unites:nb,type_unite:item.type_unite||"num",deadline:"",valeurs:JSON.stringify(Array(nb).fill(0))});
       }
@@ -3694,12 +3595,10 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
     setSaving(false);setOnglet("grille");
   }
 
-  // Sauvegarder template depuis config actuelle
   async function sauvegarderTemplate(){
     if(!templateNom.trim()){alert("Donne un nom au template.");return;}
     const nom=templateNom;
-    // Grouper par phase pour réduire la taille (famille/phase/nb/type une seule fois + liste d'opérations)
-    // On NE stocke PAS la deadline (spécifique à chaque mission, pas au modèle)
+
     const phasesMap={};
     for(const l of lignes){
       const k=`${l.famille}|||${l.phase}`;
@@ -3765,7 +3664,7 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
           <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Templates disponibles</div>
           {templatesModule.map(t=>{
             let config=[];try{config=JSON.parse(t.config||"[]");}catch(e){}
-            // Compter les opérations selon le format (groupé par phase ou plat)
+
             const nbOps=config.reduce((acc,item)=>acc+(item.o&&Array.isArray(item.o)?item.o.length:1),0);
             const nbPhases=config.length;
             return(
@@ -3838,7 +3737,7 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
         {lignes.length>0&&<div>
           <div style={{fontSize:12,fontWeight:700,marginBottom:10}}>Phases configurées</div>
           {(()=>{
-            // Grouper par famille+phase
+
             const phases={};
             for(const l of lignes){
               const key=`${l.famille}|||${l.phase}`;
@@ -3866,7 +3765,7 @@ function SuiviFabComponent({mission, suiviFab, templates, moduleType, journal, u
             <div style={{fontSize:13,fontWeight:700,color:"#1C1C1C",borderLeft:"3px solid #CC2222",paddingLeft:8,marginBottom:10}}>{famille}</div>
 
             {Object.entries(phases).map(([phase,ops])=>{
-              // Calculer les unités max pour cette phase (toutes ops ont le même nb)
+
               const maxNb=Math.max(...ops.map(o=>Number(o.nb_unites)||0));
               const labels=getLabels(maxNb,ops[0]?.type_unite||"num");
 
@@ -3945,7 +3844,7 @@ function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMem
   const [granularite,setGranularite]=useState("semaine");
   const [missionDetail,setMissionDetail]=useState(null);
   const [detailOnglet,setDetailOnglet]=useState("fab");
-  // Reset onglet à "fab" quand on ouvre une nouvelle mission
+
   const [etapeForm,setEtapeForm]=useState({titre:"",responsable:"",dateDebut:TODAY,dateFin:"",statut:"à faire",note:""});
   const [showAddEtape,setShowAddEtape]=useState(false);
   const [printModal,setPrintModal]=useState(false);
@@ -3953,8 +3852,6 @@ function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMem
   const ganttScrollRef=React.useRef(null);
   const [savingEtape,setSavingEtape]=useState(false);
 
-  // Centrer le scroll sur aujourd'hui — APRÈS les hooks, AVANT tout return conditionnel
-  // (sinon le nombre de hooks varie entre renders → React #300)
   React.useEffect(()=>{
     if(missionDetail)return; // pas de centrage en vue détail
     const id=setTimeout(()=>{
@@ -3968,17 +3865,15 @@ function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMem
     return()=>clearTimeout(id);
   },[granularite,missionDetail]);
 
-  // Calcul de la fenêtre temporelle
   const toDate=s=>{if(!s)return null;try{return new Date(toISO(s)+"T00:00:00");}catch(e){return null;}};
   const toutesLesMs=[...actives,...terminees];
   const dates=toutesLesMs.flatMap(m=>[toDate(m.dateDebut),toDate(m.dateFin)]).filter(Boolean);
   const today=new Date(TODAY+"T00:00:00");
-  // Fenêtre fixe : 5 semaines avant aujourd'hui → 15 semaines après
+
   const start=new Date(today); start.setDate(start.getDate()-35);
   const startDay=start.getDay()||7; start.setDate(start.getDate()-(startDay-1));
   const end=new Date(today); end.setDate(end.getDate()+105+7);
 
-  // Générer les colonnes selon granularité
   const cols=[];
   const cur=new Date(start);
   while(cur<=end){
@@ -3986,7 +3881,7 @@ function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMem
       const dow=cur.getDay();
       if(dow!==0&&dow!==6) cols.push(new Date(cur)); // skip weekends
     } else {
-      // Semaine : lundi uniquement
+
       if(cur.getDay()===1) cols.push(new Date(cur));
     }
     cur.setDate(cur.getDate()+1);
@@ -4005,27 +3900,21 @@ function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMem
     return Math.max(1,Math.round((e-s)/86400000/totalJours*100));
   };
 
-  // Membres avec missions
   const membresAvecMissions=team.rows.filter(t=>
     toutesLesMs.some(m=>getMembres(m).includes(t.nom))
   );
 
-  // Étapes d'une mission
   const etapesMission=m=>(etapes?.rows||[]).filter(e=>String(e.mission_id)===String(m.id));
 
-  // Aujourd'hui position
   const todayPct=pct(TODAY);
 
-  // Couleur statut étape
   const etapeColor=s=>s==="terminé"?"#2A7A2A":s==="en cours"?"#CC2222":"#7A7A7A";
-
-
 
   if(missionDetail){
     const m=missionDetail;
     const etapes_m=etapesMission(m);
     const nbTerminees=etapes_m.filter(e=>e.statut==="terminé").length;
-    // Progression : suivi fab en priorité, sinon étapes, sinon statut
+
     const lignesFab=(suiviFab?.rows||[]).filter(r=>String(r.mission_id)===String(m.id));
     const avancementFab=(()=>{
       if(!lignesFab.length)return null;
@@ -4109,7 +3998,7 @@ function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMem
                 if(!etapeForm.titre.trim())return;
                 setSavingEtape(true);
                 await etapes.add({...etapeForm,mission_id:String(m.id),module:moduleType});
-                // Ajouter au calendrier si date de fin
+
                 if(etapeForm.dateFin&&events){
                   await events.add({title:`[${moduleType}] ${etapeForm.titre}`,date:etapeForm.dateFin,heure:"",type:"deadline",projet:m.projet||"",note:`etapeId:${m.id}`,dateFin:etapeForm.dateFin});
                 }
@@ -4150,26 +4039,24 @@ function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMem
     );
   }
 
-  // ── Vue Gantt principale ──
   const MEMBRE_H=64;
   const LEFT_W=150;
   const COL_W=granularite==="jour"?44:100;
 
-  // Positionnement en pixels basé sur les colonnes réelles
   const dateToCol=d=>{
     if(!d)return null;
     const dt=toDate(d);
     if(!dt)return null;
     if(granularite==="jour"){
-      // Trouver l'index du jour dans cols
+
       const iso=dt.toISOString().split("T")[0];
       const idx=cols.findIndex(c=>c.toISOString().split("T")[0]===iso);
       if(idx>=0)return idx*COL_W;
-      // Interpoler si le jour est un weekend
+
       const diff=Math.round((dt-cols[0])/86400000);
       return diff*COL_W*5/7; // approximation
     } else {
-      // Semaine: trouver la semaine correspondante
+
       const lundi=new Date(dt);
       lundi.setDate(dt.getDate()-(dt.getDay()||7)+1);
       const lunIso=lundi.toISOString().split("T")[0];
@@ -4178,7 +4065,7 @@ function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMem
         const jourDansSemaine=(dt.getDay()||7)-1; // 0=lun,6=dim
         return idx*COL_W + Math.round(jourDansSemaine/7*COL_W);
       }
-      // Avant ou après la plage
+
       const diffSem=Math.round((lundi-cols[0])/(7*86400000));
       return diffSem*COL_W;
     }
@@ -4194,7 +4081,6 @@ function GanttView({sheet,team,etapes,events,moduleType,actives,terminees,getMem
       :Math.round(diffJours/7*COL_W);
   };
 
-  // Position aujourd'hui en px
   const todayPx=dateToCol(TODAY);
   const totalWidth=cols.length*COL_W;
 
@@ -4421,7 +4307,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
   const [vue,setVue]=useState("liste");
-  // Dépendances chantier dans le panel
+
   const [deps,setDeps]=useState([]); // [{type:"stock"|"commande"|"atelier",ref,qty,id}]
   const [noteTexte,setNoteTexte]=useState("");
   const f=(k,v)=>setForm(x=>({...x,[k]:v}));
@@ -4430,12 +4316,12 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
   function exportPDFMission(m){
     const fab=(suiviFab?.rows||[]).filter(r=>String(r.mission_id)===String(m.id));
     const etapes_m=(etapes?.rows||[]).filter(r=>String(r.mission_id)===String(m.id));
-    // Ne garder que les entrées de journal qui mentionnent cette mission précise
+
     const journalLignes=(journal?.rows||[]).filter(r=>r.texte&&r.texte.includes(`[${m.description}]`)).slice(-50);
-    // Grouper fab
+
     const phases={};
     for(const l of fab){const k=`${l.famille}|||${l.phase}`;if(!phases[k])phases[k]={famille:l.famille,phase:l.phase,deadline:l.deadline||"",ops:[]};phases[k].ops.push(l);}
-    // Calcul progression
+
     let totalFab=0,faitFab=0;
     for(const l of fab){const nb=Number(l.nb_unites)||0;const vals=[];try{vals.push(...JSON.parse(l.valeurs||"[]"));}catch(e){}totalFab+=nb;faitFab+=vals.filter(v=>v===1).length;}
     const pctFab=totalFab>0?Math.round(faitFab/totalFab*100):0;
@@ -4464,11 +4350,11 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
     html+=`<h1>${m.description}</h1>`;
     html+=`<div class="meta">Module : ${moduleType} · Projet : ${m.projet||"—"} · Statut : <strong>${m.statut}</strong><br>`;
     html+=`Membres : ${membres.join(", ")||"—"} · ${fmt(m.dateDebut)} → ${fmt(m.dateFin)}</div>`;
-    // Progression
+
     html+=`<h2>Avancement production — ${pctFab}%</h2>`;
     html+=`<div class="prog-bar"><div class="prog-fill" style="width:${pctFab}%;background:${pctFab===100?"#2A7A2A":pctFab>50?"#CC8800":"#CC2222"};"></div></div>`;
     html+=`<div style="font-size:8pt;color:#7A7A7A;margin-bottom:12px;">${faitFab} / ${totalFab} opérations réalisées</div>`;
-    // Grille suivi fab par phase
+
     if(Object.keys(phases).length>0){
       html+=`<h2>Suivi de production</h2>`;
       for(const [key,ph] of Object.entries(phases)){
@@ -4491,13 +4377,13 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
         html+=`</tbody></table>`;
       }
     }
-    // Étapes et jalons
+
     if(etapes_m.length>0){
       html+=`<h2>Étapes & jalons</h2><table><thead><tr><th>Étape</th><th>Responsable</th><th>Début</th><th>Deadline</th><th>Statut</th></tr></thead><tbody>`;
       etapes_m.forEach(e=>{html+=`<tr><td>${e.titre||"—"}</td><td>${e.responsable||"—"}</td><td>${fmt(e.dateDebut)}</td><td>${fmt(e.dateFin)}</td><td>${e.statut||"—"}</td></tr>`;});
       html+=`</tbody></table>`;
     }
-    // Journal
+
     if(journalLignes.length>0){
       html+=`<h2>Journal (${journalLignes.length} entrées récentes)</h2>`;
       journalLignes.forEach(l=>{html+=`<div class="journal-item"><strong>${fmt(l.date)}</strong> — ${l.texte||""}</div>`;});
@@ -4511,7 +4397,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
   }
 
   function genRapportHebdo(){
-    // ── Helpers semaine ──
+
     const getMonday=d=>{const x=new Date(d+"T00:00:00");x.setDate(x.getDate()-(x.getDay()||7)+1);return x;};
     const isoDate=d=>d.toISOString().split("T")[0];
     const addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x;};
@@ -4525,12 +4411,10 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
     const numSem=d=>{const j=new Date(d.getFullYear(),0,4);const s=new Date(j);s.setDate(j.getDate()-(j.getDay()||7)+1);return Math.ceil((d-s)/(7*86400000))+1;};
     const sPrev=`S${numSem(mondayPrev)}`, sCur=`S${numSem(mondayCur)}`, sNext=`S${numSem(mondayNext)}`;
 
-    // ── Missions atelier actives et récentes ──
     const missions=sheet.rows.filter(m=>m.type==="atelier");
 
-    // ── Analyser les coches via historique_coches ──
     const fabRows=suiviFab?.rows||[];
-    // Pour chaque mission, calculer les coches par semaine
+
     const getMissionStats=m=>{
       const fab=fabRows.filter(r=>String(r.mission_id)===String(m.id));
       let totalCoches=0,cPrev=0,cCur=0,totalOps=0;
@@ -4541,11 +4425,11 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
         const histo=[];try{histo.push(...JSON.parse(l.historique_coches||"[]"));}catch(e){}
         const fait=vals.filter(v=>v===1).length;
         totalCoches+=fait; totalOps+=nb;
-        // Coches de la semaine précédente
+
         cPrev+=histo.filter(h=>inWeek(h.when?.split(" ")[0],mondayPrev,sundayPrev)).length;
-        // Coches de la semaine courante
+
         cCur+=histo.filter(h=>inWeek(h.when?.split(" ")[0],mondayCur,sundayCur)).length;
-        // Stats par phase
+
         const key=`${l.famille}|||${l.phase}`;
         if(!phaseStats[key])phaseStats[key]={famille:l.famille,phase:l.phase,deadline:l.deadline||"",total:0,fait:0,cPrev:0,cCur:0};
         phaseStats[key].total+=nb;
@@ -4557,16 +4441,14 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
       return{totalCoches,cPrev,cCur,totalOps,pct,phases:Object.values(phaseStats)};
     };
 
-    // ── Cadence et projection S+1 ──
     const getCadence=stats=>{
-      // Moyenne des 2 dernières semaines
+
       const avg=Math.round((stats.cPrev+stats.cCur)/2);
       const restant=stats.totalOps-stats.totalCoches;
       const semainesRestantes=avg>0?Math.ceil(restant/avg):null;
       return{avg,restant,semainesRestantes};
     };
 
-    // ── Membres actifs cette semaine ──
     const getMembresActifsSemaine=m=>{
       const fab=fabRows.filter(r=>String(r.mission_id)===String(m.id));
       const membres=new Set();
@@ -4577,24 +4459,21 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
       return [...membres];
     };
 
-    // ── Sélectionner missions pertinentes (actives ou avec activité récente) ──
     const missionsRapport=missions.filter(m=>{
       if(m.statut==="planifié"||m.statut==="en cours")return true;
       if(m.statut==="terminé"){
-        // Garder si terminé cette semaine ou semaine passée
+
         const stats=getMissionStats(m);
         return stats.cCur>0||stats.cPrev>0;
       }
       return false;
     });
 
-    // ── KPIs globaux ──
     let kpiCochesPrev=0,kpiCochesCur=0,kpiTotal=0,kpiFait=0;
     for(const m of missionsRapport){const s=getMissionStats(m);kpiCochesPrev+=s.cPrev;kpiCochesCur+=s.cCur;kpiTotal+=s.totalOps;kpiFait+=s.totalCoches;}
     const kpiPct=kpiTotal>0?Math.round(kpiFait/kpiTotal*100):0;
     const kpiEvol=kpiCochesPrev>0?Math.round((kpiCochesCur-kpiCochesPrev)/kpiCochesPrev*100):null;
 
-    // ── HTML du rapport ──
     let html=`<!DOCTYPE html><html><head><meta charset="utf-8"><style>
       @page{size:A4;margin:15mm 12mm;}
       *{box-sizing:border-box;margin:0;padding:0;}
@@ -4643,7 +4522,6 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
       </div>
     </div>`;
 
-    // KPIs globaux
     const evolColor=kpiEvol===null?"#7A7A7A":kpiEvol>=0?"#2A7A2A":"#CC2222";
     const evolTxt=kpiEvol===null?"—":kpiEvol>=0?`▲ +${kpiEvol}%`:`▼ ${kpiEvol}%`;
     html+=`<div class="kpis">
@@ -4666,7 +4544,6 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
       </div>
     </div>`;
 
-    // ── Sections par semaine ──
     const sections=[
       {label:`${sPrev} — Semaine passée`,mon:mondayPrev,sun:sundayPrev,bg:"#F9F9F9",border:"#DDDDDD",color:"#7A7A7A"},
       {label:`${sCur} — Semaine en cours`,mon:mondayCur,sun:sundayCur,bg:"#FFF5F5",border:"#CC2222",color:"#CC2222"},
@@ -4675,11 +4552,11 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
 
     for(const sec of sections){
       const isNext=sec.mon===mondayNext;
-      // Missions pertinentes pour cette section
+
       const missionsSec=missionsRapport.filter(m=>{
         const stats=getMissionStats(m);
         if(isNext){
-          // S+1 : missions encore actives ou avec deadlines à venir
+
           if(m.statut==="terminé")return false;
           const stats2=getMissionStats(m);
           const hasDeadlineNext=stats2.phases.some(p=>p.deadline&&inWeek(p.deadline,sec.mon,sec.sun));
@@ -4688,7 +4565,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
         } else if(sec.mon===mondayCur){
           return stats.cCur>0||m.statut==="en cours"||m.statut==="planifié";
         } else {
-          // S-1 : missions avec activité la semaine passée
+
           return stats.cPrev>0;
         }
       });
@@ -4712,9 +4589,8 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
         const statutColor=m.statut==="terminé"?"#2A7A2A":m.statut==="en cours"?"#1A5DAB":"#9A9A9A";
         const cochesSection=isNext?0:sec.mon===mondayCur?stats.cCur:stats.cPrev;
 
-        // Phases avec retard
         const phasesRetard=stats.phases.filter(p=>p.deadline&&p.deadline<TODAY&&p.fait<p.total);
-        // Phases deadline S+1
+
         const phasesDeadlineNext=stats.phases.filter(p=>p.deadline&&inWeek(p.deadline,mondayNext,sundayNext));
 
         html+=`<div class="mission-card">
@@ -4729,12 +4605,10 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
           </div>
           <div class="mission-body">`;
 
-        // Membres actifs cette semaine
         if(membresActifs.length&&!isNext){
           html+=`<div style="font-size:7.5pt;color:#7A7A7A;margin-bottom:6px;">👥 Actifs ${sCur} : <strong>${membresActifs.join(", ")}</strong></div>`;
         }
 
-        // Table phases
         if(stats.phases.length>0){
           html+=`<table><thead><tr>
             <th>Phase</th>
@@ -4762,12 +4636,10 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
           html+=`</tbody></table>`;
         }
 
-        // Alertes retard
         if(phasesRetard.length>0){
           html+=`<div class="retard-box">⚠ ${phasesRetard.length} phase${phasesRetard.length>1?"s":""} en retard : ${phasesRetard.map(p=>`${p.phase} (${p.total-p.fait} restantes)`).join(", ")}</div>`;
         }
 
-        // Projection S+1
         if(isNext){
           html+=`<div class="proj-box"><div class="proj-title">🔮 Projection semaine prochaine</div>`;
           if(cadence.avg>0){
@@ -4813,7 +4685,6 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
     setOpen(true);
   }
 
-  // Ajouter/retirer une dépendance
   function addDep(dep){setDeps(d=>[...d.filter(x=>!(x.type===dep.type&&(x.ref||x.id)===(dep.ref||dep.id))),dep]);}
   function removeDep(dep){setDeps(d=>d.filter(x=>!(x.type===dep.type&&(x.ref||x.id)===(dep.ref||dep.id))));}
   function hasDep(dep){return deps.some(x=>x.type===dep.type&&(x.ref||x.id)===(dep.ref||dep.id));}
@@ -4822,10 +4693,11 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
     if(!form.description.trim()){setErr("Description obligatoire.");return;}
     setSaving(true);setErr("");
     try{
-      const noteSerialized=(moduleType==="chantier"||moduleType==="atelier")?serializeDeps(deps,noteTexte):(form.note||"");
+      const serialized=(moduleType==="chantier"||moduleType==="atelier")?serializeDeps(deps,noteTexte):{depsJSON:"",noteTexte:form.note||""};
       const item={...form,stockQty:+form.stockQty||0,
         membres:Array.isArray(form.membres)?form.membres.join(","):form.membres,
-        note:noteSerialized};
+        note:serialized.noteTexte,
+        deps:serialized.depsJSON};
       if(editing){
         await sheet.update(editing,item);
         if(user?.role==="atelier")await logAction(journal,user,`[${item.description}] Modification de la mission`,item.projet||"");
@@ -4833,9 +4705,9 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
         await sheet.add(item);
         if(user?.role==="atelier")await logAction(journal,user,`[${item.description}] Création de la mission`,item.projet||"");
       }
-      // Sync événement calendrier pour chantier
+
       if(moduleType==="chantier"&&events&&form.dateDebut){
-        // Chercher l'événement existant : d'abord par note missionId, puis par ancien titre, puis par nouveau titre
+
         const ancienne=sheet.rows.find(m=>Number(m.id)===Number(editing));
         const ancienTitre=ancienne?.description||"";
         const evExistant=events.rows.find(e=>
@@ -4855,7 +4727,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
 
   async function terminer(m){
     if(!confirm(`Marquer "${m.description}" comme terminé ?`))return;
-    // Proposer la création d'un article stock
+
     const stockForm={
       ref:m.description,
       qty:1,
@@ -4877,7 +4749,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
         } else {
           await stocks.add({ref:sf.ref,cat:sf.cat||"Autre",qty:+sf.qty||1,min:+sf.min||0,unit:sf.unit||"pcs",prix:+sf.prix||0,loc:sf.loc||"",fourn:sf.fourn||"",note:sf.note||"",tags:sf.tags||"",origine:sf.origine||"",prixRevient:+sf.prixRevient||0,projet:sf.projet||"",historique:JSON.stringify([{date:TODAY,type:moduleType,label:`Produit depuis mission : ${m.description}`,projet:m.projet||"",qty:+sf.qty||1,qtyApres:+sf.qty||1}])});
         }
-        // Convertir dépendances atelier → stock dans missions chantier liées
+
         if(moduleType==="atelier"){
           const missionsChantier=sheet.rows.filter(x=>x.type==="chantier"&&x.statut!=="terminé");
           for(const mc of missionsChantier){
@@ -4887,13 +4759,13 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
             if(idx>=0){
               const newDeps=[...deps];
               newDeps[idx]={type:"stock",ref:sf.ref,qty:deps[idx].qty||1};
-              await sheet.update(mc.id,{...mc,note:serializeDeps(newDeps,parsed.noteTexte||"")});
+              const ser=serializeDeps(newDeps,parsed.noteTexte||"");
+              await sheet.update(mc.id,{...mc,note:ser.noteTexte,deps:ser.depsJSON});
             }
           }
         }
       }
 
-      // Déduire les pièces et finaliser — seulement si la mission n'était pas déjà terminée
       if(!dejaTermine){
         const snap3=[...stocks.rows];
         const stockItems2=getMissionStockItems(m);
@@ -4929,7 +4801,6 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
   const membresActifs=team.rows.filter(t=>actives.some(m=>getMembres(m).includes(t.nom)));
   const barColor=(s)=>s==="terminé"?"#2A7A2A":s==="en cours"?"#CC2222":"#AAAAAA";
 
-  // ── Calcul état dépendances chantier ──
   function evalDeps(m){
     if(moduleType!=="chantier"&&moduleType!=="atelier")return[];
     const parsed=parseDeps(m.note,m.deps);
@@ -4957,7 +4828,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
         detail=a?.statut||"Inconnu";
         statut=a?.statut==="terminé"?"ok":"attente";
       }
-      // Urgence combinée : état de la pièce × proximité du chantier
+
       let urgence="info";
       if(statut!=="ok"){
         urgence=jours<=0?"critique":jours<=3?"critique":jours<=5?"urgent":jours<=10?"attention":"info";
@@ -4966,12 +4837,10 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
     });
   }
 
-  // Toutes les alertes actives (deps pas OK)
   const toutesAlertes=(moduleType==="chantier"||moduleType==="atelier")?actives.flatMap(m=>
     evalDeps(m).filter(d=>d.statut!=="ok").map(d=>({...d,mission:m}))
   ):[];
 
-  // Ancienne alerte stock unique (compatibilité)
   const alertesStockSimple=(moduleType==="chantier"||moduleType==="atelier")?actives
     .filter(m=>m.stockRef&&m.stockQty>0&&m.dateDebut&&!parseDeps(m.note,m.deps).deps?.length)
     .map(m=>{
@@ -4987,9 +4856,8 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
   const alertesAll=[...toutesAlertes,...alertesStockSimple];
   const urgColors={critique:{bg:"#FFF0F0",tx:"#CC2222",brd:"#CC2222",lbl:"Critique"},urgent:{bg:"#FFF4EC",tx:"#CC6600",brd:"#CC8800",lbl:"Urgent"},attention:{bg:"#FFFBEC",tx:"#CC8800",brd:"#DDAA00",lbl:"Attention"},info:{bg:"#F2F0ED",tx:"#3A3A3A",brd:"#DDDDDD",lbl:"À prévoir"}};
 
-  // Missions atelier en cours (pour liaison)
   const atelierEnCours=sheet.rows.filter(x=>x.type==="atelier"&&x.statut!=="terminé");
-  // Commandes en cours (pas encore reçues)
+
   const commandesEnCours=(orders?.rows||[]).filter(o=>!isBool(o.recue));
 
   const panel=open&&<SidePanel title={editing?`Modifier la mission`:`Nouvelle mission ${label}`} onClose={()=>{setOpen(false);setEditing(null);}}>
@@ -5050,9 +4918,9 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
               if(!selCmd)return;
               const o=commandesEnCours.find(x=>String(x.id)===String(selCmd));
               if(o){
-                // Calculer la quantité totale de la commande
+
                 const qtyCommande=getLignes(o).reduce((s,l)=>s+(+l.qty||0),0)||(+o.qty||0);
-                // Calculer ce qui est déjà réservé sur cette commande dans toutes les missions
+
                 const dejaReserve=(sheet.rows||[]).reduce((total,m)=>{
                   if(m.statut==="terminé")return total;
                   try{
@@ -5061,7 +4929,7 @@ function MissionModule({moduleType,sheet,projects,team,stocks,events,orders,four
                     return total+(dep?.qty||0);
                   }catch(e){return total;}
                 },0);
-                // Exclure la dépendance déjà liée sur cette mission (si on modifie)
+
                 const depExistante=deps.find(d=>d.type==="commande"&&String(d.id)===String(selCmd));
                 const dejaReserveSansCette=dejaReserve-(depExistante?.qty||0);
                 const disponible=qtyCommande-dejaReserveSansCette;
@@ -5152,7 +5020,6 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`))return;
     <ErrMsg msg={err}/><PanelBtns onCancel={()=>{setOpen(false);setEditing(null);}} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Créer"}/>
   </SidePanel>;
 
-  // Filtrage par projet/tag
   const fActives=actives.filter(m=>{
     if(filterProjet&&m.projet!==filterProjet)return false;
     if(filterTag){const t=(m.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
@@ -5359,7 +5226,6 @@ function Taches({sheet,projects}){
   }
   async function toggle(t){await sheet.update(t.id,{...t,done:!isDone(t)});}
 
-  // Tri : En retard → Urgent → Normal → Faible → Terminées, puis par date
   const urgOrder={critique:0,high:1,med:2,low:3,done:4};
   const sorted=[...sheet.rows].sort((a,b)=>{
     const da=isDone(a), db=isDone(b);
@@ -5424,7 +5290,6 @@ function Taches({sheet,projects}){
   </WithPanel>;
 }
 
-// ══ CALENDRIER ══
 function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
   const [year,setYear]=useState(()=>new Date().getFullYear());
   const [month,setMonth]=useState(()=>new Date().getMonth());
@@ -5467,10 +5332,10 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
       if(editing){
         await sheet.update(editing,form);
       } else {
-        // Créer les occurrences (récurrence hebdo ou événement unique)
+
         const dates=[];
         if(recurrence.active&&recurrence.jusqu&&recurrence.jusqu>form.date){
-          // Générer toutes les dates hebdomadaires jusqu'à la date de fin
+
           let cur=new Date(form.date+"T00:00:00");
           const fin=new Date(recurrence.jusqu+"T00:00:00");
           while(cur<=fin){
@@ -5484,7 +5349,7 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
         for(const d of dates){
           await sheet.add({...form,date:d});
         }
-        // Sync mission chantier uniquement pour la première occurrence
+
         if(form.type==="chantier"&&atelierChantier){
           const existe=atelierChantier.rows.some(m=>
             m.type==="chantier"&&m.description===form.title&&toISO(m.dateDebut)===toISO(form.date)
@@ -5511,13 +5376,11 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
     setOpen(true);
   }
 
-  // Événements d'un jour donné — comparaison robuste multi-format
   const eventsForDay=(day)=>sheet.rows.filter(e=>{
     if(e.date===undefined||e.date===null||e.date==="")return false;
     return toISO(e.date)===day;
   }).sort((a,b)=>(a.heure||"").localeCompare(b.heure||""));
 
-  // ── Vue MOIS ──
   const firstDow=(()=>{let d=new Date(year,month,1).getDay();return d===0?6:d-1;})();
   const dim=new Date(year,month+1,0).getDate();
   const prevDim=new Date(year,month,0).getDate();
@@ -5527,7 +5390,6 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
   for(let d=1;d<=dim;d++)cells.push({day:d,cur:true});
   while(cells.length%7!==0)cells.push({day:cells.length-firstDow-dim+1,cur:false});
 
-  // Détecter si l'événement édité est auto-généré
   const evEdite=editing?sheet.rows.find(e=>Number(e.id)===Number(editing)):null;
   const isAutoEvent=evEdite&&EV_AUTO_TYPES.has(evEdite.type);
   const panel=open&&<SidePanel title={editing?"Modifier l'événement":"Nouvel événement"} onClose={()=>setOpen(false)}>
@@ -5575,7 +5437,7 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
     {/* Bouton Créer CR — uniquement pour les RDV */}
     {editing&&form.type==="rdv"&&<div style={{marginTop:8,paddingTop:8,borderTop:"0.5px solid #EEEEEE"}}>
       <button onClick={()=>{
-        // Capturer toutes les données nécessaires depuis form directement
+
         const evData={id:editing,title:form.title,date:form.date,projet:form.projet||""};
         setCrForm({titre:form.title,date:toISO(form.date)||TODAY,participants:"",contenu:"",actions:[]});
         setCrActionsForm([{texte:"",responsable:"",echeance:""}]);
@@ -5588,7 +5450,6 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
     <PanelBtns onCancel={()=>setOpen(false)} onSave={save} saving={saving} saveLabel={editing?"Mettre à jour":"Enregistrer"}/>
   </SidePanel>;
 
-  // Barre de navigation commune
   const NavBar=()=>(
     <div style={{marginBottom:14}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
@@ -5619,7 +5480,6 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
     </div>
   );
 
-  // Composant événement inline
   const EvChip=({ev,span=1})=>{
     const color=EV_COLORS[ev.type]||"#CC2222"; // fallback rouge HP au lieu de gris
     const isAuto=EV_AUTO_TYPES.has(ev.type);
@@ -5688,11 +5548,11 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
           <div style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#CCCCCC",padding:"4px 0"}}>#</div>
           {["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"].map((d,i)=><div key={i} style={{textAlign:"center",fontSize:11,fontWeight:700,color:"#7A7A7A",padding:"4px 0"}}>{d}</div>)}
           {(()=>{
-            // Regrouper cells par semaine (7 cellules par ligne)
+
             const weeks=[];
             for(let i=0;i<cells.length;i+=7)weeks.push(cells.slice(i,i+7));
             return weeks.map((week,wi)=>{
-              // Trouver la première cellule courante pour le numéro de semaine
+
               const firstCur=week.find(x=>x.cur);
               const weekNum=firstCur?(d=>{const jan4=new Date(d.getFullYear(),0,4);const sw=new Date(jan4);sw.setDate(jan4.getDate()-(jan4.getDay()||7)+1);return Math.ceil((d-sw)/(7*86400000))+1;})(new Date(ds(firstCur.day)+"T00:00:00")):null;
               return(
@@ -5828,14 +5688,10 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
   </WithPanel>;
 }
 
-// ══ ÉQUIPE ══
 const EM={nom:"",role:"",statut:"chantier",loc:"",tel:"",email:"",note:""};
 const AVATARS_BG=["#F2F0ED:#CC2222","#FFF0F0:#CC2222","#F0FFF0:#2A7A2A","#F2F0ED:#3A3A3A","#FFF0F0:#CC2222","#F0FFF0:#2A7A2A"];
 function initials(n){return n.split(" ").map(x=>x[0]||"").join("").slice(0,2).toUpperCase();}
 
-// ══════════════════════════════════════════════════════
-// COMPOSANT IMPORT EXCEL HEURES — Module Équipe
-// ══════════════════════════════════════════════════════
 function ImportExcelHeures({timesheets,projets,team,budgetHeures}){
   const normL=s=>String(s||"").trim().toLowerCase();
   const [uploadState,setUploadState]=useState("idle");
@@ -5893,18 +5749,18 @@ function ImportExcelHeures({timesheets,projets,team,budgetHeures}){
   const confirmerImport=async()=>{
     if(!uploadMembre){alert("Sélectionne le membre concerné.");return;}
     setSaving(true);
-    // Mémoriser le mapping
+
     const mapping={};
     try{const s=localStorage.getItem("hp_projet_mapping");if(s)Object.assign(mapping,JSON.parse(s));}catch(e){}
     for(const[nom,mapped] of Object.entries(matchMap)){if(mapped)mapping[normProjet(nom)]=mapped;}
     try{localStorage.setItem("hp_projet_mapping",JSON.stringify(mapping));}catch(e){}
-    // Supprimer anciens imports même membre/mois
+
     const toDelete=(timesheets?.rows||[]).filter(r=>r.membre===uploadMembre&&r.mois===uploadMois&&r.type==="import");
     for(const r of toDelete)await timesheets.remove(r.id);
-    // Enregistrer
+
     for(const l of parsedLignes){
       const projetMapped=matchMap[l.projet]||l.projet;
-      // Trouver l'ID du projet
+
       const pObj=(projets?.rows||[]).find(p=>normL(p.name)===normL(projetMapped));
       await timesheets.add({membre:uploadMembre,date:l.date,projet:projetMapped,heures:l.heures,type:"import",mois:l.mois,note:l.note,rd:l.rd?"oui":"",projet_id:pObj?String(pObj.id):""});
     }
@@ -5912,7 +5768,6 @@ function ImportExcelHeures({timesheets,projets,team,budgetHeures}){
     setTimeout(()=>{setUploadState("idle");setOpen(false);setParsedLignes([]);},2000);
   };
 
-  // Rapport PDF — par projet : budget assigné vs consommé
   const genRapportHeures=(moisFiltre)=>{
     const tsRows=timesheets?.rows||[];
     const tsFiltre=moisFiltre?tsRows.filter(r=>r.mois===moisFiltre):tsRows;
@@ -5920,17 +5775,15 @@ function ImportExcelHeures({timesheets,projets,team,budgetHeures}){
     const projetsRows=projets?.rows||[];
     const totalGlobal=tsFiltre.reduce((a,t)=>a+Number(t.heures||0),0);
 
-    // Construire la liste des projets avec budget + consommé
-    // Projets avec budget défini
     const projetsAvecBudget=new Set(budgetsRows.map(b=>b.projet_id));
-    // Projets avec heures consommées
+
     const consoParProjetMembre={}; // {projet_id: {membre: h}}
     for(const t of tsFiltre){
       const pid=t.projet_id||"";
       if(!consoParProjetMembre[pid])consoParProjetMembre[pid]={};
       consoParProjetMembre[pid][t.membre]=(consoParProjetMembre[pid][t.membre]||0)+Number(t.heures||0);
     }
-    // Union projets avec budget ou avec heures
+
     const tousProjetIds=[...new Set([...projetsAvecBudget,...Object.keys(consoParProjetMembre)])];
 
     let html=`<!DOCTYPE html><html><head><meta charset="utf-8"><style>
@@ -5961,7 +5814,6 @@ function ImportExcelHeures({timesheets,projets,team,budgetHeures}){
       <div class="t2">${moisFiltre||"Période complète"} · Total consommé : ${Math.round(totalGlobal*10)/10}h · Généré le ${new Date().toLocaleDateString("fr-FR")}</div>
     </div></div>`;
 
-    // ── Par projet ──
     for(const pid of tousProjetIds){
       const projet=projetsRows.find(p=>String(p.id)===pid);
       const nomProjet=projet?.name||(Object.values(consoParProjetMembre[pid]||{}).length?tsFiltre.find(t=>t.projet_id===pid)?.projet:"Projet "+pid)||"—";
@@ -5975,14 +5827,13 @@ function ImportExcelHeures({timesheets,projets,team,budgetHeures}){
       const couleurPct=pct===null?"#7A7A7A":pct>100?"#CC2222":pct>80?"#CC8800":"#2A7A2A";
 
       html+=`<h2>${nomProjet}</h2>`;
-      // KPIs projet
+
       html+=`<div class="kpi-row">
         <div class="kpi"><div class="kpi-val" style="color:#CC2222;">${Math.round(consoTotal*10)/10}h</div><div class="kpi-lbl">Heures consommées</div></div>
         <div class="kpi"><div class="kpi-val" style="color:${budgetTotal>0?"#1A5DAB":"#AAAAAA"};">${budgetTotal>0?budgetTotal+"h":"—"}</div><div class="kpi-lbl">Budget alloué</div></div>
         <div class="kpi"><div class="kpi-val" style="color:${couleurPct};">${pct!==null?pct+"%":"—"}</div><div class="kpi-lbl">Consommé${restant!==null?` · Restant : ${restant}h`:""}</div></div>
       </div>`;
 
-      // Barre progression
       if(pct!==null){
         html+=`<div style="margin-bottom:8px;">
           <div style="height:8px;background:#EEE;border-radius:4px;overflow:hidden;">
@@ -5991,10 +5842,9 @@ function ImportExcelHeures({timesheets,projets,team,budgetHeures}){
         </div>`;
       }
 
-      // Détail par membre
       html+=`<h3>Détail par membre</h3>
       <table><thead><tr><th>Membre</th><th style="text-align:right;">Consommé</th><th style="text-align:right;">Budget</th><th style="text-align:right;">Restant</th><th style="text-align:right;">%</th></tr></thead><tbody>`;
-      // Membres avec budget
+
       const membresBudget=budgets.filter(b=>b.membre);
       const tousLesMemb=[...new Set([...membresBudget.map(b=>b.membre),...Object.keys(consoMembres)])];
       for(const m of tousLesMemb){
@@ -6016,7 +5866,6 @@ function ImportExcelHeures({timesheets,projets,team,budgetHeures}){
     w.document.write(html);w.document.close();setTimeout(()=>{w.focus();w.print();},600);
   };
 
-  // Mois disponibles
   const moisDispo=[...new Set((timesheets?.rows||[]).map(r=>r.mois).filter(Boolean))].sort();
   const [moisRapport,setMoisRapport]=useState("");
   const imports=[...new Set((timesheets?.rows||[]).filter(t=>t.type==="import").map(t=>`${t.membre}|${t.mois}`))];
@@ -6171,7 +6020,6 @@ function Equipes({sheet,journal,timesheets,projets,budgetHeures}){
   </WithPanel>;
 }
 
-// ══ FOURNISSEURS ══
 const EF={nom:"",specialite:"",note:3,contact:"",delai:"",tel:"",adresse:""};
 function Fournisseurs({sheet}){
   const [open,setOpen]=useState(false);
@@ -6252,7 +6100,6 @@ function Fournisseurs({sheet}){
   </WithPanel>;
 }
 
-// ══ STOCKS ══
 const ES={ref:"",cat:"",fourn:"",qty:"",min:"",unit:"pcs",prix:"",loc:"",note:"",tags:"",origine:"",projet:""};
 function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMissions,hideFinances=false}){
   const [filterProjet,setFilterProjet]=useState("");
@@ -6267,7 +6114,6 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
     try{
       const map={};
 
-      // ── Entrées : commandes reçues ──
       for(const o of (orders?.rows||[])){
         if(!isBoolS(o.recue))continue;
         for(const l of getLignes(o)){
@@ -6278,7 +6124,6 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
         }
       }
 
-      // ── Sorties : missions atelier/chantier terminées ──
       for(const m of (atelierChantier?.rows||[])){
         if(m.statut!=="terminé")continue;
         for(const it of getMissionStockItems(m)){
@@ -6289,7 +6134,6 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
         }
       }
 
-      // ── Sorties : prestations terminées ──
       for(const m of (prestMissions?.rows||[])){
         if(m.statut!=="terminé")continue;
         for(const it of getMissionStockItems(m)){
@@ -6300,54 +6144,47 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
         }
       }
 
-      // ── Coût de revient : pour chaque article, trouver les missions qui l'ont PRODUIT ──
-      // Un article est "produit" par une mission si sa ref correspond à la description de la mission
-      // (logique du modal ModalStockTerminaison qui pré-remplit ref = mission.description)
       const coutMap={}; // norm(ref) → {coutTotal, qtyProduite}
 
       for(const m of (atelierChantier?.rows||[])){
         if(m.statut!=="terminé")continue;
         const k=normRef(m.description);
         if(!coutMap[k])coutMap[k]={coutTotal:0,qtyProduite:0};
-        // Coût matières : pièces utilisées × leur prix stock
+
         for(const it of getMissionStockItems(m)){
           if(!it.ref||!it.qty)continue;
           const s=sheet.rows.find(x=>normRef(x.ref)===normRef(it.ref));
           coutMap[k].coutTotal+=(Number(s?.prix)||0)*Number(it.qty);
         }
-        // Pas de coût MO direct pour atelier/chantier (salaires non trackés ici)
+
       }
 
       for(const m of (prestMissions?.rows||[])){
         if(m.statut!=="terminé")continue;
         const k=normRef(m.description);
         if(!coutMap[k])coutMap[k]={coutTotal:0,qtyProduite:0};
-        // Coût matières
+
         for(const it of getMissionStockItems(m)){
           if(!it.ref||!it.qty)continue;
           const s=sheet.rows.find(x=>normRef(x.ref)===normRef(it.ref));
           coutMap[k].coutTotal+=(Number(s?.prix)||0)*Number(it.qty);
         }
-        // Coût MO = prix de la prestation
+
         coutMap[k].coutTotal+=Number(m.prix)||0;
       }
 
-      // ── Mise à jour de chaque article du stock ──
       let updated=0;
       for(const s of sheet.rows){
         const k=normRef(s.ref);
         const changed={};
 
-        // Quantité
         if(map[k]!==undefined){
           const newQty=Math.max(0,map[k].recu-map[k].utilise);
           if(Number(s.qty)!==newQty)changed.qty=newQty;
         }
 
-        // Coût de revient : si cet article a été produit par des missions
         if(coutMap[k]&&coutMap[k].coutTotal>0){
-          // qty produite = ce qui a été ajouté au stock depuis des missions
-          // On prend la qty actuelle corrigée comme base, sinon qty existante
+
           const qtyRef=changed.qty!==undefined?changed.qty:Number(s.qty);
           if(qtyRef>0){
             const newPrixRevient=Math.round((coutMap[k].coutTotal/qtyRef)*100)/100;
@@ -6370,8 +6207,6 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
     setDiagRunning(true);
     const incoherences=[];
 
-    // Pour chaque article en stock, calculer le prix moyen pondéré théorique
-    // depuis les commandes reçues, et comparer avec le prix actuel
     for(const s of sheet.rows){
       if(!s.ref)continue;
       const commandesRef=(orders?.rows||[]).filter(o=>
@@ -6380,7 +6215,6 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
       );
       if(!commandesRef.length)continue;
 
-      // Calculer PMP théorique depuis toutes les commandes reçues
       let totalValeur=0; let totalQty=0;
       for(const o of commandesRef){
         const ligne=getLignes(o).find(l=>normRef(l.article)===normRef(s.ref));
@@ -6391,7 +6225,6 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
       const pmpTheorique=totalQty>0?Math.round(totalValeur/totalQty*100)/100:null;
       const prixActuel=Number(s.prix)||0;
 
-      // Incohérence prix : écart > 1% entre PMP théorique et prix stock
       if(pmpTheorique!==null&&Math.abs(pmpTheorique-prixActuel)>Math.max(prixActuel*0.01,0.01)){
         incoherences.push({
           type:"prix",
@@ -6403,14 +6236,12 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
         });
       }
 
-      // Incohérence quantité : qty stock vs somme des réceptions - utilisations
       const qtyRecues=commandesRef.reduce((sum,o)=>{
         const l=getLignes(o).find(l=>normRef(l.article)===normRef(s.ref));
         return sum+(+l?.qty||0);
       },0);
       const qtyStock=Number(s.qty)||0;
-      // Note: qty stock peut être différente si des articles ont été utilisés (missions)
-      // On signale seulement si qty stock > qty reçues (impossible normalement)
+
       if(qtyStock>qtyRecues+0.01){
         incoherences.push({
           type:"quantite",
@@ -6422,7 +6253,6 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
       }
     }
 
-    // Articles en stock sans aucune commande reçue liée
     for(const s of sheet.rows){
       if(!s.ref)continue;
       const hasCmd=(orders?.rows||[]).some(o=>
@@ -6486,12 +6316,12 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
   const [detailStock,setDetailStock]=useState(null); // ref de l'article sélectionné
   const filteredStock=sheet.rows.filter(s=>{
     if(filterProjet){
-      // Méthode 1 : tags communs entre le stock et le projet
+
       const sTags=(s.tags||"").split(",").map(x=>x.trim()).filter(Boolean);
       const projRow=(projects?.rows||[]).find(p=>p.name===filterProjet);
       const projTags=(projRow?.tags||"").split(",").map(x=>x.trim()).filter(Boolean);
       const hasTagMatch=projTags.length>0&&sTags.some(st=>projTags.includes(st));
-      // Méthode 2 : au moins une commande du projet contient cet article dans ses lignes
+
       const hasOrderMatch=(orders?.rows||[]).some(o=>
         normRef(o.projet)===normRef(filterProjet)&&
         getLignes(o).some(l=>normRef(l.article)===normRef(s.ref))
@@ -6731,12 +6561,6 @@ function Stocks({sheet,fournisseurs,projects,orders,atelierChantier,prestMission
   </WithPanel>;
 }
 
-// ── Fonction centralisée de mise à jour du stock ──
-// stocksSheet : le useSheet("stocks")
-// snap : snapshot des rows AVANT toutes mutations de cette session
-// ref : ref article à modifier
-// delta : +N entrée, -N sortie
-// meta : {type, label, projet, prestataire} pour l'historique
 async function updateStockQty(stocksSheet, snap, ref, delta, meta){
   if(!ref||!delta||delta===0)return;
   const s=snap.find(x=>normRef(x.ref)===normRef(ref));
@@ -6755,7 +6579,6 @@ async function updateStockQty(stocksSheet, snap, ref, delta, meta){
   await stocksSheet.update(s.id,{...s,qty:newQty,historique:JSON.stringify(hist.slice(0,100))});
 }
 
-// ── Vérifier disponibilité stock (avant mutation) ──
 function checkStockDispo(snap, ref, qtyDemandee){
   if(!ref||!qtyDemandee)return{ok:true,dispo:0};
   const s=snap.find(x=>normRef(x.ref)===normRef(ref));
@@ -6765,7 +6588,6 @@ function checkStockDispo(snap, ref, qtyDemandee){
   return{ok:true,dispo};
 }
 
-// Helpers commandes globaux (utilisés par Commandes ET Stocks)
 function getLignes(o){
   if(o.lignes){try{const p=JSON.parse(o.lignes);if(Array.isArray(p)&&p.length)return p;}catch(e){}}
   return [{article:o.article||"",qty:String(o.qty||""),unit:o.unit||"pcs",prix:String(o.prix||""),cat:o.cat||""}];
@@ -6774,7 +6596,6 @@ function totalCommande(o){
   return getLignes(o).reduce((s,l)=>s+(+l.prix||0)*(+l.qty||0),0);
 }
 
-// Ajoute une entrée dans l'historique d'un article stock
 function parseStockHistorique(s){
   if(!s.historique||s.historique===true)return[];
   try{return JSON.parse(s.historique)||[];}catch(e){return[];}
@@ -6787,11 +6608,6 @@ async function addStockHistorique(stocks,ref,entry){
   await stocks.update(s.id,{...s,qty:s.qty,historique:JSON.stringify(hist.slice(0,100))}); // max 100 entrées
 }
 
-// ══ COMMANDES ══
-
-// ═══════════════════════════════════════════════
-// MODULE DEVIS
-// ═══════════════════════════════════════════════
 const EO={ref:"",fourn:"",article:"",qty:"",unit:"pcs",prix:"",cat:"",loc:"",date:TODAY,dateLivraison:"",lieuLivraison:"La Rochelle",projet:"",lignes:"",tags:""};
 const ED={titre:"",fourn:"",projet:"",description:"",lignes:"",prix:"",delai:"",statut:"en attente",date:TODAY,note:"",tags:""};
 const EL={article:"",qty:"",unit:"pcs",prix:"",cat:""};
@@ -6815,7 +6631,6 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter,hideFinances=false}
   const addLigne=()=>setLignesForm(ls=>[...ls,{...EL}]);
   const removeLigne=i=>setLignesForm(ls=>ls.length>1?ls.filter((_,j)=>j!==i):ls);
 
-  // Grouper les devis par titre
   const devisRows=devis?.rows||[];
   const actifs=devisRows.filter(d=>d.statut!=="refusé");
   const archives=devisRows.filter(d=>d.statut==="refusé");
@@ -6848,12 +6663,12 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter,hideFinances=false}
 
   async function accepter(d){
     if(!confirm(`Accepter le devis de "${d.fourn}" et le convertir en commande ?`))return;
-    // Archiver les autres devis du même groupe
+
     for(const other of (devis?.rows||[]).filter(x=>x.titre===d.titre&&x.id!==d.id)){
       await devis.update(other.id,{...other,statut:"refusé"});
     }
     await devis.update(d.id,{...d,statut:"accepté"});
-    // Callback → crée la commande dans Commandes
+
     onAccepter(d,lignesFrom(d));
   }
 
@@ -6862,7 +6677,6 @@ function ModuleDevis({devis,fournisseurs,projects,onAccepter,hideFinances=false}
     return [{article:d.description||"",qty:1,unit:"pcs",prix:d.prix||0,cat:""}];
   }
 
-  // Import IA
   function parseDevisIA(txt){
     const lines=txt.split("\n").map(s=>s.trim()).filter(Boolean);
     const get=(k)=>{const l=lines.find(x=>x.toUpperCase().startsWith(k+":"));return l?l.slice(k.length+1).trim():"";}
@@ -7112,7 +6926,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
   const [editing,setEditing]=useState(null);
   const [saving,setSaving]=useState(false);
   const [err,setErr]=useState("");
-  // ── Import IA (format texte structuré généré par Claude) ──
+
   const [aiOpen,setAiOpen]=useState(false);
   const [aiErr,setAiErr]=useState("");
   const [aiPreview,setAiPreview]=useState(null); // {form, lignes}
@@ -7124,10 +6938,6 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
   const removeLigne=i=>setLignesForm(ls=>ls.length>1?ls.filter((_,j)=>j!==i):ls);
   const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
 
-  // Parse les lignes depuis une commande existante
-
-
-  // Marquer comme reçue
   async function toggleRecue(o){
     const wasRecue=isBool(o.recue);
     const next={...o,recue:!wasRecue};
@@ -7151,19 +6961,17 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
     await sheet.update(o.id,{...o,factureCompta:!isBool(o.factureCompta)});
   }
 
-  // ── Extraction IA depuis texte collé ──
-  // Correspondance approximative entre une catégorie texte et les CATS existantes
   function matchCat(catTexte){
     if(!catTexte)return"";
     const n=s=>s.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
     const nc=n(catTexte);
-    // Match exact
+
     const exact=CATS.find(c=>n(c)===nc);
     if(exact)return exact;
-    // Match partiel — chercher si le texte contient un mot clé de la catégorie
+
     const partial=CATS.find(c=>nc.includes(n(c))||n(c).includes(nc));
     if(partial)return partial;
-    // Mots clés spéciaux
+
     if(nc.includes("isolant")||nc.includes("acous")||nc.includes("phoniq"))return"Matériaux isolants";
     if(nc.includes("etfe")||nc.includes("membrane")||nc.includes("textile"))return"Membranes ETFE";
     if(nc.includes("alum")||nc.includes("profi"))return"Profilés aluminium";
@@ -7178,15 +6986,13 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
     return"Autre";
   }
 
-  // Parser le texte structuré généré par Claude
-  // Format attendu : lignes clé:valeur + blocs ARTICLE répétables
   function parseTexteIA(texte){
     const lines=texte.split("\n").map(l=>l.trim()).filter(Boolean);
     const get=(key)=>{
       const l=lines.find(x=>x.toUpperCase().startsWith(key.toUpperCase()+":"));
       return l?l.slice(key.length+1).trim():"";
     };
-    // Convertir date FR (JJ/MM/AAAA) ou texte en YYYY-MM-DD
+
     const parseDate=(s)=>{
       if(!s)return"";
       if(/^\d{4}-\d{2}-\d{2}$/.test(s))return s;
@@ -7205,7 +7011,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
       projet:get("PROJET"),
       loc:"",cat:"",article:"",qty:"",unit:"pcs",prix:"",lignes:"",
     };
-    // Extraire les blocs ARTICLE
+
     const lignes=[];
     let cur=null;
     for(const line of lines){
@@ -7235,7 +7041,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
 
   async function applyAiPreview(){
     if(!aiPreview)return;
-    // Créer le fournisseur s'il n'existe pas et si l'utilisateur a coché
+
     if(newFourn&&aiPreview.formData.fourn){
       const existe=fournisseurs.rows.some(f=>f.nom.trim().toLowerCase()===aiPreview.formData.fourn.trim().toLowerCase());
       if(!existe){
@@ -7249,7 +7055,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
 
   async function addToStock(ord){
     const lignes=getLignes(ord);
-    // SNAPSHOT avant les updates séquentiels
+
     const snap=[...stocks.rows];
     for(const l of lignes){
       if(!l.article)continue;
@@ -7261,7 +7067,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
           const tagsExist=(existing.tags||"").split(",").filter(Boolean);
           const tagsNew=(ord.tags||"").split(",").filter(Boolean);
           const tagsMerge=[...new Set([...tagsExist,...tagsNew])].join(",");
-          // Prix Moyen Pondéré (PMP)
+
           const qtyExist=Number(existing.qty)||0;
           const prixExist=Number(existing.prix)||0;
           const qtyNouvelle=+l.qty||0;
@@ -7282,8 +7088,6 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
       }
     }
 
-    // ── Q2 : Auto-propager vers les missions liées à cette commande ──
-    // Chercher toutes missions atelier/chantier ayant une dep sur cette commande
     const missionsConcernees=(atelierChantier?.rows||[]).filter(m=>{
       if(m.statut==="terminé")return false;
       try{
@@ -7294,21 +7098,21 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
     });
     for(const mission of missionsConcernees){
       try{
-        // Trouver la dep pour récupérer qty demandée
+
         const parsed=JSON.parse(mission.note.startsWith("{")?mission.note:"{}");
         const deps=parsed.deps||[];
         const dep=deps.find(d=>d.type==="commande"&&String(d.id)===String(ord.id));
         if(!dep)continue;
         const qtyDemandee=dep.qty||1;
-        // Ajouter les articles dans stockItems de la mission
+
         let items=[];
         try{items=mission.stockItems?JSON.parse(mission.stockItems):[];}catch(e){}
         for(const l of lignes){
           if(!l.article)continue;
-          // Ne pas dupliquer si déjà présent
+
           const existIdx=items.findIndex(x=>normRef(x.ref)===normRef(l.article));
           if(existIdx>=0){
-            // Mettre à jour la quantité
+
             items[existIdx]={...items[existIdx],qty:items[existIdx].qty};
           } else {
             items.push({ref:l.article,qty:qtyDemandee});
@@ -7335,7 +7139,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
     if(!form.fourn.trim()){setErr("Fournisseur obligatoire.");return;}
     setSaving(true);setErr("");
     try{
-      // 1ère ligne → champs legacy pour compatibilité
+
       const l0=lignesForm[0];
       const lignesJSON=lignesForm.length>1?JSON.stringify(lignesForm):"";
       const data={...form,
@@ -7346,7 +7150,6 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
       else{await sheet.add({...data,recue:false,factureCompta:false});}
       if(form.dateLivraison){await syncEvenementLivraison({...form,article:l0.article},form.dateLivraison);}
 
-      // ── Sync prix → stock (PMP) si commande reçue modifiée ──
       if(editing&&isBool(form.recue)){
         const ordOriginal=sheet.rows.find(o=>String(o.id)===String(editing));
         const lignes=lignesForm.filter(l=>l.article&&+l.prix>0);
@@ -7359,7 +7162,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
           const qtyStock=Number(stockItem.qty)||0;
           const prixStock=Number(stockItem.prix)||0;
           const qty=+l.qty||0;
-          // Recalculer PMP : retirer l'ancienne valeur, ajouter la nouvelle
+
           const valeurTotale=qtyStock*prixStock;
           const valeurAncienne=qty*ancienPrix;
           const valeurNouvelle=qty*nouveauPrix;
@@ -7373,12 +7176,10 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
     }catch(e){setErr(e.message);}setSaving(false);
   }
 
-  // Règle finances : exclure projets terminés
   const normC=s=>String(s||"").trim().toLowerCase();
   const projTermines=new Set((projects?.rows||[]).filter(p=>p.statut==="terminé").map(p=>normC(p.name)));
   const isProjetTermine=o=>o.projet&&projTermines.has(normC(o.projet));
 
-  // Livraisons en retard — projets non terminés uniquement
   const applyFiltre=o=>{
     if(filterProjet&&normC(o.projet)!==normC(filterProjet))return false;
     if(filterTag){const t=(o.tags||"").split(",").map(x=>x.trim());if(!t.includes(filterTag))return false;}
@@ -7457,7 +7258,7 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
       projects={projects}
       hideFinances={hideFinances}
       onAccepter={async(d,ligs)=>{
-        // Créer la commande depuis le devis accepté
+
         const cmd={...EO,
           ref:`Devis → ${d.titre}`,
           fourn:d.fourn,
@@ -7722,15 +7523,12 @@ function Commandes({sheet,stocks,fournisseurs,projects,events,devis,atelierChant
   </WithPanel>;
 }
 
-// ══ APP ROOT ══
-
-// ══ UTILISATEURS & AUTH ══
 const USERS=[
   {pin:"17", nom:"Admin",              role:"admin",         couleur:"#CC2222"},
   {pin:"99", nom:"Jeffrey Diaz",       role:"ingenieur",     couleur:"#1A5DAB"},
   {pin:"54", nom:"Alexis Neve",        role:"ingenieur",     couleur:"#2A7A2A"},
   {pin:"75", nom:"Chef Projet",        role:"chef_projet",   couleur:"#7A2A7A"},
-  // Membres atelier
+
   {pin:"17", nom:"Léo Menard",         role:"atelier",       couleur:"#CC8800"},
   {pin:"99", nom:"Ivonne Rodriguez",   role:"atelier",       couleur:"#CC8800"},
   {pin:"85", nom:"Coline Marolleau",   role:"atelier",       couleur:"#CC8800"},
@@ -7738,7 +7536,7 @@ const USERS=[
   {pin:"75", nom:"Alexandre Marivint", role:"atelier",       couleur:"#CC8800"},
   {pin:"16", nom:"Cyriac Chaigneau",   role:"atelier",       couleur:"#CC8800"},
 ];
-// Rôles distincts pour l'affichage
+
 const ROLES=[
   {role:"admin",       label:"👑 Admin",          couleur:"#CC2222"},
   {role:"ingenieur",   label:"🔧 Ingénieur",       couleur:"#1A5DAB"},
@@ -7769,7 +7567,7 @@ function LoginScreen({onLogin}){
     if(!email.trim()){setErr("Email requis");return;}
     if(!selectedRole){setErr("Sélectionnez un rôle");return;}
     if(!pin.trim()){setErr("Code PIN requis");return;}
-    // Vérifier que le PIN correspond à un utilisateur DU RÔLE SÉLECTIONNÉ
+
     const u=USERS.find(x=>x.pin===pin.trim()&&x.role===selectedRole);
     if(!u){
       setErr("Code PIN incorrect pour ce rôle");setPin("");
@@ -7874,7 +7672,7 @@ const getPanelsForRole=(role)=>PANELS.filter(p=>p.roles.includes(role));
 
 function App(){
   const [user,setUser]=useState(()=>{
-    // Restaurer session mais vider l'auth GAS (token expiré)
+
     const s=getSession();
     if(s){ /* email restauré au prochain gasGet automatiquement */ }
     return null; // toujours redemander le login au démarrage pour éviter les problèmes d'auth
@@ -7916,7 +7714,6 @@ function AppContent({user,onLogout}){
   const budgetHeures=useSheet("budgetHeures");
   const sheets={projects,tasks,events,team,journal,fournisseurs,stocks,orders,notes,prestataires,prestMissions,atelierChantier,cr};
 
-  // ── Filtrage par rôle ──
   const norm=s=>String(s||"").trim().toLowerCase();
   const mesProjetIds=user.role==="admin"
     ? new Set(projects.rows.map(p=>String(p.id)))
@@ -7941,7 +7738,6 @@ function AppContent({user,onLogout}){
     });
   }
 
-  // Vues filtrées
   const projetsView={...projects,rows:isFullAccess?projects.rows:projects.rows.filter(p=>norm(p.ingenieur)===norm(user.nom))};
   const ordersView={...orders,rows:filterByProjet(orders.rows)};
   const tasksView={...tasks,rows:filterByProjet(tasks.rows)};
@@ -7949,7 +7745,7 @@ function AppContent({user,onLogout}){
   const stocksView={...stocks,rows:filterStock(stocks.rows)};
   const prestMissionsView={...prestMissions,rows:filterByProjet(prestMissions.rows)};
   const atelierChantierView={...atelierChantier,rows:filterByProjet(atelierChantier.rows)};
-  // Alertes CR manquants : RDV passés depuis hier sans CR
+
   const hierISO=(()=>{const d=new Date(TODAY+"T00:00:00");d.setDate(d.getDate()-1);return d.toISOString().split("T")[0];})();
   const rdvSansCR=eventsView.rows.filter(ev=>{
     if(ev.type!=="rdv")return false;
