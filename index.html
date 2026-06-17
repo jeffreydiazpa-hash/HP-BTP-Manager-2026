@@ -8,6 +8,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.23.9/babel.min.js"></script>
+  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0;}
     body{font-family:'DM Sans',system-ui,sans-serif;background:#F2F0ED;color:#1C1C1C;line-height:1.6;}
@@ -43,7 +44,7 @@
 const { useState, useEffect, useCallback } = React;
 
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v3.3.6b";
+const VERSION = "v4.0.5";
 // Fonction de journalisation — appelée après chaque action d'un membre atelier
 async function logAction(journal, user, texte, projet=""){
   if(!journal||!user)return;
@@ -432,7 +433,7 @@ function calcDepensesProjet(p, orders, prestMissions){
 }
 
 // ══ DASHBOARD ══
-function Dashboard({sheets,hideFinances=false}){
+function Dashboard({sheets,hideFinances=false,timesheets,user,team}){
   const {projects,tasks,stocks,orders,events,prestMissions,atelierChantier,journal}=sheets;
   const pending=tasks.rows.filter(t=>!t.done&&t.done!=="TRUE");
   const isDone=t=>t.done===true||t.done==="TRUE";
@@ -1148,6 +1149,36 @@ function Dashboard({sheets,hideFinances=false}){
           }
         </Bd>
 
+        {/* Alertes upload feuilles de temps */}
+        {(()=>{
+          const moisActuel=new Date().toLocaleString("fr-FR",{month:"long"});
+          const moisPrecedent=(()=>{const d=new Date();d.setMonth(d.getMonth()-1);return d.toLocaleString("fr-FR",{month:"long"});})();
+          // J+5 du mois : alerte si on est après le 5
+          const joursEcoules=new Date().getDate();
+          if(joursEcoules<5)return null; // pas encore d'alerte
+          // Membres qui doivent uploader
+          const membresActifs=(team?.rows||[]).filter(t=>t.statut!=="inactif");
+          const tsRows=timesheets?.rows||[];
+          const manquants=membresActifs.filter(m=>{
+            const aUploade=tsRows.some(t=>t.membre===m.nom&&t.mois===moisPrecedent&&t.type==="import");
+            return !aUploade;
+          });
+          if(!manquants.length)return null;
+          return(
+            <Bd style={{borderColor:"#FFCCCC",background:"#FFF8F8"}}>
+              <SecTitle style={{color:"#CC2222"}}>⏰ Feuilles de temps manquantes — {moisPrecedent}</SecTitle>
+              {manquants.map(m=>(
+                <div key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid #FFEEEE"}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:"#CC2222",flexShrink:0}}/>
+                  <div style={{flex:1,fontSize:12,fontWeight:500}}>{m.nom}</div>
+                  <span style={{fontSize:10,padding:"2px 7px",borderRadius:3,background:"#FFF0F0",color:"#CC2222",fontWeight:600,border:"0.5px solid #FFCCCC"}}>Non uploadé</span>
+                </div>
+              ))}
+              <div style={{fontSize:11,color:"#CC8800",marginTop:8}}>→ Chaque membre doit importer sa feuille de temps via Module Projets → projet concerné → ⏱ Suivi heures → Import Excel</div>
+            </Bd>
+          );
+        })()}
+
       </div>
 
       {/* ── Bloc Notes générales ── */}
@@ -1583,7 +1614,416 @@ function ModuleCR({cr, projet, projects, team, tasks, events, onClose}){
     </div>
   );
 }
-function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierChantier,team,hideFinances=false,cr}){
+
+// ══════════════════════════════════════════════════════
+// COMPOSANT SUIVI HEURES PROJET
+// ══════════════════════════════════════════════════════
+
+// Parser Excel heures (format HP)
+function parseExcelHeures(arrayBuffer, moisFiltre=null){
+  const wb=XLSX.read(arrayBuffer,{type:"array"});
+  const mois=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+  const lignes=[];
+  for(const sheetName of wb.SheetNames){
+    if(!mois.includes(sheetName))continue;
+    if(moisFiltre&&sheetName!==moisFiltre)continue; // filtrer par mois si sélectionné
+    const ws=wb.Sheets[sheetName];
+    const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+    for(let i=1;i<rows.length;i++){
+      const row=rows[i];
+      const dateRaw=row[0];const projetRaw=String(row[1]||"").trim();const heuresRaw=row[6];
+      if(!dateRaw||!projetRaw||!heuresRaw)continue;
+      // Convertir date Excel serial
+      let dateStr="";
+      try{
+        const d=new Date((dateRaw-25569)*86400000);
+        dateStr=d.toISOString().split("T")[0];
+      }catch(e){continue;}
+      // Convertir heures (fraction de jour → heures)
+      const heures=Math.round(Number(heuresRaw)*24*100)/100;
+      if(heures<=0)continue;
+      // Séparer projets multiples : "Alcov - Byzance" → ["Alcov","Byzance"]
+      const projets=projetRaw.split(/\s*-\s*(?=[A-Z])/u).map(p=>p.trim()).filter(Boolean);
+      const hParProjet=Math.round(heures/projets.length*100)/100;
+      const rd=String(row[2]||"").includes("R&D")?true:false;
+      const note=String(row[9]||"").trim();
+      for(const projet of projets){
+        if(["FERIE","Fermeture HP","Congé","congé","Maladie","maladie"].some(x=>projet.toLowerCase().startsWith(x.toLowerCase())))continue;
+        lignes.push({date:dateStr,projet,heures:hParProjet,rd,note,mois:sheetName});
+      }
+    }
+  }
+  return lignes;
+}
+
+// Normaliser un nom de projet pour le matching
+function normProjet(s){return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"");}
+
+// Score de similarité entre deux strings normalisés
+function similarite(a,b){
+  const na=normProjet(a),nb=normProjet(b);
+  if(!na||!nb)return 0;
+  if(na===nb)return 1;
+  if(na.includes(nb)||nb.includes(na))return 0.85;
+  // Jaccard sur bigrammes
+  const bigrams=s=>{const bg=new Set();for(let i=0;i<s.length-1;i++)bg.add(s[i]+s[i+1]);return bg;};
+  const ba=bigrams(na),bb=bigrams(nb);
+  let inter=0;for(const g of ba)if(bb.has(g))inter++;
+  return inter/(ba.size+bb.size-inter)||0;
+}
+
+function SuiviHeuresProjet({projet,timesheets,budgetHeures,team,atelierChantier,suiviFab,user,hideFinances}){
+  const normL=s=>String(s||"").trim().toLowerCase();
+  const [onglet,setOnglet]=useState("vue"); // "vue" | "budget" | "upload"
+  const [uploadState,setUploadState]=useState("idle"); // idle | parsing | matching | confirming | done
+  const [parsedLignes,setParsedLignes]=useState([]); // lignes parsées de l'Excel
+  const [matchMap,setMatchMap]=useState({}); // {nomExcel: projet_id ou ""}
+  const [uploadMembre,setUploadMembre]=useState("");
+  const [uploadMois,setUploadMois]=useState("");
+  const [saving,setSaving]=useState(false);
+  const [budgetForm,setBudgetForm]=useState({membre:"",heures:""});
+  const [savingBudget,setSavingBudget]=useState(false);
+
+  // Données filtrées pour ce projet
+  const tsProjet=(timesheets?.rows||[]).filter(r=>String(r.projet_id)===String(projet.id)||normL(r.projet)===normL(projet.name));
+  const budgets=(budgetHeures?.rows||[]).filter(r=>String(r.projet_id)===String(projet.id));
+
+  // Total heures par membre
+  const heuresParMembre={};
+  for(const t of tsProjet){
+    const k=t.membre||"—";
+    heuresParMembre[k]=(heuresParMembre[k]||0)+Number(t.heures||0);
+  }
+  const totalConsomme=Object.values(heuresParMembre).reduce((a,b)=>a+b,0);
+
+  // Budget total
+  const budgetTotal=budgets.reduce((a,b)=>a+Number(b.heures||0),0);
+  const budgetPool=budgets.find(b=>!b.membre)?.heures||0;
+  const pctConsomme=budgetTotal>0?Math.round(totalConsomme/budgetTotal*100):null;
+
+  // Heures estimées atelier (depuis coches) pour ce projet
+  const missionsProjet=(atelierChantier?.rows||[]).filter(m=>normL(m.projet)===normL(projet.name));
+  const heuresEstimAtelier=(()=>{
+    let total=0;
+    for(const m of missionsProjet){
+      const fab=(suiviFab?.rows||[]).filter(r=>String(r.mission_id)===String(m.id));
+      let totalCoches=0,totalOps=0;
+      for(const l of fab){
+        const nb=Number(l.nb_unites)||0;
+        const vals=[];try{vals.push(...JSON.parse(l.valeurs||"[]"));}catch(e){}
+        totalCoches+=vals.filter(v=>v===1).length;totalOps+=nb;
+      }
+      // Si budget renseigné : heures = budget × (coches/total)
+      const budgetMission=budgetTotal>0&&totalOps>0?budgetTotal*(totalCoches/Math.max(totalOps,1)):0;
+      total+=budgetMission;
+    }
+    return Math.round(total*10)/10;
+  })();
+
+  // Upload Excel
+  const handleUpload=async(e)=>{
+    const file=e.target.files[0];
+    if(!file)return;
+    setUploadState("parsing");
+    try{
+      const buf=await file.arrayBuffer();
+      const lignes=parseExcelHeures(buf);
+      if(!lignes.length){alert("Aucune donnée trouvée dans ce fichier.");setUploadState("idle");return;}
+      // Auto-matching
+      const projetsConnus={};
+      // Charger le mapping sauvegardé (localStorage)
+      try{const saved=localStorage.getItem("hp_projet_mapping");if(saved)Object.assign(projetsConnus,JSON.parse(saved));}catch(e){}
+      const newMap={};
+      const nomsExcel=[...new Set(lignes.map(l=>l.projet))];
+      for(const nom of nomsExcel){
+        if(projetsConnus[normProjet(nom)]){newMap[nom]=projetsConnus[normProjet(nom)];continue;}
+        // Chercher le meilleur match
+        let best=null,bestScore=0;
+        // On cherche dans les timesheets existants si ce nom a déjà été mappé
+        const existingTs=tsProjet.find(t=>normProjet(t.projet)===normProjet(nom));
+        if(existingTs){newMap[nom]=existingTs.projet_id||nom;continue;}
+        newMap[nom]=""; // à confirmer manuellement
+      }
+      // Déduire le mois depuis les données
+      const moisData=[...new Set(lignes.map(l=>l.mois))].join(", ");
+      setMatchMap(newMap);
+      setParsedLignes(lignes);
+      setUploadMois(moisData);
+      setUploadState("matching");
+    }catch(err){alert("Erreur de parsing : "+err.message);setUploadState("idle");}
+    e.target.value="";
+  };
+
+  // Confirmer le mapping et enregistrer
+  const confirmerImport=async()=>{
+    if(!uploadMembre){alert("Sélectionne le membre concerné.");return;}
+    setSaving(true);
+    // Sauvegarder le mapping pour la prochaine fois
+    const mapping={};
+    try{const s=localStorage.getItem("hp_projet_mapping");if(s)Object.assign(mapping,JSON.parse(s));}catch(e){}
+    for(const [nom,mapped] of Object.entries(matchMap)){
+      if(mapped)mapping[normProjet(nom)]=mapped;
+    }
+    try{localStorage.setItem("hp_projet_mapping",JSON.stringify(mapping));}catch(e){}
+    // Supprimer les anciens imports du même membre/mois
+    const toDelete=(timesheets?.rows||[]).filter(r=>r.membre===uploadMembre&&r.mois===uploadMois&&r.type==="import");
+    for(const r of toDelete)await timesheets.remove(r.id);
+    // Enregistrer les nouvelles lignes
+    for(const l of parsedLignes){
+      const projetMapped=matchMap[l.projet]||l.projet;
+      // Seulement les lignes du projet courant (ou non mappées)
+      await timesheets.add({membre:uploadMembre,date:l.date,projet:projetMapped,heures:l.heures,type:"import",mois:l.mois,note:l.note,rd:l.rd?"oui":"",projet_id:String(projet.id)});
+    }
+    setSaving(false);setUploadState("done");
+    setTimeout(()=>setUploadState("idle"),2000);
+  };
+
+  // KPIs par mois
+  const parMois={};
+  for(const t of tsProjet){
+    const k=t.mois||t.date?.slice(0,7)||"—";
+    if(!parMois[k])parMois[k]={heures:0,membres:new Set()};
+    parMois[k].heures+=Number(t.heures||0);
+    if(t.membre)parMois[k].membres.add(t.membre);
+  }
+
+  // Rapport PDF pour CE projet
+  const genRapportProjet=()=>{
+    const pct=budgetTotal>0?Math.min(999,Math.round(totalConsomme/budgetTotal*100)):null;
+    const restant=budgetTotal>0?Math.round((budgetTotal-totalConsomme)*10)/10:null;
+    const couleurPct=pct===null?"#7A7A7A":pct>100?"#CC2222":pct>80?"#CC8800":"#2A7A2A";
+    let html=`<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      @page{size:A4;margin:15mm 12mm;}
+      *{box-sizing:border-box;margin:0;padding:0;}
+      body{font-family:Arial,sans-serif;font-size:9pt;color:#1C1C1C;}
+      .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:8px;border-bottom:2px solid #CC2222;}
+      .hdr img{height:32px;}
+      .t1{font-size:13pt;font-weight:700;}.t2{font-size:8pt;color:#7A7A7A;margin-top:2px;}
+      h2{font-size:11pt;font-weight:700;border-left:3px solid #CC2222;padding-left:8px;margin:12px 0 8px;}
+      h3{font-size:9pt;font-weight:700;color:#7A7A7A;margin:10px 0 4px;text-transform:uppercase;}
+      table{border-collapse:collapse;width:100%;font-size:8.5pt;margin-bottom:8px;}
+      th{background:#1C1C1C;color:#fff;padding:4px 8px;text-align:left;}
+      td{padding:4px 8px;border-bottom:0.5px solid #EEE;}
+      .total-row td{font-weight:700;background:#F2F0ED!important;border-top:1px solid #DDD;}
+      .kpis{display:flex;gap:10px;margin-bottom:12px;}
+      .kpi{flex:1;padding:8px 10px;border-radius:6px;border:0.5px solid #EEE;}
+      .kpi-val{font-size:16pt;font-weight:700;}.kpi-lbl{font-size:7.5pt;color:#7A7A7A;margin-top:2px;}
+      .prog-bar{height:8px;background:#EEE;border-radius:4px;overflow:hidden;margin-bottom:12px;}
+      .prog-fill{height:8px;border-radius:4px;}
+      .retard{color:#CC2222;font-weight:700;}.warn{color:#CC8800;font-weight:600;}.ok{color:#2A7A2A;}
+      .footer{font-size:7pt;color:#AAA;margin-top:12px;text-align:right;border-top:0.5px solid #EEE;padding-top:6px;}
+    </style></head><body>
+    <div class="hdr"><img src="${LOGO_B64}"/><div>
+      <div class="t1">Suivi des heures — ${projet.name||"Projet"}</div>
+      <div class="t2">Généré le ${new Date().toLocaleDateString("fr-FR",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
+    </div></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-val" style="color:#CC2222;">${Math.round(totalConsomme*10)/10}h</div><div class="kpi-lbl">Heures consommées</div></div>
+      <div class="kpi"><div class="kpi-val" style="color:${budgetTotal>0?"#1A5DAB":"#AAA"};">${budgetTotal>0?budgetTotal+"h":"—"}</div><div class="kpi-lbl">Budget total</div>${budgetPool>0?`<div style="font-size:7pt;color:#7A7A7A;">dont ${budgetPool}h pool</div>`:""}</div>
+      <div class="kpi"><div class="kpi-val" style="color:${couleurPct};">${pct!==null?pct+"%":"—"}</div><div class="kpi-lbl">Consommé${restant!==null?` · Restant : ${restant}h`:""}</div></div>
+      ${heuresEstimAtelier>0?`<div class="kpi"><div class="kpi-val" style="color:#CC8800;">~${heuresEstimAtelier}h</div><div class="kpi-lbl">Estimation atelier (coches)</div></div>`:""}
+    </div>`;
+    if(pct!==null){html+=`<div class="prog-bar"><div class="prog-fill" style="width:${Math.min(100,pct)}%;background:${couleurPct};"></div></div>`;}
+    // Détail par membre
+    html+=`<h2>Détail par membre</h2>
+    <table><thead><tr><th>Membre</th><th style="text-align:right;">Consommé</th><th style="text-align:right;">Budget</th><th style="text-align:right;">Restant</th><th style="text-align:right;">%</th></tr></thead><tbody>`;
+    for(const[membre,h] of Object.entries(heuresParMembre).sort((a,b)=>b[1]-a[1])){
+      const budget=budgets.find(b=>b.membre===membre);
+      const budM=Number(budget?.heures||0);
+      const pctM=budM>0?Math.round(h/budM*100):null;
+      const restM=budM>0?Math.round((budM-h)*10)/10:null;
+      const cls=pctM===null?"":pctM>100?"retard":pctM>80?"warn":"ok";
+      html+=`<tr><td>${membre}</td><td style="text-align:right;font-weight:700;">${Math.round(h*10)/10}h</td><td style="text-align:right;color:#7A7A7A;">${budM?budM+"h":"—"}</td><td style="text-align:right;" class="${cls}">${restM!==null?restM+"h":"—"}</td><td style="text-align:right;" class="${cls}">${pctM!==null?pctM+"%":"—"}</td></tr>`;
+    }
+    html+=`<tr class="total-row"><td>TOTAL</td><td style="text-align:right;">${Math.round(totalConsomme*10)/10}h</td><td style="text-align:right;">${budgetTotal?budgetTotal+"h":"—"}</td><td style="text-align:right;" class="${pct!==null&&pct>100?"retard":""}">${restant!==null?restant+"h":"—"}</td><td style="text-align:right;">${pct!==null?pct+"%":"—"}</td></tr>`;
+    html+=`</tbody></table>`;
+    // Par mois
+    if(Object.keys(parMois).length>0){
+      html+=`<h2>Évolution mensuelle</h2>
+      <table><thead><tr><th>Mois</th><th style="text-align:right;">Heures</th><th>Membres actifs</th></tr></thead><tbody>`;
+      for(const[mois,data] of Object.entries(parMois).sort((a,b)=>a[0].localeCompare(b[0]))){
+        html+=`<tr><td>${mois}</td><td style="text-align:right;font-weight:700;">${Math.round(data.heures*10)/10}h</td><td style="color:#7A7A7A;">${[...data.membres].join(", ")}</td></tr>`;
+      }
+      html+=`</tbody></table>`;
+    }
+    html+=`<div class="footer">BTP Manager v${VERSION} — High Point Structures</div></body></html>`;
+    const w=window.open("","_blank","width=900,height=700");
+    if(!w){alert("Autorisez les popups.");return;}
+    w.document.write(html);w.document.close();setTimeout(()=>{w.focus();w.print();},600);
+  };
+
+  return(<div>
+    {/* Onglets */}
+    <div style={{display:"flex",gap:0,borderBottom:"2px solid #EEEEEE",marginBottom:16,alignItems:"center"}}>
+      {[["vue","📊 Vue globale"],["budget","💰 Budget"]].map(([id,lbl])=>(
+        <button key={id} onClick={()=>setOnglet(id)} style={{padding:"6px 14px",border:"none",background:"none",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",fontWeight:onglet===id?700:400,color:onglet===id?"#CC2222":"#7A7A7A",borderBottom:onglet===id?"2px solid #CC2222":"2px solid transparent",marginBottom:-2}}>{lbl}</button>
+      ))}
+      <button onClick={()=>genRapportProjet()} style={{marginLeft:"auto",padding:"5px 12px",borderRadius:4,border:"1px solid #1A5DAB",background:"#EBF3FF",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#1A5DAB",fontWeight:600}}>📊 Rapport PDF</button>
+    </div>
+
+    {/* ── Vue globale ── */}
+    {onglet==="vue"&&<div>
+      {/* KPI */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:16}}>
+        <div style={{padding:"12px",background:"#F9F9F9",borderRadius:8,border:"0.5px solid #EEEEEE"}}>
+          <div style={{fontSize:18,fontWeight:700,color:"#CC2222"}}>{Math.round(totalConsomme*10)/10}h</div>
+          <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>Heures consommées (réel)</div>
+          {heuresEstimAtelier>0&&<div style={{fontSize:10,color:"#CC8800",marginTop:2}}>+ ~{heuresEstimAtelier}h atelier (estimé)</div>}
+        </div>
+        <div style={{padding:"12px",background:"#F9F9F9",borderRadius:8,border:"0.5px solid #EEEEEE"}}>
+          <div style={{fontSize:18,fontWeight:700,color:budgetTotal>0?"#1A5DAB":"#AAAAAA"}}>{budgetTotal>0?`${budgetTotal}h`:"—"}</div>
+          <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>Budget total</div>
+          {budgetPool>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:2}}>dont {budgetPool}h pool équipe</div>}
+        </div>
+        <div style={{padding:"12px",background:pctConsomme!==null&&pctConsomme>90?"#FFF0F0":"#F9F9F9",borderRadius:8,border:`0.5px solid ${pctConsomme!==null&&pctConsomme>90?"#FFCCCC":"#EEEEEE"}`}}>
+          <div style={{fontSize:18,fontWeight:700,color:pctConsomme===null?"#AAAAAA":pctConsomme>90?"#CC2222":pctConsomme>70?"#CC8800":"#2A7A2A"}}>{pctConsomme!==null?`${pctConsomme}%`:"—"}</div>
+          <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>Budget consommé</div>
+          {budgetTotal>0&&<div style={{fontSize:10,color:"#7A7A7A",marginTop:2}}>Restant : {Math.round((budgetTotal-totalConsomme)*10)/10}h</div>}
+        </div>
+      </div>
+      {/* Barre progression budget */}
+      {budgetTotal>0&&<div style={{marginBottom:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#7A7A7A",marginBottom:4}}><span>Budget consommé</span><span>{Math.round(totalConsomme*10)/10}h / {budgetTotal}h</span></div>
+        <div style={{height:8,borderRadius:4,background:"#EEEEEE"}}>
+          <div style={{height:"100%",width:Math.min(100,pctConsomme||0)+"%",background:pctConsomme>90?"#CC2222":pctConsomme>70?"#CC8800":"#1A5DAB",borderRadius:4,transition:"width .3s"}}/>
+        </div>
+      </div>}
+      {/* Par membre */}
+      {Object.keys(heuresParMembre).length>0&&<Bd style={{marginBottom:12}}>
+        <SecTitle>Par membre</SecTitle>
+        {Object.entries(heuresParMembre).sort((a,b)=>b[1]-a[1]).map(([membre,h])=>{
+          const budget=budgets.find(b=>b.membre===membre);
+          const pct=budget?Math.min(100,Math.round(h/Number(budget.heures)*100)):null;
+          return(
+            <div key={membre} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",borderBottom:"0.5px solid #EEEEEE"}}>
+              <div style={{flex:1,fontSize:12,fontWeight:500}}>{membre}</div>
+              <div style={{fontSize:12,color:"#1C1C1C",fontWeight:700}}>{Math.round(h*10)/10}h</div>
+              {budget&&<div style={{fontSize:11,color:"#7A7A7A"}}>/ {budget.heures}h</div>}
+              {pct!==null&&<div style={{width:60,height:5,background:"#EEEEEE",borderRadius:3}}><div style={{height:"100%",width:pct+"%",background:pct>90?"#CC2222":"#1A5DAB",borderRadius:3}}/></div>}
+              {pct!==null&&<div style={{fontSize:10,color:pct>90?"#CC2222":"#7A7A7A",minWidth:30}}>{pct}%</div>}
+            </div>
+          );
+        })}
+      </Bd>}
+      {/* Par mois */}
+      {Object.keys(parMois).length>0&&<Bd>
+        <SecTitle>Par mois</SecTitle>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead><tr style={{background:"#F9F9F9"}}>
+            <th style={{padding:"4px 8px",textAlign:"left",fontWeight:700,color:"#3A3A3A",borderBottom:"1px solid #DDD"}}>Mois</th>
+            <th style={{padding:"4px 8px",textAlign:"right",fontWeight:700,color:"#3A3A3A",borderBottom:"1px solid #DDD"}}>Heures</th>
+            <th style={{padding:"4px 8px",textAlign:"left",fontWeight:700,color:"#3A3A3A",borderBottom:"1px solid #DDD"}}>Membres</th>
+          </tr></thead>
+          <tbody>
+            {Object.entries(parMois).sort((a,b)=>a[0].localeCompare(b[0])).map(([mois,data])=>(
+              <tr key={mois} style={{borderBottom:"0.5px solid #EEE"}}>
+                <td style={{padding:"4px 8px"}}>{mois}</td>
+                <td style={{padding:"4px 8px",textAlign:"right",fontWeight:700,color:"#1A5DAB"}}>{Math.round(data.heures*10)/10}h</td>
+                <td style={{padding:"4px 8px",color:"#7A7A7A"}}>{[...data.membres].join(", ")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Bd>}
+      {!Object.keys(heuresParMembre).length&&<div style={{textAlign:"center",padding:24,color:"#7A7A7A",fontSize:13}}>Aucune heure enregistrée. Importez les feuilles de temps via l'onglet "Import Excel".</div>}
+    </div>}
+
+    {/* ── Budget ── */}
+    {onglet==="budget"&&<div>
+      <Bd style={{marginBottom:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <SecTitle>Budget par personne</SecTitle>
+          <div style={{fontSize:11,color:"#7A7A7A"}}>Total : {budgetTotal}h</div>
+        </div>
+        {/* Formulaire ajout budget */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:8,marginBottom:12,alignItems:"end"}}>
+          <FG label="Membre (vide = pool équipe)">
+            <select value={budgetForm.membre} onChange={e=>setBudgetForm(f=>({...f,membre:e.target.value}))} style={{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #DDD",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>
+              <option value="">— Pool équipe (non assigné) —</option>
+              {(team?.rows||[]).filter(t=>t.statut!=="inactif").map(t=><option key={t.id} value={t.nom}>{t.nom}</option>)}
+            </select>
+          </FG>
+          <FG label="Heures budgétées"><Inp type="number" value={budgetForm.heures} onChange={e=>setBudgetForm(f=>({...f,heures:e.target.value}))} placeholder="Ex: 80" min="0"/></FG>
+          <button disabled={savingBudget||!budgetForm.heures} onClick={async()=>{
+            setSavingBudget(true);
+            // Vérifier si déjà un budget pour ce membre
+            const existing=budgets.find(b=>(b.membre||"")===(budgetForm.membre||""));
+            if(existing){await budgetHeures.update(existing.id,{...existing,heures:Number(budgetForm.heures)});}
+            else{await budgetHeures.add({projet_id:String(projet.id),membre:budgetForm.membre,heures:Number(budgetForm.heures)});}
+            setBudgetForm({membre:"",heures:""});setSavingBudget(false);
+          }} style={{padding:"7px 14px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>{savingBudget?"...":"+ Ajouter"}</button>
+        </div>
+        {budgets.map(b=>(
+          <div key={b.id} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",borderBottom:"0.5px solid #EEE"}}>
+            <div style={{flex:1,fontSize:12}}>{b.membre||<span style={{color:"#7A7A7A",fontStyle:"italic"}}>Pool équipe</span>}</div>
+            <div style={{fontSize:13,fontWeight:700,color:"#1A5DAB"}}>{b.heures}h</div>
+            <button onClick={async()=>{if(confirm("Supprimer ce budget ?"))await budgetHeures.remove(b.id);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#CCCCCC"}}>✕</button>
+          </div>
+        ))}
+        {!budgets.length&&<div style={{fontSize:12,color:"#AAAAAA",fontStyle:"italic"}}>Aucun budget défini.</div>}
+      </Bd>
+    </div>}
+
+    {/* ── Import Excel ── */}
+    {onglet==="upload"&&<div>
+      {uploadState==="idle"&&<div>
+        <div style={{background:"#F0F4FF",border:"0.5px solid #C0D4FF",borderRadius:8,padding:"12px",marginBottom:12}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#1A5DAB",marginBottom:6}}>Import de feuille de temps Excel</div>
+          <div style={{fontSize:11,color:"#3A3A3A",marginBottom:10}}>Format attendu : fichier HEURES_GLOBALES_AAAA_XX.xlsx (même structure que le fichier HP). Les heures seront automatiquement réparties si plusieurs projets sont indiqués le même jour.</div>
+          <FG label="Membre concerné">
+            <select value={uploadMembre} onChange={e=>setUploadMembre(e.target.value)} style={{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #DDD",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>
+              <option value="">— Sélectionner —</option>
+              {(team?.rows||[]).filter(t=>t.statut!=="inactif").map(t=><option key={t.id} value={t.nom}>{t.nom}</option>)}
+            </select>
+          </FG>
+          <label style={{display:"block",marginTop:10}}>
+            <div style={{padding:"10px 16px",borderRadius:6,border:"2px dashed #1A5DAB",background:"#EBF3FF",cursor:"pointer",textAlign:"center",fontSize:12,color:"#1A5DAB",fontWeight:600}}>
+              📥 Cliquer pour uploader le fichier .xlsx
+            </div>
+            <input type="file" accept=".xlsx" onChange={handleUpload} style={{display:"none"}}/>
+          </label>
+        </div>
+        {/* Historique imports */}
+        {(()=>{const imports=[...new Set(tsProjet.filter(t=>t.type==="import").map(t=>`${t.membre}|${t.mois}`))];
+          return imports.length>0&&<Bd><SecTitle>Imports précédents</SecTitle>
+            {imports.map(k=>{const[m,mo]=k.split("|");const cnt=tsProjet.filter(t=>t.membre===m&&t.mois===mo&&t.type==="import").length;
+              return<div key={k} style={{fontSize:11,padding:"4px 0",borderBottom:"0.5px solid #EEE",color:"#7A7A7A"}}>{m} — {mo} — {cnt} entrée{cnt>1?"s":""}</div>;})}
+          </Bd>;
+        })()}
+      </div>}
+
+      {uploadState==="parsing"&&<div style={{textAlign:"center",padding:24,color:"#7A7A7A"}}>⏳ Analyse du fichier...</div>}
+
+      {uploadState==="matching"&&<div>
+        <div style={{background:"#FFF8EC",border:"0.5px solid #FFD580",borderRadius:8,padding:"12px",marginBottom:12}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#CC8800",marginBottom:4}}>Vérification du matching projets</div>
+          <div style={{fontSize:11,color:"#3A3A3A"}}>{parsedLignes.length} entrées parsées pour {uploadMembre||"?"} — {uploadMois}</div>
+        </div>
+        {/* Table de matching */}
+        <Bd style={{marginBottom:12}}>
+          <SecTitle>Correspondance des noms de projets</SecTitle>
+          {Object.keys(matchMap).map(nom=>(
+            <div key={nom} style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:8,alignItems:"center",padding:"6px 0",borderBottom:"0.5px solid #EEE"}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#1C1C1C"}}>{nom}</div>
+              <div style={{color:"#AAAAAA",fontSize:12}}>→</div>
+              <Inp value={matchMap[nom]} onChange={e=>setMatchMap(m=>({...m,[nom]:e.target.value}))} placeholder="Nom exact du projet BTP Manager" style={{fontSize:11}}/>
+            </div>
+          ))}
+        </Bd>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <button onClick={()=>{setUploadState("idle");setParsedLignes([]);}} style={{padding:"7px 14px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
+          <button disabled={saving} onClick={confirmerImport} style={{padding:"7px 16px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>{saving?"...":"✓ Confirmer et importer"}</button>
+        </div>
+      </div>}
+
+      {uploadState==="done"&&<div style={{textAlign:"center",padding:24}}>
+        <div style={{fontSize:16,color:"#2A7A2A",fontWeight:700,marginBottom:8}}>✓ Import réussi</div>
+        <div style={{fontSize:12,color:"#7A7A7A"}}>{parsedLignes.length} entrées importées pour {uploadMembre}</div>
+      </div>}
+    </div>}
+  </div>);
+}
+function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierChantier,team,hideFinances=false,cr,timesheets,budgetHeures,user,suiviFab}){
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(EP);
   const [editing,setEditing]=useState(null);
@@ -1595,7 +2035,7 @@ function Projets({sheet,notes,tasks,orders,stocks,events,prestMissions,atelierCh
   const [showHistorique,setShowHistorique]=useState(false);
   const [editingOrder,setEditingOrder]=useState(null);
   const [orderForm,setOrderForm]=useState({});
-  const [ongletDetail,setOngletDetail]=useState("infos"); // "infos" | "cr" | "intervenants"
+  const [ongletDetail,setOngletDetail]=useState("infos"); // "infos" | "cr" | "intervenants" | "heures"
   // Intervenants
   const [intervenants,setIntervenants]=useState([]);
   const [showAddIntervenant,setShowAddIntervenant]=useState(false);
@@ -2048,7 +2488,7 @@ ${sections}
 
         {/* ── Onglets Intervenants + CR ── */}
         <div style={{display:"flex",gap:0,borderBottom:"2px solid #EEEEEE",marginBottom:16}}>
-          {[["infos","📋 Modules"],["intervenants","👥 Intervenants"],["cr","📝 CR"]].map(([id,lbl])=>(
+          {[["infos","📋 Modules"],["intervenants","👥 Intervenants"],["cr","📝 CR"],["heures","⏱ Suivi heures"]].map(([id,lbl])=>(
             <button key={id} onClick={()=>setOngletDetail(id)} style={{padding:"7px 16px",border:"none",background:"none",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",fontWeight:ongletDetail===id?700:400,color:ongletDetail===id?"#CC2222":"#7A7A7A",borderBottom:ongletDetail===id?"2px solid #CC2222":"2px solid transparent",marginBottom:-2}}>{lbl}</button>
           ))}
         </div>
@@ -2132,6 +2572,18 @@ ${sections}
         {ongletDetail==="cr"&&<div style={{marginBottom:16}}>
           <ModuleCR cr={cr} projet={p} projects={sheet} team={team} tasks={tasks} events={events}/>
         </div>}
+
+        {/* ── Onglet Suivi heures ── */}
+        {ongletDetail==="heures"&&<SuiviHeuresProjet
+          projet={p}
+          timesheets={timesheets}
+          budgetHeures={budgetHeures}
+          team={team}
+          atelierChantier={atelierChantier}
+          suiviFab={suiviFab||{rows:[]}}
+          user={user}
+          hideFinances={hideFinances}
+        />}
 
         {/* ── Onglet Modules (existant) ── */}
         {ongletDetail==="infos"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -5380,7 +5832,278 @@ function Calendrier({sheet,projects,atelierChantier,cr,tasks}){
 const EM={nom:"",role:"",statut:"chantier",loc:"",tel:"",email:"",note:""};
 const AVATARS_BG=["#F2F0ED:#CC2222","#FFF0F0:#CC2222","#F0FFF0:#2A7A2A","#F2F0ED:#3A3A3A","#FFF0F0:#CC2222","#F0FFF0:#2A7A2A"];
 function initials(n){return n.split(" ").map(x=>x[0]||"").join("").slice(0,2).toUpperCase();}
-function Equipes({sheet,journal}){
+
+// ══════════════════════════════════════════════════════
+// COMPOSANT IMPORT EXCEL HEURES — Module Équipe
+// ══════════════════════════════════════════════════════
+function ImportExcelHeures({timesheets,projets,team,budgetHeures}){
+  const normL=s=>String(s||"").trim().toLowerCase();
+  const [uploadState,setUploadState]=useState("idle");
+  const [parsedLignes,setParsedLignes]=useState([]);
+  const [matchMap,setMatchMap]=useState({});
+  const [uploadMembre,setUploadMembre]=useState("");
+  const [uploadMois,setUploadMois]=useState("");
+  const [moisSelectionne,setMoisSelectionne]=useState(""); // mois choisi avant upload
+  const [moisDispoFichier,setMoisDispoFichier]=useState([]); // mois dans le fichier
+  const [fichierBuffer,setFichierBuffer]=useState(null); // buffer en attente de mois
+  const [saving,setSaving]=useState(false);
+  const [open,setOpen]=useState(false);
+
+  const handleUpload=async(e)=>{
+    const file=e.target.files[0];if(!file)return;
+    setUploadState("parsing");
+    try{
+      const buf=await file.arrayBuffer();
+      const MOIS_FR=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+      const wb2=XLSX.read(buf,{type:"array"});
+      const dispo=wb2.SheetNames.filter(s=>MOIS_FR.includes(s));
+      if(!dispo.length){alert("Aucun onglet de mois trouvé.");setUploadState("idle");return;}
+      setFichierBuffer(buf);
+      setMoisDispoFichier(dispo);
+      setMoisSelectionne(dispo[dispo.length-1]);
+      setUploadState("chooseMois");
+    }catch(err){alert("Erreur de lecture : "+err.message);setUploadState("idle");}
+    e.target.value="";
+  };
+
+  const lancerParsing=async()=>{
+    if(!moisSelectionne||!fichierBuffer)return;
+    setUploadState("parsing");
+    try{
+      const lignes=parseExcelHeures(fichierBuffer,moisSelectionne);
+      if(!lignes.length){alert("Aucune donnée pour "+moisSelectionne+".");setUploadState("idle");return;}
+      const mapping={};
+      try{const s=localStorage.getItem("hp_projet_mapping");if(s)Object.assign(mapping,JSON.parse(s));}catch(e){}
+      const nomsExcel=[...new Set(lignes.map(l=>l.projet))];
+      const newMap={};
+      for(const nom of nomsExcel){
+        if(mapping[normProjet(nom)]){newMap[nom]=mapping[normProjet(nom)];continue;}
+        let best="",bestScore=0;
+        for(const p of (projets?.rows||[])){
+          const score=similarite(nom,p.name||"");
+          if(score>bestScore&&score>0.5){bestScore=score;best=p.name;}
+        }
+        newMap[nom]=best;
+      }
+      setMatchMap(newMap);setParsedLignes(lignes);setUploadMois(moisSelectionne);
+      setUploadState("matching");
+    }catch(err){alert("Erreur parsing : "+err.message);setUploadState("idle");}
+  };
+
+  const confirmerImport=async()=>{
+    if(!uploadMembre){alert("Sélectionne le membre concerné.");return;}
+    setSaving(true);
+    // Mémoriser le mapping
+    const mapping={};
+    try{const s=localStorage.getItem("hp_projet_mapping");if(s)Object.assign(mapping,JSON.parse(s));}catch(e){}
+    for(const[nom,mapped] of Object.entries(matchMap)){if(mapped)mapping[normProjet(nom)]=mapped;}
+    try{localStorage.setItem("hp_projet_mapping",JSON.stringify(mapping));}catch(e){}
+    // Supprimer anciens imports même membre/mois
+    const toDelete=(timesheets?.rows||[]).filter(r=>r.membre===uploadMembre&&r.mois===uploadMois&&r.type==="import");
+    for(const r of toDelete)await timesheets.remove(r.id);
+    // Enregistrer
+    for(const l of parsedLignes){
+      const projetMapped=matchMap[l.projet]||l.projet;
+      // Trouver l'ID du projet
+      const pObj=(projets?.rows||[]).find(p=>normL(p.name)===normL(projetMapped));
+      await timesheets.add({membre:uploadMembre,date:l.date,projet:projetMapped,heures:l.heures,type:"import",mois:l.mois,note:l.note,rd:l.rd?"oui":"",projet_id:pObj?String(pObj.id):""});
+    }
+    setSaving(false);setUploadState("done");
+    setTimeout(()=>{setUploadState("idle");setOpen(false);setParsedLignes([]);},2000);
+  };
+
+  // Rapport PDF — par projet : budget assigné vs consommé
+  const genRapportHeures=(moisFiltre)=>{
+    const tsRows=timesheets?.rows||[];
+    const tsFiltre=moisFiltre?tsRows.filter(r=>r.mois===moisFiltre):tsRows;
+    const budgetsRows=budgetHeures?.rows||[];
+    const projetsRows=projets?.rows||[];
+    const totalGlobal=tsFiltre.reduce((a,t)=>a+Number(t.heures||0),0);
+
+    // Construire la liste des projets avec budget + consommé
+    // Projets avec budget défini
+    const projetsAvecBudget=new Set(budgetsRows.map(b=>b.projet_id));
+    // Projets avec heures consommées
+    const consoParProjetMembre={}; // {projet_id: {membre: h}}
+    for(const t of tsFiltre){
+      const pid=t.projet_id||"";
+      if(!consoParProjetMembre[pid])consoParProjetMembre[pid]={};
+      consoParProjetMembre[pid][t.membre]=(consoParProjetMembre[pid][t.membre]||0)+Number(t.heures||0);
+    }
+    // Union projets avec budget ou avec heures
+    const tousProjetIds=[...new Set([...projetsAvecBudget,...Object.keys(consoParProjetMembre)])];
+
+    let html=`<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      @page{size:A4;margin:15mm 12mm;}
+      *{box-sizing:border-box;margin:0;padding:0;}
+      body{font-family:Arial,sans-serif;font-size:9pt;color:#1C1C1C;}
+      .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:8px;border-bottom:2px solid #CC2222;}
+      .hdr img{height:32px;}
+      .t1{font-size:13pt;font-weight:700;}.t2{font-size:8pt;color:#7A7A7A;margin-top:2px;}
+      h2{font-size:11pt;font-weight:700;border-left:3px solid #CC2222;padding-left:8px;margin:14px 0 8px;}
+      h3{font-size:9pt;font-weight:700;color:#7A7A7A;margin:10px 0 4px;text-transform:uppercase;letter-spacing:.03em;}
+      table{border-collapse:collapse;width:100%;font-size:8.5pt;margin-bottom:6px;}
+      th{background:#1C1C1C;color:#fff;padding:4px 8px;text-align:left;}
+      td{padding:4px 8px;border-bottom:0.5px solid #EEE;}
+      .prog{height:6px;background:#EEE;border-radius:3px;display:inline-block;width:60px;vertical-align:middle;}
+      .prog-fill{height:6px;border-radius:3px;}
+      .retard{color:#CC2222;font-weight:700;}
+      .ok{color:#2A7A2A;}
+      .warn{color:#CC8800;}
+      .total-row td{font-weight:700;background:#F2F0ED!important;border-top:1px solid #DDD;}
+      .kpi-row{display:flex;gap:12px;margin-bottom:12px;}
+      .kpi{flex:1;padding:8px 10px;border-radius:6px;border:0.5px solid #EEE;}
+      .kpi-val{font-size:16pt;font-weight:700;}.kpi-lbl{font-size:7.5pt;color:#7A7A7A;}
+      .footer{font-size:7pt;color:#AAA;margin-top:12px;text-align:right;border-top:0.5px solid #EEE;padding-top:6px;}
+    </style></head><body>
+    <div class="hdr"><img src="${LOGO_B64}"/><div>
+      <div class="t1">Rapport heures de travail — High Point Structures</div>
+      <div class="t2">${moisFiltre||"Période complète"} · Total consommé : ${Math.round(totalGlobal*10)/10}h · Généré le ${new Date().toLocaleDateString("fr-FR")}</div>
+    </div></div>`;
+
+    // ── Par projet ──
+    for(const pid of tousProjetIds){
+      const projet=projetsRows.find(p=>String(p.id)===pid);
+      const nomProjet=projet?.name||(Object.values(consoParProjetMembre[pid]||{}).length?tsFiltre.find(t=>t.projet_id===pid)?.projet:"Projet "+pid)||"—";
+      const budgets=budgetsRows.filter(b=>b.projet_id===pid);
+      const budgetTotal=budgets.reduce((a,b)=>a+Number(b.heures||0),0);
+      const budgetPool=budgets.find(b=>!b.membre)?.heures||0;
+      const consoMembres=consoParProjetMembre[pid]||{};
+      const consoTotal=Object.values(consoMembres).reduce((a,b)=>a+b,0);
+      const pct=budgetTotal>0?Math.min(999,Math.round(consoTotal/budgetTotal*100)):null;
+      const restant=budgetTotal>0?Math.round((budgetTotal-consoTotal)*10)/10:null;
+      const couleurPct=pct===null?"#7A7A7A":pct>100?"#CC2222":pct>80?"#CC8800":"#2A7A2A";
+
+      html+=`<h2>${nomProjet}</h2>`;
+      // KPIs projet
+      html+=`<div class="kpi-row">
+        <div class="kpi"><div class="kpi-val" style="color:#CC2222;">${Math.round(consoTotal*10)/10}h</div><div class="kpi-lbl">Heures consommées</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:${budgetTotal>0?"#1A5DAB":"#AAAAAA"};">${budgetTotal>0?budgetTotal+"h":"—"}</div><div class="kpi-lbl">Budget alloué</div></div>
+        <div class="kpi"><div class="kpi-val" style="color:${couleurPct};">${pct!==null?pct+"%":"—"}</div><div class="kpi-lbl">Consommé${restant!==null?` · Restant : ${restant}h`:""}</div></div>
+      </div>`;
+
+      // Barre progression
+      if(pct!==null){
+        html+=`<div style="margin-bottom:8px;">
+          <div style="height:8px;background:#EEE;border-radius:4px;overflow:hidden;">
+            <div style="height:8px;width:${Math.min(100,pct)}%;background:${couleurPct};border-radius:4px;"></div>
+          </div>
+        </div>`;
+      }
+
+      // Détail par membre
+      html+=`<h3>Détail par membre</h3>
+      <table><thead><tr><th>Membre</th><th style="text-align:right;">Consommé</th><th style="text-align:right;">Budget</th><th style="text-align:right;">Restant</th><th style="text-align:right;">%</th></tr></thead><tbody>`;
+      // Membres avec budget
+      const membresBudget=budgets.filter(b=>b.membre);
+      const tousLesMemb=[...new Set([...membresBudget.map(b=>b.membre),...Object.keys(consoMembres)])];
+      for(const m of tousLesMemb){
+        const budM=Number(budgets.find(b=>b.membre===m)?.heures||0);
+        const consoM=Math.round((consoMembres[m]||0)*10)/10;
+        const pctM=budM>0?Math.round(consoM/budM*100):null;
+        const restM=budM>0?Math.round((budM-consoM)*10)/10:null;
+        const cls=pctM===null?"":pctM>100?"retard":pctM>80?"warn":"ok";
+        html+=`<tr><td>${m}</td><td style="text-align:right;font-weight:700;">${consoM}h</td><td style="text-align:right;color:#7A7A7A;">${budM?budM+"h":"—"}</td><td style="text-align:right;" class="${cls}">${restM!==null?restM+"h":"—"}</td><td style="text-align:right;" class="${cls}">${pctM!==null?pctM+"%":"—"}</td></tr>`;
+      }
+      if(budgetPool>0){html+=`<tr style="color:#7A7A7A;font-style:italic;"><td>Pool équipe (non assigné)</td><td></td><td style="text-align:right;">${budgetPool}h</td><td></td><td></td></tr>`;}
+      html+=`<tr class="total-row"><td>TOTAL</td><td style="text-align:right;">${Math.round(consoTotal*10)/10}h</td><td style="text-align:right;">${budgetTotal?budgetTotal+"h":"—"}</td><td style="text-align:right;" class="${pct!==null&&pct>100?"retard":""}">${restant!==null?restant+"h":"—"}</td><td style="text-align:right;">${pct!==null?pct+"%":"—"}</td></tr>`;
+      html+=`</tbody></table>`;
+    }
+
+    html+=`<div class="footer">BTP Manager v${VERSION} — High Point Structures</div></body></html>`;
+    const w=window.open("","_blank","width=900,height=700");
+    if(!w){alert("Autorisez les popups.");return;}
+    w.document.write(html);w.document.close();setTimeout(()=>{w.focus();w.print();},600);
+  };
+
+  // Mois disponibles
+  const moisDispo=[...new Set((timesheets?.rows||[]).map(r=>r.mois).filter(Boolean))].sort();
+  const [moisRapport,setMoisRapport]=useState("");
+  const imports=[...new Set((timesheets?.rows||[]).filter(t=>t.type==="import").map(t=>`${t.membre}|${t.mois}`))];
+
+  return(<div style={{marginTop:16}}>
+    <Bd>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <SecTitle>📥 Import Excel — Heures de travail</SecTitle>
+        <div style={{display:"flex",gap:8}}>
+          {/* Rapport PDF */}
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <select value={moisRapport} onChange={e=>setMoisRapport(e.target.value)} style={{padding:"5px 8px",borderRadius:4,border:"1px solid #DDD",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>
+              <option value="">Tous les mois</option>
+              {moisDispo.map(m=><option key={m}>{m}</option>)}
+            </select>
+            <button onClick={()=>genRapportHeures(moisRapport)} style={{padding:"5px 12px",borderRadius:4,border:"1px solid #1A5DAB",background:"#EBF3FF",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#1A5DAB",fontWeight:600}}>📊 Rapport PDF</button>
+          </div>
+          <button onClick={()=>setOpen(v=>!v)} style={{padding:"5px 12px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>+ Importer</button>
+        </div>
+      </div>
+
+      {/* Historique */}
+      {imports.length>0&&<div style={{marginBottom:10}}>
+        {imports.slice(0,10).map(k=>{const[m,mo]=k.split("|");const cnt=(timesheets?.rows||[]).filter(t=>t.membre===m&&t.mois===mo&&t.type==="import").length;
+          return<div key={k} style={{fontSize:11,padding:"3px 0",borderBottom:"0.5px solid #EEE",color:"#7A7A7A",display:"flex",gap:8}}><span style={{fontWeight:600,color:"#1C1C1C"}}>{m}</span><span>{mo}</span><span style={{marginLeft:"auto"}}>{cnt} entrée{cnt>1?"s":""}</span></div>;})}
+      </div>}
+      {!imports.length&&<div style={{fontSize:12,color:"#AAAAAA",fontStyle:"italic",marginBottom:8}}>Aucun import effectué.</div>}
+
+      {/* Formulaire upload */}
+      {open&&uploadState==="idle"&&<div style={{background:"#F0F4FF",border:"0.5px solid #C0D4FF",borderRadius:8,padding:"12px",marginTop:10}}>
+        <div style={{fontSize:12,fontWeight:700,color:"#1A5DAB",marginBottom:8}}>Importer une feuille de temps mensuelle</div>
+        <FG label="Membre concerné">
+          <select value={uploadMembre} onChange={e=>setUploadMembre(e.target.value)} style={{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #DDD",fontSize:12,fontFamily:"'DM Sans',sans-serif"}}>
+            <option value="">— Sélectionner —</option>
+            {(team?.rows||[]).filter(t=>t.statut!=="inactif").map(t=><option key={t.id} value={t.nom}>{t.nom}</option>)}
+          </select>
+        </FG>
+        <label style={{display:"block",marginTop:8}}>
+          <div style={{padding:"10px 16px",borderRadius:6,border:"2px dashed #1A5DAB",background:"#EBF3FF",cursor:"pointer",textAlign:"center",fontSize:12,color:"#1A5DAB",fontWeight:600}}>
+            📥 Cliquer pour uploader le fichier .xlsx
+          </div>
+          <input type="file" accept=".xlsx" onChange={handleUpload} style={{display:"none"}}/>
+        </label>
+      </div>}
+
+      {uploadState==="parsing"&&<div style={{textAlign:"center",padding:16,color:"#7A7A7A",fontSize:12}}>⏳ Analyse du fichier...</div>}
+
+      {uploadState==="chooseMois"&&<div style={{marginTop:10,background:"#F0F4FF",border:"0.5px solid #C0D4FF",borderRadius:8,padding:"12px"}}>
+        <div style={{fontSize:12,fontWeight:700,color:"#1A5DAB",marginBottom:8}}>Sélectionner le mois à importer</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+          {moisDispoFichier.map(m=>(
+            <button key={m} onClick={()=>setMoisSelectionne(m)} style={{padding:"6px 12px",borderRadius:4,border:"1px solid",borderColor:moisSelectionne===m?"#CC2222":"#DDD",background:moisSelectionne===m?"#CC2222":"#fff",color:moisSelectionne===m?"#fff":"#3A3A3A",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",fontWeight:moisSelectionne===m?700:400}}>{m}</button>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <button onClick={()=>{setUploadState("idle");setFichierBuffer(null);}} style={{padding:"6px 12px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
+          <button disabled={!moisSelectionne} onClick={lancerParsing} style={{padding:"6px 14px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>Analyser {moisSelectionne} →</button>
+        </div>
+      </div>}
+
+      {uploadState==="matching"&&<div style={{marginTop:10}}>
+        <div style={{background:"#FFF8EC",border:"0.5px solid #FFD580",borderRadius:8,padding:"10px",marginBottom:10}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#CC8800"}}>{parsedLignes.length} entrées parsées — {uploadMembre} — {uploadMois}</div>
+          <div style={{fontSize:11,color:"#7A7A7A",marginTop:2}}>Vérifiez la correspondance des noms de projets</div>
+        </div>
+        {Object.keys(matchMap).map(nom=>(
+          <div key={nom} style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:8,alignItems:"center",padding:"5px 0",borderBottom:"0.5px solid #EEE"}}>
+            <div style={{fontSize:11,fontWeight:600}}>{nom}</div>
+            <div style={{color:"#AAAAAA"}}>→</div>
+            <select value={matchMap[nom]} onChange={e=>setMatchMap(m=>({...m,[nom]:e.target.value}))} style={{padding:"4px 8px",borderRadius:4,border:"1px solid #DDD",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>
+              <option value="">— Non mappé —</option>
+              {(projets?.rows||[]).map(p=><option key={p.id} value={p.name}>{p.name}</option>)}
+            </select>
+          </div>
+        ))}
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:10}}>
+          <button onClick={()=>{setUploadState("idle");setParsedLignes([]);}} style={{padding:"6px 12px",borderRadius:4,border:"1px solid #DDD",background:"#fff",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif"}}>Annuler</button>
+          <button disabled={saving} onClick={confirmerImport} style={{padding:"6px 14px",borderRadius:4,border:"none",background:"#CC2222",cursor:"pointer",fontSize:11,fontFamily:"'DM Sans',sans-serif",color:"#fff",fontWeight:700}}>{saving?"...":"✓ Confirmer l'import"}</button>
+        </div>
+      </div>}
+
+      {uploadState==="done"&&<div style={{textAlign:"center",padding:16,color:"#2A7A2A",fontSize:12,fontWeight:700}}>✓ Import réussi — {parsedLignes.length} entrées enregistrées</div>}
+    </Bd>
+  </div>);
+}
+
+function Equipes({sheet,journal,timesheets,projets,budgetHeures}){
   const [open,setOpen]=useState(false);
   const [form,setForm]=useState(EM);
   const [editing,setEditing]=useState(null);
@@ -5441,6 +6164,10 @@ function Equipes({sheet,journal}){
         </div>
       ))}
     </Bd>
+
+    {/* ── Import Excel Heures de travail du mois ── */}
+    <ImportExcelHeures timesheets={timesheets} projets={projets} team={sheet} budgetHeures={budgetHeures}/>
+
   </WithPanel>;
 }
 
@@ -7053,7 +7780,7 @@ function LoginScreen({onLogin}){
     try{
       setAuthEmail(email.trim());
       await gasInit();
-      onLogin(u);
+      onLogin(u); // seulement si gasInit réussit
     }catch(e){
       clearAuth();
       setErr(e.message||"Email non autorisé — vérifiez votre adresse");
@@ -7185,6 +7912,8 @@ function AppContent({user,onLogout}){
   const etapes=useSheet("etapes");
   const suiviFab=useSheet("suiviFab");
   const templates=useSheet("templates");
+  const timesheets=useSheet("timesheets");
+  const budgetHeures=useSheet("budgetHeures");
   const sheets={projects,tasks,events,team,journal,fournisseurs,stocks,orders,notes,prestataires,prestMissions,atelierChantier,cr};
 
   // ── Filtrage par rôle ──
@@ -7295,13 +8024,13 @@ function AppContent({user,onLogout}){
       </div>
       {/* Content */}
       <div style={{flex:1,padding:20}}>
-        {panel==="dashboard"      &&<Dashboard sheets={sheetsView} hideFinances={hideFinances}/>}
-        {panel==="projets"        &&<Projets sheet={projetsView} notes={notes} tasks={tasksView} orders={ordersView} stocks={stocksView} events={eventsView} prestMissions={prestMissionsView} atelierChantier={atelierChantierView} team={team} hideFinances={hideFinances} cr={cr}/>}
+        {panel==="dashboard"      &&<Dashboard sheets={sheetsView} hideFinances={hideFinances} timesheets={timesheets} user={user} team={team}/>}
+        {panel==="projets"        &&<Projets sheet={projetsView} notes={notes} tasks={tasksView} orders={ordersView} stocks={stocksView} events={eventsView} prestMissions={prestMissionsView} atelierChantier={atelierChantierView} team={team} hideFinances={hideFinances} cr={cr} timesheets={timesheets} budgetHeures={budgetHeures} user={user} suiviFab={suiviFab}/>}
         {panel==="taches"         &&<Taches sheet={tasksView} projects={projetsView}/>}
         {panel==="calendrier"     &&<Calendrier sheet={eventsView} projects={projetsView} atelierChantier={atelierChantierView} cr={cr} tasks={tasksView}/>}
-        {panel==="equipes"        &&<Equipes sheet={team} journal={journal}/>}
-        {panel==="atelier"        &&<MissionModule moduleType="atelier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs} etapes={etapes} suiviFab={suiviFab} templates={templates} journal={journalAtelier} user={user}/>}
-        {panel==="chantier"       &&<MissionModule moduleType="chantier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs} etapes={etapes} suiviFab={suiviFab} templates={templates} journal={journalChantier} user={user}/>}
+        {panel==="equipes"        &&<Equipes sheet={team} journal={journal} timesheets={timesheets} projets={projetsView} budgetHeures={budgetHeures}/>}
+        {panel==="atelier"        &&<MissionModule moduleType="atelier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs} etapes={etapes} suiviFab={suiviFab} templates={templates} journal={journalAtelier} user={user} timesheets={timesheets} budgetHeures={budgetHeures}/>}
+        {panel==="chantier"       &&<MissionModule moduleType="chantier" sheet={atelierChantierView} projects={projetsView} team={team} stocks={stocksView} events={eventsView} orders={ordersView} fournisseurs={fournisseurs} etapes={etapes} suiviFab={suiviFab} templates={templates} journal={journalChantier} user={user} timesheets={timesheets} budgetHeures={budgetHeures}/>}
         {panel==="prestataires"   &&<Prestataires sheet={prestataires} missions={prestMissionsView} projects={projetsView} stocks={stocksView} events={eventsView} fournisseurs={fournisseurs} hideFinances={hideFinances}/>}
         {panel==="fournisseurs"   &&<Fournisseurs sheet={fournisseurs}/>}
         {panel==="stocks"         &&<Stocks sheet={stocksView} fournisseurs={fournisseurs} projects={projetsView} orders={ordersView} atelierChantier={atelierChantierView} prestMissions={prestMissionsView} hideFinances={hideFinances}/>}
