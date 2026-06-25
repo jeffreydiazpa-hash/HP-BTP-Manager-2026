@@ -475,7 +475,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.1";
+const VERSION = "v4.6.4";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -3582,6 +3582,8 @@ const EP = {
   famille: ""
 };
 const FAMILLES_PROJET = ["BTP", "Maintenances", "Indus", "Stretch"];
+const familleDefautParRole = role => role === "chef_atelier" ? "Indus" : role === "chef_projet" ? "Maintenances" : role === "ingenieur" || role === "admin" ? "BTP" : "";
+let FAMILLE_DEFAUT_USER = "";
 function ParticipantsSelector({
   value,
   onChange,
@@ -7245,7 +7247,7 @@ function Prestataires({
   hideFinances = false
 }) {
   const [filterProjet, setFilterProjet] = useState("");
-  const [filterFamille, setFilterFamille] = useState("");
+  const [filterFamille, setFilterFamille] = useState(FAMILLE_DEFAUT_USER);
   const [filterTag, setFilterTag] = useState("");
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EPREST);
@@ -12182,7 +12184,7 @@ function MissionModule({
 }) {
   const [filterProjet, setFilterProjet] = useState("");
   const [filterTag, setFilterTag] = useState("");
-  const [filterFamille, setFilterFamille] = useState("");
+  const [filterFamille, setFilterFamille] = useState(FAMILLE_DEFAUT_USER);
   const [showAllTerminees, setShowAllTerminees] = useState(false);
   const label = moduleType === "atelier" ? "Atelier" : "Chantier";
   const peutEditerMission = user?.role !== "atelier";
@@ -14864,6 +14866,7 @@ function PlanificateurGeneral({
   conges = null
 }) {
   const [projetSelId, setProjetSelId] = useState("");
+  const [filterFamillePG, setFilterFamillePG] = useState(FAMILLE_DEFAUT_USER);
   const [vue, setVue] = useState("gantt");
   const [phaseForm, setPhaseForm] = useState({
     label: "",
@@ -15862,28 +15865,57 @@ function PlanificateurGeneral({
       marginBottom: 12
     }
   }, React.createElement(FG, {
+    label: "Famille"
+  }, React.createElement(Sel, {
+    value: filterFamillePG,
+    onChange: e => {
+      setFilterFamillePG(e.target.value);
+      if (e.target.value) {
+        const p = (projects?.rows || []).find(x => String(x.id) === projetSelId);
+        if (p && String(p.famille || "").trim().toLowerCase() !== e.target.value.toLowerCase()) setProjetSelId("");
+      }
+    }
+  }, React.createElement("option", {
+    value: ""
+  }, "Toutes les familles"), FAMILLES_PROJET.map(fa => React.createElement("option", {
+    key: fa,
+    value: fa
+  }, fa)))), React.createElement(FG, {
     label: "Projet *"
   }, React.createElement(Sel, {
     value: projetSelId,
     onChange: e => setProjetSelId(e.target.value)
   }, React.createElement("option", {
     value: ""
-  }, "— Sélectionner un projet —"), (projects?.rows || []).map(p => React.createElement("option", {
+  }, "— Sélectionner un projet —"), (projects?.rows || []).filter(p => !filterFamillePG || String(p.famille || "").trim().toLowerCase() === filterFamillePG.toLowerCase()).map(p => React.createElement("option", {
     key: p.id,
     value: String(p.id)
-  }, p.name)))), projetSelId && React.createElement(React.Fragment, null, React.createElement(FG, {
+  }, p.name)))), projetSelId && React.createElement(FG, {
     label: "Référence"
   }, React.createElement(Inp, {
     value: infoRef,
     onChange: e => setInfoRef(e.target.value),
     placeholder: "Ex: 20011"
-  })), React.createElement(FG, {
+  }))), projetSelId && React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10,
+      marginBottom: 12
+    }
+  }, React.createElement(FG, {
     label: "Site / Localisation"
   }, React.createElement(Inp, {
     value: infoSite,
     onChange: e => setInfoSite(e.target.value),
     placeholder: "Ex: Honfleur (14)"
-  })))), projetSelId && React.createElement(React.Fragment, null, React.createElement("div", {
+  })), React.createElement(FG, {
+    label: "Surface"
+  }, React.createElement(Inp, {
+    value: infoSurface,
+    onChange: e => setInfoSurface(e.target.value),
+    placeholder: "Ex: 700 m²"
+  }))), projetSelId && React.createElement(React.Fragment, null, React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr auto",
@@ -20414,7 +20446,10 @@ const EF = {
   adresse: ""
 };
 function Fournisseurs({
-  sheet
+  sheet,
+  orders = null,
+  devis = null,
+  hideFinances = false
 }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EF);
@@ -20688,7 +20723,49 @@ function Fournisseurs({
       color: "#7A7A7A",
       fontFamily: "'DM Mono',monospace"
     }
-  }, x.tel)), React.createElement("div", {
+  }, x.tel), (() => {
+    const norm = s => String(s || "").trim().toLowerCase();
+    const nbCmd = (orders?.rows || []).filter(o => norm(o.fourn) === norm(x.nom)).length;
+    const devisFourn = (devis?.rows || []).filter(d => norm(d.fourn) === norm(x.nom));
+    const devisEnCours = devisFourn.filter(d => d.statut !== "refusé" && d.statut !== "accepté").length;
+    const devisAcceptes = devisFourn.filter(d => d.statut === "accepté").length;
+    if (!orders && !devis) return null;
+    return React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6,
+        flexWrap: "wrap",
+        marginTop: 6
+      }
+    }, React.createElement("span", {
+      style: {
+        fontSize: 10,
+        fontWeight: 700,
+        padding: "2px 7px",
+        borderRadius: 10,
+        background: nbCmd > 0 ? "rgba(26,93,171,0.1)" : "#F2F2F2",
+        color: nbCmd > 0 ? "#1A5DAB" : "#AAAAAA"
+      }
+    }, "📦 ", nbCmd, " commande", nbCmd > 1 ? "s" : ""), React.createElement("span", {
+      style: {
+        fontSize: 10,
+        fontWeight: 700,
+        padding: "2px 7px",
+        borderRadius: 10,
+        background: devisEnCours > 0 ? "rgba(204,136,0,0.12)" : "#F2F2F2",
+        color: devisEnCours > 0 ? "#CC8800" : "#AAAAAA"
+      }
+    }, "📋 ", devisEnCours, " devis en cours"), devisAcceptes > 0 && React.createElement("span", {
+      style: {
+        fontSize: 10,
+        fontWeight: 700,
+        padding: "2px 7px",
+        borderRadius: 10,
+        background: "rgba(42,122,42,0.1)",
+        color: "#2A7A2A"
+      }
+    }, "✓ ", devisAcceptes, " accepté", devisAcceptes > 1 ? "s" : ""));
+  })()), React.createElement("div", {
     style: {
       display: "flex",
       gap: 4,
@@ -20764,7 +20841,7 @@ function Stocks({
   hideFinances = false
 }) {
   const [filterProjet, setFilterProjet] = useState("");
-  const [filterFamille, setFilterFamille] = useState("");
+  const [filterFamille, setFilterFamille] = useState(FAMILLE_DEFAUT_USER);
   const [recalculating, setRecalculating] = useState(false);
   const [diagnostic, setDiagnostic] = useState(null);
   const [diagRunning, setDiagRunning] = useState(false);
@@ -22069,7 +22146,10 @@ const ED = {
   statut: "en attente",
   date: TODAY,
   note: "",
-  tags: ""
+  tags: "",
+  poids: "",
+  delaiLivraison: "",
+  criteres: ""
 };
 const EL = {
   article: "",
@@ -22083,6 +22163,7 @@ function ModuleDevis({
   fournisseurs,
   projects,
   onAccepter,
+  orders,
   hideFinances = false
 }) {
   const [groupeOpen, setGroupeOpen] = useState(null);
@@ -22098,6 +22179,8 @@ function ModuleDevis({
   const [aiText, setAiText] = useState("");
   const [aiPreview, setAiPreview] = useState(null);
   const [aiErr, setAiErr] = useState("");
+  const [aiTitreLock, setAiTitreLock] = useState("");
+  const [newFournDevis, setNewFournDevis] = useState(false);
   const [titreGroupe, setTitreGroupe] = useState("");
   const [titreOpen, setTitreOpen] = useState(false);
   const f = (k, v) => setForm(x => ({
@@ -22211,7 +22294,10 @@ function ModuleDevis({
       date: get("DATE") || TODAY,
       delai: get("DELAI") || "",
       note: get("NOTE") || "",
-      tags: get("TAGS") || ""
+      tags: get("TAGS") || "",
+      poids: get("POIDS") || "",
+      delaiLivraison: get("LIVRAISON") || get("DELAILIVRAISON") || "",
+      criteres: get("CRITERES") || get("CRITÈRES") || get("AUTRE") || ""
     };
     const articles = [];
     let cur = null;
@@ -22239,17 +22325,37 @@ function ModuleDevis({
       articles
     });
   }
-  function validerIA() {
+  async function validerIA() {
     if (!aiPreview) return;
+    if (newFournDevis && aiPreview.formData.fourn) {
+      const existe = fournisseurs.rows.some(f => f.nom.trim().toLowerCase() === aiPreview.formData.fourn.trim().toLowerCase());
+      if (!existe) {
+        try {
+          await fournisseurs.add({
+            nom: aiPreview.formData.fourn,
+            specialite: "",
+            note: 3,
+            contact: "",
+            delai: aiPreview.formData.delai || "",
+            tel: "",
+            adresse: ""
+          });
+        } catch (e) {}
+      }
+    }
+    const titreFinal = aiTitreLock || aiPreview.formData.titre || "";
     setForm(x => ({
       ...x,
-      ...aiPreview.formData
+      ...aiPreview.formData,
+      titre: titreFinal
     }));
     setLignesForm(aiPreview.articles);
     setAiOpen(false);
     setAiPreview(null);
     setAiText("");
     setAiErr("");
+    setNewFournDevis(false);
+    setAiTitreLock("");
     setFormOpen(true);
   }
   const totalDevis = d => {
@@ -22280,7 +22386,14 @@ function ModuleDevis({
       gap: 8
     }
   }, React.createElement("button", {
-    onClick: () => setAiOpen(true),
+    onClick: () => {
+      setAiTitreLock("");
+      setNewFournDevis(false);
+      setAiText("");
+      setAiPreview(null);
+      setAiErr("");
+      setAiOpen(true);
+    },
     style: {
       padding: "7px 14px",
       borderRadius: 4,
@@ -22413,12 +22526,14 @@ function ModuleDevis({
       fontSize: 14,
       fontWeight: 700
     }
-  }, "🤖 Import IA — Devis fournisseur"), React.createElement("button", {
+  }, "🤖 Import IA — Devis fournisseur", aiTitreLock ? ` (${aiTitreLock})` : ""), React.createElement("button", {
     onClick: () => {
       setAiOpen(false);
       setAiPreview(null);
       setAiErr("");
       setAiText("");
+      setNewFournDevis(false);
+      setAiTitreLock("");
     },
     style: {
       background: "none",
@@ -22442,7 +22557,7 @@ function ModuleDevis({
       fontWeight: 700,
       marginBottom: 4
     }
-  }, "Format attendu :"), "TITRE: Scotch étanchéité ALCOV", React.createElement("br", null), "FOURNISSEUR: Rubans du Sud Ouest", React.createElement("br", null), "PROJET: ALCOV", React.createElement("br", null), "DELAI: 5 jours", React.createElement("br", null), "ARTICLE: S.F. étanchéité blanc ionomère", React.createElement("br", null), "QTE: 12", React.createElement("br", null), "UNITE: pcs", React.createElement("br", null), "PRIX: 93.05"), React.createElement("textarea", {
+  }, "Format attendu :"), "TITRE: Scotch étanchéité ALCOV", React.createElement("br", null), "FOURNISSEUR: Rubans du Sud Ouest", React.createElement("br", null), "PROJET: ALCOV", React.createElement("br", null), "DELAI: 5 jours", React.createElement("br", null), "LIVRAISON: 2 semaines", React.createElement("br", null), "POIDS: 12 kg", React.createElement("br", null), "CRITERES: Garantie 2 ans · Origine France", React.createElement("br", null), "ARTICLE: S.F. étanchéité blanc ionomère", React.createElement("br", null), "QTE: 12", React.createElement("br", null), "UNITE: pcs", React.createElement("br", null), "PRIX: 93.05"), React.createElement("textarea", {
     value: aiText || "",
     onChange: e => setAiText(e.target.value),
     placeholder: "Colle ici le texte du devis...",
@@ -22492,7 +22607,16 @@ function ModuleDevis({
       color: "#2A7A2A",
       marginBottom: 12
     }
-  }, "✓ ", aiPreview.articles.length, " article", aiPreview.articles.length > 1 ? "s" : "", " détecté", aiPreview.articles.length > 1 ? "s" : ""), React.createElement("div", {
+  }, "✓ ", aiPreview.articles.length, " article", aiPreview.articles.length > 1 ? "s" : "", " détecté", aiPreview.articles.length > 1 ? "s" : ""), aiTitreLock && React.createElement("div", {
+    style: {
+      background: "#EBF3FF",
+      borderRadius: 6,
+      padding: "8px 12px",
+      marginBottom: 10,
+      fontSize: 12,
+      color: "#1A5DAB"
+    }
+  }, "📋 Ce devis sera ajouté au groupe : ", React.createElement("b", null, aiTitreLock)), React.createElement("div", {
     style: {
       background: "#F9F9F9",
       borderRadius: 6,
@@ -22500,7 +22624,38 @@ function ModuleDevis({
       marginBottom: 12,
       fontSize: 12
     }
-  }, React.createElement("div", null, React.createElement("b", null, "Titre :"), " ", aiPreview.formData.titre || "—"), React.createElement("div", null, React.createElement("b", null, "Fournisseur :"), " ", aiPreview.formData.fourn || "—"), aiPreview.formData.delai && React.createElement("div", null, React.createElement("b", null, "Délai :"), " ", aiPreview.formData.delai)), aiPreview.articles.map((a, i) => React.createElement("div", {
+  }, React.createElement("div", null, React.createElement("b", null, "Titre :"), " ", aiTitreLock || aiPreview.formData.titre || "—"), React.createElement("div", null, React.createElement("b", null, "Fournisseur :"), " ", aiPreview.formData.fourn || "—"), aiPreview.formData.delai && React.createElement("div", null, React.createElement("b", null, "Délai :"), " ", aiPreview.formData.delai)), (() => {
+    const fournExiste = aiPreview.formData.fourn && fournisseurs.rows.some(f => f.nom.trim().toLowerCase() === aiPreview.formData.fourn.trim().toLowerCase());
+    if (!aiPreview.formData.fourn) return null;
+    if (fournExiste) return React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: "#2A7A2A",
+        marginBottom: 10
+      }
+    }, "✓ Fournisseur « ", aiPreview.formData.fourn, " » déjà enregistré");
+    return React.createElement("label", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 10,
+        padding: "8px 12px",
+        background: "#FFF8E8",
+        borderRadius: 6,
+        cursor: "pointer",
+        fontSize: 12,
+        color: "#8A5A00"
+      }
+    }, React.createElement("input", {
+      type: "checkbox",
+      checked: newFournDevis,
+      onChange: e => setNewFournDevis(e.target.checked),
+      style: {
+        cursor: "pointer"
+      }
+    }), "Créer le fournisseur « ", aiPreview.formData.fourn, " » (introuvable dans la liste)");
+  })(), aiPreview.articles.map((a, i) => React.createElement("div", {
     key: i,
     style: {
       display: "flex",
@@ -22603,6 +22758,27 @@ function ModuleDevis({
     }, React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
+        setAiTitreLock(titre);
+        setNewFournDevis(false);
+        setAiText("");
+        setAiPreview(null);
+        setAiErr("");
+        setAiOpen(true);
+      },
+      style: {
+        padding: "5px 10px",
+        borderRadius: 4,
+        border: "1px solid #CC2222",
+        background: "#fff",
+        cursor: "pointer",
+        fontSize: 11,
+        fontFamily: "'DM Sans',sans-serif",
+        color: "#CC2222",
+        fontWeight: 600
+      }
+    }, "🤖 Import IA"), React.createElement("button", {
+      onClick: e => {
+        e.stopPropagation();
         openNew(titre);
       },
       style: {
@@ -22627,7 +22803,7 @@ function ModuleDevis({
     }, React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "1fr 80px 100px 80px 1fr",
+        gridTemplateColumns: "1.3fr 80px 80px 95px 65px 1fr 150px",
         gap: 8,
         padding: "8px 0",
         borderBottom: "1px solid #EEE",
@@ -22635,18 +22811,22 @@ function ModuleDevis({
         fontWeight: 700,
         color: "#7A7A7A"
       }
-    }, React.createElement("span", null, "Fournisseur"), React.createElement("span", null, "Délai"), React.createElement("span", {
+    }, React.createElement("span", null, "Fournisseur"), React.createElement("span", null, "Délai"), React.createElement("span", null, "Poids"), React.createElement("span", {
       style: {
         textAlign: "right"
       }
-    }, "Total HT"), React.createElement("span", null, "Statut"), React.createElement("span", null, "Articles")), items.sort((a, b) => totalDevis(a) - totalDevis(b)).map((d, idx) => {
+    }, "Total HT"), React.createElement("span", null, "Statut"), React.createElement("span", null, "Articles / Critères"), React.createElement("span", {
+      style: {
+        textAlign: "right"
+      }
+    }, "Actions")), items.sort((a, b) => totalDevis(a) - totalDevis(b)).map((d, idx) => {
       const isBest = idx === 0;
       const ligs = lignesFrom(d);
       return React.createElement("div", {
         key: d.id,
         style: {
           display: "grid",
-          gridTemplateColumns: "1fr 80px 100px 80px 1fr",
+          gridTemplateColumns: "1.3fr 80px 80px 95px 65px 1fr 150px",
           gap: 8,
           padding: "10px 0",
           borderBottom: "0.5px solid #F5F5F5",
@@ -22684,6 +22864,11 @@ function ModuleDevis({
         }
       }, d.delai || "—"), React.createElement("div", {
         style: {
+          fontSize: 12,
+          color: "#3A3A3A"
+        }
+      }, d.poids || "—"), React.createElement("div", {
+        style: {
           fontSize: 13,
           fontWeight: 700,
           color: isBest ? "#2A7A2A" : "#1C1C1C",
@@ -22710,45 +22895,50 @@ function ModuleDevis({
         }
       }, ligs.map((l, i) => React.createElement("div", {
         key: i
-      }, l.article, " · ", l.qty, " ", l.unit, l.prix ? hideFinances ? ` · •••` : `  · ${(+l.prix * (+l.qty || 1)).toLocaleString("fr-FR")} €` : ""))));
-    }), React.createElement("div", {
-      style: {
-        display: "flex",
-        gap: 8,
-        marginTop: 12,
-        justifyContent: "flex-end"
-      }
-    }, items.map(d => React.createElement("div", {
-      key: d.id,
-      style: {
-        display: "flex",
-        gap: 6
-      }
-    }, React.createElement("button", {
-      onClick: () => openEdit(d),
-      style: {
-        padding: "5px 10px",
-        borderRadius: 4,
-        border: "1px solid #DDD",
-        background: "#fff",
-        cursor: "pointer",
-        fontSize: 11,
-        fontFamily: "'DM Sans',sans-serif"
-      }
-    }, "Modifier (", d.fourn, ")"), React.createElement("button", {
-      onClick: () => accepter(d),
-      style: {
-        padding: "5px 12px",
-        borderRadius: 4,
-        border: "none",
-        background: "#2A7A2A",
-        cursor: "pointer",
-        fontSize: 11,
-        fontFamily: "'DM Sans',sans-serif",
-        color: "#fff",
-        fontWeight: 700
-      }
-    }, "✓ Accepter (", d.fourn, ")"))))));
+      }, l.article, " · ", l.qty, " ", l.unit, l.prix ? hideFinances ? ` · •••` : `  · ${(+l.prix * (+l.qty || 1)).toLocaleString("fr-FR")} €` : "")), d.criteres && React.createElement("div", {
+        style: {
+          marginTop: 3,
+          padding: "3px 6px",
+          background: "#F2F0ED",
+          borderRadius: 3,
+          fontSize: 10,
+          color: "#7A4A00"
+        }
+      }, "📌 ", d.criteres)), React.createElement("div", {
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+          alignItems: "flex-end"
+        }
+      }, React.createElement("button", {
+        onClick: () => openEdit(d),
+        style: {
+          padding: "4px 10px",
+          borderRadius: 4,
+          border: "1px solid #DDD",
+          background: "#fff",
+          cursor: "pointer",
+          fontSize: 11,
+          fontFamily: "'DM Sans',sans-serif",
+          width: "100%"
+        }
+      }, "Modifier"), d.statut !== "accepté" && React.createElement("button", {
+        onClick: () => accepter(d),
+        style: {
+          padding: "4px 10px",
+          borderRadius: 4,
+          border: "none",
+          background: "#2A7A2A",
+          cursor: "pointer",
+          fontSize: 11,
+          fontFamily: "'DM Sans',sans-serif",
+          color: "#fff",
+          fontWeight: 700,
+          width: "100%"
+        }
+      }, "✓ Accepter")));
+    })));
   }), archives.length > 0 && React.createElement("details", {
     style: {
       marginTop: 16
@@ -22870,11 +23060,29 @@ function ModuleDevis({
     value: form.date || TODAY,
     onChange: e => f("date", e.target.value)
   })), React.createElement(FG, {
-    label: "Délai annoncé"
+    label: "Délai de livraison"
   }, React.createElement(Inp, {
     value: form.delai || "",
     onChange: e => f("delai", e.target.value),
     placeholder: "Ex: 5 jours ouvrés"
+  }))), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 8
+    }
+  }, React.createElement(FG, {
+    label: "Poids total"
+  }, React.createElement(Inp, {
+    value: form.poids || "",
+    onChange: e => f("poids", e.target.value),
+    placeholder: "Ex: 12 kg"
+  })), React.createElement(FG, {
+    label: "Autres critères de comparaison"
+  }, React.createElement(Inp, {
+    value: form.criteres || "",
+    onChange: e => f("criteres", e.target.value),
+    placeholder: "Ex: Garantie 2 ans · Origine France"
   }))), React.createElement(FG, {
     label: "Articles proposés"
   }, lignesForm.map((l, i) => React.createElement("div", {
@@ -23014,7 +23222,7 @@ function Commandes({
 }) {
   const [onglet, setOnglet] = useState("commandes");
   const [filterProjet, setFilterProjet] = useState("");
-  const [filterFamille, setFilterFamille] = useState("");
+  const [filterFamille, setFilterFamille] = useState(FAMILLE_DEFAUT_USER);
   const [filterTag, setFilterTag] = useState("");
   const [showAllHisto, setShowAllHisto] = useState(false);
   const [open, setOpen] = useState(false);
@@ -23633,7 +23841,7 @@ function Commandes({
       marginBottom: 16,
       borderBottom: "2px solid #EEEEEE"
     }
-  }, [["commandes", "📦 Commandes"], ["devis", "📋 Devis"]].map(([id, label]) => React.createElement("button", {
+  }, [["commandes", "📦 Commandes"], ["devis", "📋 Devis"], ["fournisseurs", "🏭 Fournisseurs"]].map(([id, label]) => React.createElement("button", {
     key: id,
     onClick: () => setOnglet(id),
     style: {
@@ -23652,6 +23860,7 @@ function Commandes({
     devis: devis,
     fournisseurs: fournisseurs,
     projects: projects,
+    orders: sheet,
     hideFinances: hideFinances,
     onAccepter: async (d, ligs) => {
       const cmd = {
@@ -23675,6 +23884,11 @@ function Commandes({
       setOnglet("commandes");
       alert(`Commande créée : "${d.fourn}" — ${d.titre}`);
     }
+  }), onglet === "fournisseurs" && React.createElement(Fournisseurs, {
+    sheet: fournisseurs,
+    orders: sheet,
+    devis: devis,
+    hideFinances: hideFinances
   }), onglet === "commandes" && React.createElement(React.Fragment, null, React.createElement(FiltreProjetTag, {
     projects: projects,
     filterProjet: filterProjet,
@@ -24858,12 +25072,6 @@ const PANELS = [{
   icon: "🤝",
   roles: ["admin", "ingenieur", "chef_projet", "chef_atelier"]
 }, {
-  id: "fournisseurs",
-  label: "Fournisseurs",
-  shortLabel: "Fourn.",
-  icon: "🏭",
-  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier"]
-}, {
   id: "stocks",
   label: "Stocks",
   shortLabel: "Stock",
@@ -24884,10 +25092,12 @@ function App() {
     return null;
   });
   function handleLogin(u) {
+    FAMILLE_DEFAUT_USER = familleDefautParRole(u?.role);
     setUser(u);
     setSession(u);
   }
   function handleLogout() {
+    FAMILLE_DEFAUT_USER = "";
     setUser(null);
     clearSession();
     clearAuth();
@@ -24987,20 +25197,24 @@ function AppContent({
       if (delay) await new Promise(r => setTimeout(r, delay));
       try {
         const batch = await gasGetBatch(keys);
+        let okCount = 0;
         keys.forEach(k => {
           if (batch[k] && allSheetRefs[k]) {
             allSheetRefs[k].setRows(batch[k]);
             lsSet(k, batch[k]);
+            okCount++;
           }
         });
-        setSyncPhase(phase);
+        if (okCount > 0) setSyncPhase(p => p === "full" ? "full" : phase);
+        return okCount > 0;
       } catch (e) {
         console.warn("Batch load error:", e);
+        return false;
       }
     };
     loadBatch(prioritaire.filter(k => allSheetRefs[k]), 0, "partial");
-    loadBatch(secondaire.filter(k => allSheetRefs[k]), 1500, "full").finally(() => {
-      setSyncPhase(p => p === "full" ? "full" : "full");
+    loadBatch(secondaire.filter(k => allSheetRefs[k]), 1500, "full").then(ok => {
+      if (ok) setSyncPhase("full");else setSyncPhase(p => p === "partial" ? "partial" : "error");
     });
   }, []);
   const sheets = {
@@ -25224,16 +25438,26 @@ function AppContent({
       borderRadius: 4
     }
   }, alerts.length, " alerte", alerts.length > 1 ? "s" : ""), (() => {
-    const sc = syncPhase === "full" ? "#2A7A2A" : syncPhase === "partial" ? "#CC6600" : syncPhase === "loading" ? "#1A5DAB" : "#CC2222";
-    const sl = syncPhase === "full" ? "Sync OK" : syncPhase === "partial" ? "Sync partiel" : syncPhase === "loading" ? "Sync en cours..." : "Cache local";
+    const sc = syncPhase === "full" ? "#2A7A2A" : syncPhase === "partial" ? "#CC6600" : syncPhase === "loading" ? "#1A5DAB" : syncPhase === "error" ? "#CC2222" : "#CC2222";
+    const sl = syncPhase === "full" ? "Sync OK" : syncPhase === "partial" ? "Sync partiel" : syncPhase === "loading" ? "Sync en cours..." : syncPhase === "error" ? "Échec sync" : "Cache local";
     const doReload = async () => {
       setSyncPhase("loading");
       const refs = allSheetRefs;
+      const keys = Object.keys(refs).filter(k => refs[k]);
       try {
-        await Promise.all(Object.keys(refs).map(k => refs[k]?.reload ? refs[k].reload() : Promise.resolve()));
-        setSyncPhase("full");
+        const batch = await gasGetBatch(keys);
+        let okCount = 0;
+        keys.forEach(k => {
+          if (batch[k] && refs[k]) {
+            refs[k].setRows(batch[k]);
+            lsSet(k, batch[k]);
+            okCount++;
+          }
+        });
+        if (okCount === 0) setSyncPhase("error");else if (okCount < keys.length) setSyncPhase("partial");else setSyncPhase("full");
       } catch (e) {
-        setSyncPhase("partial");
+        console.warn("Sync error:", e);
+        setSyncPhase("error");
       }
     };
     return React.createElement("span", {
@@ -25267,18 +25491,24 @@ function AppContent({
       }
     }), sl), React.createElement("button", {
       onClick: doReload,
+      disabled: syncPhase === "loading",
       title: "Recharger toutes les données",
       style: {
         padding: "2px 8px",
         borderRadius: 4,
         border: "0.5px solid #DDDDDD",
         background: "#fff",
-        cursor: "pointer",
+        cursor: syncPhase === "loading" ? "wait" : "pointer",
         fontSize: 12,
         color: "#3A3A3A",
         fontFamily: "'DM Sans',sans-serif"
       }
-    }, "🔄"));
+    }, React.createElement("span", {
+      className: syncPhase === "loading" ? "spin" : "",
+      style: {
+        display: "inline-block"
+      }
+    }, "🔄")));
   })(), React.createElement("button", {
     onClick: () => setHideFinances(v => !v),
     title: hideFinances ? "Afficher les montants" : "Masquer les montants",
@@ -25537,8 +25767,6 @@ function AppContent({
     events: eventsView,
     fournisseurs: fournisseurs,
     hideFinances: hideFinances
-  }), panel === "fournisseurs" && React.createElement(Fournisseurs, {
-    sheet: fournisseurs
   }), panel === "stocks" && React.createElement(Stocks, {
     sheet: stocksView,
     fournisseurs: fournisseurs,
