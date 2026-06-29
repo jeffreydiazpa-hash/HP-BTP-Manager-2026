@@ -475,7 +475,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.4";
+const VERSION = "v4.6.5";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -1016,7 +1016,11 @@ function useSheet(key) {
   const add = async data => {
     try {
       const c = await gasAdd(key, data);
-      setRows(r => [...r, c]);
+      setRows(r => {
+        const next = [...r, c];
+        lsSet(key, next);
+        return next;
+      });
       setError(null);
       return c;
     } catch (e) {
@@ -1026,10 +1030,11 @@ function useSheet(key) {
   };
   const update = async (id, data) => {
     const prevRows = rows;
-    setRows(r => r.map(x => Number(x.id) === Number(id) ? {
-      ...x,
-      ...data
-    } : x));
+    setRows(r => {
+      const next = r.map(x => Number(x.id) === Number(id) ? { ...x, ...data } : x);
+      lsSet(key, next);
+      return next;
+    });
     pendingRef.current[id] = {
       ...pendingRef.current[id],
       ...data
@@ -1045,13 +1050,18 @@ function useSheet(key) {
       } catch (e) {
         setError(e.message || "Erreur de mise à jour");
         setRows(prevRows);
+        lsSet(key, prevRows);
       }
     }, 600);
   };
   const remove = async id => {
     try {
       await gasDelete(key, id);
-      setRows(r => r.filter(x => Number(x.id) !== Number(id)));
+      setRows(r => {
+        const next = r.filter(x => Number(x.id) !== Number(id));
+        lsSet(key, next);
+        return next;
+      });
       setError(null);
     } catch (e) {
       setError(e.message || "Erreur de suppression");
