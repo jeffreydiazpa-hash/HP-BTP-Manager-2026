@@ -475,7 +475,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.5";
+const VERSION = "v4.6.6";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -646,14 +646,16 @@ const Btn = ({
   primary,
   danger,
   small,
-  secondary
+  secondary,
+  disabled
 }) => React.createElement("button", {
-  onClick: onClick,
+  onClick: disabled ? undefined : onClick,
+  disabled: !!disabled,
   style: {
     padding: small ? "4px 10px" : "7px 14px",
     borderRadius: 6,
     fontSize: 13,
-    cursor: "pointer",
+    cursor: disabled ? "default" : "pointer",
     fontFamily: "'DM Sans',sans-serif",
     fontWeight: 500,
     border: danger ? "1px solid #CC2222" : primary ? "1px solid #CC2222" : secondary ? "1px solid #CC2222" : "1px solid #DDDDDD",
@@ -663,6 +665,7 @@ const Btn = ({
     alignItems: "center",
     gap: 5,
     whiteSpace: "nowrap",
+    opacity: disabled ? 0.6 : 1,
     transition: "opacity .15s"
   }
 }, children);
@@ -946,10 +949,12 @@ const PanelBtns = ({
     borderTop: "0.5px solid #DDDDDD"
   }
 }, React.createElement(Btn, {
-  onClick: onCancel
+  onClick: onCancel,
+  disabled: saving
 }, "Annuler"), React.createElement(Btn, {
   primary: true,
-  onClick: onSave
+  onClick: onSave,
+  disabled: saving
 }, React.createElement("span", {
   className: saving ? "spin" : ""
 }, saving ? "⟳" : "✓"), " ", saveLabel || "Enregistrer"));
@@ -22191,6 +22196,7 @@ function ModuleDevis({
   const [aiErr, setAiErr] = useState("");
   const [aiTitreLock, setAiTitreLock] = useState("");
   const [newFournDevis, setNewFournDevis] = useState(false);
+  const [aiApplyingDevis, setAiApplyingDevis] = useState(false);
   const [titreGroupe, setTitreGroupe] = useState("");
   const [titreOpen, setTitreOpen] = useState(false);
   const f = (k, v) => setForm(x => ({
@@ -22336,37 +22342,42 @@ function ModuleDevis({
     });
   }
   async function validerIA() {
-    if (!aiPreview) return;
-    if (newFournDevis && aiPreview.formData.fourn) {
-      const existe = fournisseurs.rows.some(f => f.nom.trim().toLowerCase() === aiPreview.formData.fourn.trim().toLowerCase());
-      if (!existe) {
-        try {
-          await fournisseurs.add({
-            nom: aiPreview.formData.fourn,
-            specialite: "",
-            note: 3,
-            contact: "",
-            delai: aiPreview.formData.delai || "",
-            tel: "",
-            adresse: ""
-          });
-        } catch (e) {}
+    if (!aiPreview || aiApplyingDevis) return;
+    setAiApplyingDevis(true);
+    try {
+      if (newFournDevis && aiPreview.formData.fourn) {
+        const existe = fournisseurs.rows.some(f => f.nom.trim().toLowerCase() === aiPreview.formData.fourn.trim().toLowerCase());
+        if (!existe) {
+          try {
+            await fournisseurs.add({
+              nom: aiPreview.formData.fourn,
+              specialite: "",
+              note: 3,
+              contact: "",
+              delai: aiPreview.formData.delai || "",
+              tel: "",
+              adresse: ""
+            });
+          } catch (e) {}
+        }
       }
+      const titreFinal = aiTitreLock || aiPreview.formData.titre || "";
+      setForm(x => ({
+        ...x,
+        ...aiPreview.formData,
+        titre: titreFinal
+      }));
+      setLignesForm(aiPreview.articles);
+      setAiOpen(false);
+      setAiPreview(null);
+      setAiText("");
+      setAiErr("");
+      setNewFournDevis(false);
+      setAiTitreLock("");
+      setFormOpen(true);
+    } finally {
+      setAiApplyingDevis(false);
     }
-    const titreFinal = aiTitreLock || aiPreview.formData.titre || "";
-    setForm(x => ({
-      ...x,
-      ...aiPreview.formData,
-      titre: titreFinal
-    }));
-    setLignesForm(aiPreview.articles);
-    setAiOpen(false);
-    setAiPreview(null);
-    setAiText("");
-    setAiErr("");
-    setNewFournDevis(false);
-    setAiTitreLock("");
-    setFormOpen(true);
   }
   const totalDevis = d => {
     try {
@@ -22706,18 +22717,19 @@ function ModuleDevis({
     }
   }, "← Modifier"), React.createElement("button", {
     onClick: validerIA,
+    disabled: aiApplyingDevis,
     style: {
       padding: "7px 16px",
       borderRadius: 4,
       border: "none",
-      background: "#2A7A2A",
-      cursor: "pointer",
+      background: aiApplyingDevis ? "#8FBF8F" : "#2A7A2A",
+      cursor: aiApplyingDevis ? "default" : "pointer",
       fontSize: 12,
       fontFamily: "'DM Sans',sans-serif",
       color: "#fff",
       fontWeight: 700
     }
-  }, "Ouvrir dans le formulaire →"))))), groupes.length === 0 && React.createElement("div", {
+  }, aiApplyingDevis ? "⟳ Traitement..." : "Ouvrir dans le formulaire →"))))), groupes.length === 0 && React.createElement("div", {
     style: {
       textAlign: "center",
       padding: "40px 0",
@@ -23248,6 +23260,7 @@ function Commandes({
   const [aiPreview, setAiPreview] = useState(null);
   const [aiText, setAiText] = useState("");
   const [newFourn, setNewFourn] = useState(false);
+  const [aiApplying, setAiApplying] = useState(false);
   const f = (k, v) => setForm(x => ({
     ...x,
     [k]: v
@@ -23387,35 +23400,40 @@ function Commandes({
     setAiPreview(result);
   }
   async function applyAiPreview() {
-    if (!aiPreview) return;
-    if (newFourn && aiPreview.formData.fourn) {
-      const existe = fournisseurs.rows.some(f => f.nom.trim().toLowerCase() === aiPreview.formData.fourn.trim().toLowerCase());
-      if (!existe) {
-        await fournisseurs.add({
-          nom: aiPreview.formData.fourn,
-          specialite: "",
-          contact: "",
-          tel: "",
-          adresse: "",
-          note: "Créé automatiquement depuis l'import IA"
-        });
+    if (!aiPreview || aiApplying) return;
+    setAiApplying(true);
+    try {
+      if (newFourn && aiPreview.formData.fourn) {
+        const existe = fournisseurs.rows.some(f => f.nom.trim().toLowerCase() === aiPreview.formData.fourn.trim().toLowerCase());
+        if (!existe) {
+          await fournisseurs.add({
+            nom: aiPreview.formData.fourn,
+            specialite: "",
+            contact: "",
+            tel: "",
+            adresse: "",
+            note: "Créé automatiquement depuis l'import IA"
+          });
+        }
       }
+      setForm({
+        ...EO,
+        ...aiPreview.formData
+      });
+      setLignesForm(aiPreview.lignes.map(l => ({
+        ...EL,
+        ...l
+      })));
+      setAiOpen(false);
+      setAiPreview(null);
+      setAiText("");
+      setNewFourn(false);
+      setErr("");
+      setEditing(null);
+      setOpen(true);
+    } finally {
+      setAiApplying(false);
     }
-    setForm({
-      ...EO,
-      ...aiPreview.formData
-    });
-    setLignesForm(aiPreview.lignes.map(l => ({
-      ...EL,
-      ...l
-    })));
-    setAiOpen(false);
-    setAiPreview(null);
-    setAiText("");
-    setNewFourn(false);
-    setErr("");
-    setEditing(null);
-    setOpen(true);
   }
   async function addToStock(ord) {
     const lignes = getLignes(ord);
@@ -24203,18 +24221,19 @@ function Commandes({
     }
   }, "Corriger"), React.createElement("button", {
     onClick: applyAiPreview,
+    disabled: aiApplying,
     style: {
       padding: "8px 20px",
       borderRadius: 4,
       border: "none",
-      background: "#2A7A2A",
-      cursor: "pointer",
+      background: aiApplying ? "#8FBF8F" : "#2A7A2A",
+      cursor: aiApplying ? "default" : "pointer",
       fontSize: 12,
       fontFamily: "'DM Sans',sans-serif",
       color: "#fff",
       fontWeight: 700
     }
-  }, "Créer la commande →"))))), livraisonsRetard.length > 0 && React.createElement("div", {
+  }, aiApplying ? "⟳ Création..." : "Créer la commande →"))))), livraisonsRetard.length > 0 && React.createElement("div", {
     style: {
       background: "#FFF0F0",
       border: "1px solid #FFCCCC",
