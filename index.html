@@ -393,7 +393,8 @@ function calcEstimHeuresAtelier(suiviFabRows, moisFiltre=null){
 }
 function parseExcelHeures(arrayBuffer, moisFiltre=null){
   const wb=XLSX.read(arrayBuffer,{type:"array"});
-  const mois=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+  const date1904=!!(wb.Workbook&&wb.Workbook.WBProps&&wb.Workbook.WBProps.date1904);
+  const mois=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Aout","Septembre","Octobre","Novembre","Décembre"];
   const lignes=[];
   for(const sheetName of wb.SheetNames){
     if(!mois.includes(sheetName))continue;
@@ -406,17 +407,40 @@ function parseExcelHeures(arrayBuffer, moisFiltre=null){
       if(!dateRaw||!projetRaw||!heuresRaw)continue;
 
       let dateStr="";
+      let dateObj=null;
       try{
-        const d=new Date((dateRaw-25569)*86400000);
-        dateStr=d.toISOString().split("T")[0];
+        // Époque Excel : 1900 (standard Windows) ou 1904 (Mac / certains exports Google Sheets).
+        // Utiliser la mauvaise époque décale toutes les dates d'environ 4 ans (1462 jours).
+        dateObj=date1904
+          ? new Date(Date.UTC(1904,0,1) + dateRaw*86400000)
+          : new Date((dateRaw-25569)*86400000);
+        dateStr=dateObj.toISOString().split("T")[0];
       }catch(e){continue;}
+      // Ignore les samedis (6) et dimanches (0) — aucune heure ne doit y être déclarée
+      if(dateObj&&(dateObj.getUTCDay()===0||dateObj.getUTCDay()===6))continue;
 
-      const heures=Math.round(Number(heuresRaw)*24*100)/100;
-      if(heures<=0)continue;
+      // Conversion des heures : gère à la fois le format serial Excel (fraction de jour, ex: 7:45 -> 0.32291...)
+      // et un format texte "HH:MM" éventuel (si la cellule n'est pas reconnue comme numérique par SheetJS)
+      let heures;
+      if(typeof heuresRaw==="number"){
+        heures=Math.round(heuresRaw*24*100)/100;
+      }else{
+        const txt=String(heuresRaw).trim();
+        const m=txt.match(/^(\d{1,2}):(\d{2})$/);
+        if(m){
+          heures=Math.round((Number(m[1])+Number(m[2])/60)*100)/100;
+        }else{
+          heures=Math.round(Number(txt.replace(",","."))*24*100)/100;
+        }
+      }
+      if(!heures||heures<=0||isNaN(heures))continue;
+      // Garde-fou : une journée ne peut raisonnablement pas dépasser 24h pour une seule ligne
+      if(heures>24)continue;
 
       const projets=projetRaw.split(/\s*-\s*(?=[A-Z])/u).map(p=>p.trim()).filter(Boolean);
       const hParProjet=Math.round(heures/projets.length*100)/100;
-      const rd=String(row[2]||"").includes("R&D")?true:false;
+      const catRD=String(row[2]||"").trim();
+      const rd=/^non/i.test(catRD)?false:catRD.includes("R&D");
       const note=String(row[9]||"").trim();
       for(const projet of projets){
         if(["FERIE","Fermeture HP","Congé","congé","Maladie","maladie"].some(x=>projet.toLowerCase().startsWith(x.toLowerCase())))continue;
@@ -475,7 +499,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.6";
+const VERSION = "v4.6.13";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -5295,7 +5319,10 @@ function Projets({
   timesheets,
   budgetHeures,
   user,
-  suiviFab
+  suiviFab,
+  fournisseurs,
+  devis,
+  metre
 }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EP);
@@ -5311,6 +5338,14 @@ function Projets({
   const [showHistorique, setShowHistorique] = useState(false);
   const [editingOrder, setEditingOrder] = useState(null);
   const [orderForm, setOrderForm] = useState({});
+  const [nouvelleTacheOpen, setNouvelleTacheOpen] = useState(false);
+  const [nouvelleTacheForm, setNouvelleTacheForm] = useState({
+    text: "",
+    due: "",
+    responsable: ""
+  });
+  const [savingTache, setSavingTache] = useState(false);
+  const [filterStatutTache, setFilterStatutTache] = useState("encours");
   const [ongletDetail, setOngletDetail] = useState("infos");
   const [intervenants, setIntervenants] = useState([]);
   const [showAddIntervenant, setShowAddIntervenant] = useState(false);
@@ -6109,7 +6144,7 @@ ${sections}
         borderBottom: "2px solid #EEEEEE",
         marginBottom: 16
       }
-    }, [["infos", "📋 Modules"], ["intervenants", "👥 Intervenants"], ["cr", "📝 CR"], ["heures", "⏱ Suivi heures"], ["taches", "✅ Tâches"]].map(([id, lbl]) => React.createElement("button", {
+    }, [["infos", "📋 Modules"], ["intervenants", "👥 Intervenants"], ["cr", "📝 CR"], ["heures", "⏱ Suivi heures"], ["taches", "✅ Tâches"], ["metre", "📐 Métré"]].map(([id, lbl]) => React.createElement("button", {
       key: id,
       onClick: () => setOngletDetail(id),
       style: {
@@ -6910,25 +6945,157 @@ ${sections}
         lineHeight: 1.5
       }
     }, n.contenu)))))), ongletDetail === "taches" && (() => {
-      const tachesProjet = (tasks?.rows || []).filter(t => String(t.projet) === String(p?.name) || String(t.projet) === String(p?.id));
-      if (!tachesProjet.length) return React.createElement(Bd, {
+      const tachesProjetToutes = (tasks?.rows || []).filter(t => String(t.projet) === String(p?.name) || String(t.projet) === String(p?.id));
+      const isDoneT = t => t.done === true || String(t.done).toUpperCase() === "TRUE";
+      const tachesProjet = tachesProjetToutes.filter(t => filterStatutTache === "toutes" ? true : filterStatutTache === "termines" ? isDoneT(t) : !isDoneT(t));
+      const membresTache = (team?.rows || []).filter(m => {
+        const r = (m.role || "").toLowerCase();
+        return r.includes("ingénieur") || r.includes("ingenieur") || r.includes("chef");
+      });
+      async function saveNouvelleTache() {
+        if (!nouvelleTacheForm.text.trim()) return;
+        setSavingTache(true);
+        try {
+          await tasks.add({
+            text: nouvelleTacheForm.text.trim(),
+            projet: p?.name || "",
+            due: nouvelleTacheForm.due || "",
+            responsable: nouvelleTacheForm.responsable || "",
+            done: false
+          });
+          setNouvelleTacheForm({
+            text: "",
+            due: "",
+            responsable: ""
+          });
+          setNouvelleTacheOpen(false);
+        } catch (e) {}
+        setSavingTache(false);
+      }
+      const headerEtForm = React.createElement("div", {
+        style: {
+          marginBottom: 12
+        }
+      }, React.createElement("div", {
+        style: {
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: nouvelleTacheOpen ? 10 : 0
+        }
+      }, React.createElement("div", {
+        style: {
+          fontSize: 13,
+          fontWeight: 700,
+          color: "#1C1C1C",
+          borderLeft: "3px solid #CC2222",
+          paddingLeft: 8
+        }
+      }, "Tâches (", tachesProjetToutes.filter(t => !isDoneT(t)).length, " en cours)"), React.createElement("button", {
+        onClick: () => setNouvelleTacheOpen(o => !o),
+        style: {
+          padding: "5px 10px",
+          borderRadius: 4,
+          border: "1px solid #CC2222",
+          background: nouvelleTacheOpen ? "#CC2222" : "#fff",
+          color: nouvelleTacheOpen ? "#fff" : "#CC2222",
+          cursor: "pointer",
+          fontSize: 11,
+          fontFamily: "'DM Sans',sans-serif",
+          fontWeight: 600
+        }
+      }, nouvelleTacheOpen ? "✕ Annuler" : "+ Nouvelle tâche")), React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 6,
+          marginTop: 8
+        }
+      }, [["encours", "En cours"], ["termines", "Terminées"], ["toutes", "Toutes"]].map(([val, lbl]) => React.createElement("button", {
+        key: val,
+        onClick: () => setFilterStatutTache(val),
+        style: {
+          padding: "4px 10px",
+          borderRadius: 12,
+          border: filterStatutTache === val ? "1px solid #CC2222" : "1px solid #DDDDDD",
+          background: filterStatutTache === val ? "#FFF0F0" : "#fff",
+          color: filterStatutTache === val ? "#CC2222" : "#7A7A7A",
+          cursor: "pointer",
+          fontSize: 11,
+          fontFamily: "'DM Sans',sans-serif",
+          fontWeight: filterStatutTache === val ? 700 : 500
+        }
+      }, lbl))), nouvelleTacheOpen && React.createElement("div", {
+        style: {
+          background: "#F9F9F9",
+          border: "0.5px solid #EEEEEE",
+          borderRadius: 6,
+          padding: 10,
+          marginTop: 6
+        }
+      }, React.createElement(FG, {
+        label: "Description *"
+      }, React.createElement(Inp, {
+        value: nouvelleTacheForm.text,
+        onChange: e => setNouvelleTacheForm(x => ({
+          ...x,
+          text: e.target.value
+        })),
+        placeholder: "Ex: Relancer le bureau de contrôle"
+      })), React.createElement("div", {
+        style: {
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 8
+        }
+      }, React.createElement(FG, {
+        label: "Échéance"
+      }, React.createElement(Inp, {
+        type: "date",
+        value: nouvelleTacheForm.due,
+        onChange: e => setNouvelleTacheForm(x => ({
+          ...x,
+          due: e.target.value
+        }))
+      })), React.createElement(FG, {
+        label: "Responsable"
+      }, React.createElement(Sel, {
+        value: nouvelleTacheForm.responsable,
+        onChange: e => setNouvelleTacheForm(x => ({
+          ...x,
+          responsable: e.target.value
+        }))
+      }, React.createElement("option", {
+        value: ""
+      }, "— Choisir —"), membresTache.map(m => React.createElement("option", {
+        key: m.id,
+        value: m.nom
+      }, m.nom))))), React.createElement("button", {
+        disabled: savingTache || !nouvelleTacheForm.text.trim(),
+        onClick: saveNouvelleTache,
+        style: {
+          marginTop: 8,
+          width: "100%",
+          padding: "7px",
+          borderRadius: 4,
+          border: "none",
+          background: "#CC2222",
+          color: "#fff",
+          cursor: "pointer",
+          fontSize: 12,
+          fontFamily: "'DM Sans',sans-serif",
+          fontWeight: 600,
+          opacity: savingTache || !nouvelleTacheForm.text.trim() ? 0.6 : 1
+        }
+      }, savingTache ? "Enregistrement..." : "Créer la tâche — liée à " + (p?.name || "ce projet"))));
+      if (!tachesProjet.length) return React.createElement(Bd, null, headerEtForm, React.createElement("div", {
         style: {
           textAlign: "center",
           padding: 20,
           color: "#7A7A7A",
           fontSize: 13
         }
-      }, "Aucune tâche pour ce projet.");
-      return React.createElement(Bd, null, React.createElement("div", {
-        style: {
-          fontSize: 13,
-          fontWeight: 700,
-          color: "#1C1C1C",
-          marginBottom: 12,
-          borderLeft: "3px solid #CC2222",
-          paddingLeft: 8
-        }
-      }, "Tâches (", tachesProjet.filter(t => !(t.done === true || String(t.done).toUpperCase() === "TRUE")).length, " en cours)"), tachesProjet.map(t => {
+      }, filterStatutTache === "termines" ? "Aucune tâche terminée." : filterStatutTache === "toutes" ? "Aucune tâche pour ce projet." : "Aucune tâche en cours."));
+      return React.createElement(Bd, null, headerEtForm, tachesProjet.map(t => {
         const done = t.done === true || String(t.done).toUpperCase() === "TRUE";
         return React.createElement("div", {
           key: t.id,
@@ -6973,7 +7140,15 @@ ${sections}
           }
         }, done ? "" : "📅 ", fmt(t.due), !done && toISO(t.due) < TODAY ? " — en retard" : "")));
       }));
-    })());
+    })(), ongletDetail === "metre" && React.createElement(MetreProjet, {
+      metre: metre,
+      projet: p,
+      fournisseurs: fournisseurs,
+      devis: devis,
+      orders: orders,
+      stocks: stocks,
+      hideFinances: hideFinances
+    }));
   }
   return React.createElement(WithPanel, {
     panel: panel
@@ -14443,6 +14618,590 @@ function getMemberColor(nom) {
     dot: "#7A7A7A"
   };
 }
+// ═══════════════════════════════════════════════════════════════
+// MÉTRÉ / QUANTITATIF — onglet par projet
+// Liaisons : Devis, Commandes (créer ou lier existante), Stock libre (réservation)
+// ═══════════════════════════════════════════════════════════════
+const EM_METRE = {
+  article: "",
+  qty_besoin: "",
+  unit: "pcs",
+  fourn: "",
+  prix_estime: "",
+  devis_id: "",
+  commande_id: "",
+  qty_commandee: "",
+  qty_recue: "",
+  stock_ref: "",
+  stock_reserve: "",
+  statut: "à commander",
+  note: "",
+  tags: ""
+};
+const METRE_STATUTS = ["à commander", "commandé", "partiellement reçu", "reçu", "annulé"];
+function statutMetreColor(s) {
+  if (s === "reçu") return { bg: "#EAF7EA", color: "#2A7A2A" };
+  if (s === "partiellement reçu") return { bg: "#FFF8E8", color: "#8A5A00" };
+  if (s === "commandé") return { bg: "#EBF3FF", color: "#1A5DAB" };
+  if (s === "annulé") return { bg: "#F2F0ED", color: "#7A7A7A" };
+  return { bg: "#FFF0F0", color: "#CC2222" };
+}
+function MetreProjet({
+  metre,
+  projet,
+  fournisseurs,
+  devis,
+  orders,
+  stocks,
+  hideFinances = false
+}) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(EM_METRE);
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [linking, setLinking] = useState(null);
+  const [linkMode, setLinkMode] = useState("new");
+  const [linkCommandeId, setLinkCommandeId] = useState("");
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [reserving, setReserving] = useState(null);
+  const [reserveQty, setReserveQty] = useState("");
+  const [reserveBusy, setReserveBusy] = useState(false);
+  const f = (k, v) => setForm(x => ({
+    ...x,
+    [k]: v
+  }));
+  const lignes = (metre?.rows || []).filter(l => String(l.projet_id) === String(projet?.name) || String(l.projet_id) === String(projet?.id));
+  const projOrders = (orders?.rows || []).filter(o => o.projet === projet?.name || o.projet === String(projet?.id));
+  function openNew() {
+    setForm(EM_METRE);
+    setEditing(null);
+    setErr("");
+    setOpen(true);
+  }
+  function openEdit(l) {
+    setForm({
+      ...EM_METRE,
+      ...l
+    });
+    setEditing(l.id);
+    setErr("");
+    setOpen(true);
+  }
+  async function save() {
+    if (!form.article) {
+      setErr("Article requis");
+      return;
+    }
+    setSaving(true);
+    const item = {
+      ...form,
+      projet_id: projet?.name,
+      qty_besoin: +form.qty_besoin || 0,
+      prix_estime: +form.prix_estime || 0,
+      qty_commandee: +form.qty_commandee || 0,
+      qty_recue: +form.qty_recue || 0,
+      stock_reserve: +form.stock_reserve || 0
+    };
+    try {
+      if (editing) await metre.update(editing, item);
+      else await metre.add(item);
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function removeLigne(id) {
+    if (!confirm("Supprimer cette ligne du métré ?")) return;
+    await metre.remove(id);
+  }
+  function ligneTotal(l) {
+    return (+l.qty_besoin || 0) * (+l.prix_estime || 0);
+  }
+  // ── Liaison Commandes : créer une nouvelle commande à partir de la ligne, ou la lier à une commande existante ──
+  function openLink(l) {
+    setLinking(l);
+    setLinkMode("new");
+    setLinkCommandeId("");
+  }
+  async function confirmLink() {
+    if (!linking) return;
+    setLinkBusy(true);
+    try {
+      if (linkMode === "new") {
+        const newOrder = await orders.add({
+          ref: "",
+          fourn: linking.fourn || "",
+          article: linking.article,
+          qty: +linking.qty_besoin || 0,
+          unit: linking.unit || "pcs",
+          prix: +linking.prix_estime || 0,
+          cat: "",
+          loc: "",
+          date: TODAY,
+          dateLivraison: "",
+          lieuLivraison: "La Rochelle",
+          passee: false,
+          recue: false,
+          factureCompta: false,
+          projet: projet?.name || "",
+          lignes: JSON.stringify([{
+            article: linking.article,
+            qty: linking.qty_besoin,
+            unit: linking.unit || "pcs",
+            prix: linking.prix_estime,
+            cat: ""
+          }]),
+          tags: ""
+        });
+        await metre.update(linking.id, {
+          ...linking,
+          commande_id: newOrder.id,
+          qty_commandee: linking.qty_besoin,
+          statut: "commandé"
+        });
+      } else if (linkMode === "link" && linkCommandeId) {
+        await metre.update(linking.id, {
+          ...linking,
+          commande_id: linkCommandeId,
+          statut: "commandé"
+        });
+      }
+      setLinking(null);
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+  // ── Mise à jour de la quantité reçue ──
+  async function updateRecue(l, val) {
+    const qr = +val || 0;
+    const qc = +l.qty_commandee || +l.qty_besoin || 0;
+    let statut = l.statut;
+    if (qr <= 0) statut = "commandé";
+    else if (qr < qc) statut = "partiellement reçu";
+    else statut = "reçu";
+    await metre.update(l.id, {
+      ...l,
+      qty_recue: qr,
+      statut
+    });
+  }
+  // ── Liaison Stock libre : réserver/déduire du stock disponible ──
+  function openReserve(l) {
+    setReserving(l);
+    setReserveQty(String(l.qty_besoin || ""));
+  }
+  async function confirmReserve() {
+    if (!reserving) return;
+    const stockItem = (stocks?.rows || []).find(s => normRef(s.ref) === normRef(reserving.stock_ref || reserving.article));
+    if (!stockItem) {
+      alert("Aucun article de stock trouvé avec cette référence.");
+      return;
+    }
+    const qty = +reserveQty || 0;
+    const dispo = Number(stockItem.qty) || 0;
+    if (qty > dispo) {
+      alert(`Quantité demandée (${qty}) supérieure au stock disponible (${dispo}).`);
+      return;
+    }
+    setReserveBusy(true);
+    try {
+      await stocks.update(stockItem.id, {
+        ...stockItem,
+        qty: dispo - qty
+      });
+      await metre.update(reserving.id, {
+        ...reserving,
+        stock_ref: stockItem.ref,
+        stock_reserve: (+reserving.stock_reserve || 0) + qty,
+        note: (reserving.note ? reserving.note + " · " : "") + `${qty} ${stockItem.unit || ""} réservé(s) du stock libre le ${TODAY}`
+      });
+      setReserving(null);
+    } finally {
+      setReserveBusy(false);
+    }
+  }
+  const totalEstime = lignes.reduce((s, l) => s + ligneTotal(l), 0);
+  return React.createElement("div", null, React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 14
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#1C1C1C",
+      borderLeft: "3px solid #CC2222",
+      paddingLeft: 8
+    }
+  }, "Métré (", lignes.length, " article", lignes.length !== 1 ? "s" : "", ")", !hideFinances && lignes.length > 0 && React.createElement("span", {
+    style: {
+      color: "#7A7A7A",
+      fontWeight: 500,
+      marginLeft: 8
+    }
+  }, "· Estimé : ", totalEstime.toLocaleString("fr-FR"), " €")), React.createElement(Btn, {
+    primary: true,
+    onClick: openNew
+  }, "+ Article")), !lignes.length && React.createElement(Bd, {
+    style: {
+      textAlign: "center",
+      padding: 24,
+      color: "#7A7A7A",
+      fontSize: 13
+    }
+  }, "Aucun article dans le métré de ce projet.", React.createElement("br", null), "Note ici la quincaillerie et tout autre besoin matière à commander."), lignes.length > 0 && React.createElement(Bd, null, React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1.6fr 70px 80px 0.9fr 80px 80px 90px 1fr 140px",
+      gap: 6,
+      padding: "6px 0",
+      borderBottom: "1px solid #EEEEEE",
+      fontSize: 10,
+      fontWeight: 700,
+      color: "#7A7A7A",
+      textTransform: "uppercase"
+    }
+  }, React.createElement("span", null, "Article"), React.createElement("span", null, "Besoin"), React.createElement("span", null, "Cmd."), React.createElement("span", null, "Fourn."), React.createElement("span", null, "Reçu"), React.createElement("span", null, "Stock rés."), React.createElement("span", null, "Total"), React.createElement("span", null, "Statut"), React.createElement("span", {
+    style: {
+      textAlign: "right"
+    }
+  }, "Actions")), lignes.map(l => {
+    const sc = statutMetreColor(l.statut);
+    return React.createElement("div", {
+      key: l.id,
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1.6fr 70px 80px 0.9fr 80px 80px 90px 1fr 140px",
+        gap: 6,
+        padding: "8px 0",
+        borderBottom: "0.5px solid #F5F5F5",
+        alignItems: "center",
+        fontSize: 12
+      }
+    }, React.createElement("div", null, React.createElement("div", {
+      style: {
+        fontWeight: 600,
+        color: "#1C1C1C"
+      }
+    }, l.article), l.note && React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: "#7A7A7A",
+        marginTop: 1
+      }
+    }, l.note)), React.createElement("span", null, l.qty_besoin || 0, " ", l.unit), React.createElement("span", null, l.qty_commandee || "—"), React.createElement("span", {
+      style: {
+        color: "#3A3A3A",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, l.fourn || "—"), React.createElement(Inp, {
+      type: "number",
+      value: l.qty_recue || "",
+      onChange: e => updateRecue(l, e.target.value),
+      placeholder: "0"
+    }), React.createElement("span", null, l.stock_reserve ? `${l.stock_reserve} ${l.unit || ""}` : "—"), React.createElement("span", {
+      style: {
+        fontFamily: "'DM Mono',monospace",
+        fontWeight: 600
+      }
+    }, hideFinances ? "•••" : ligneTotal(l).toLocaleString("fr-FR") + " €"), React.createElement("span", null, React.createElement(Badge, {
+      label: l.statut || "à commander",
+      bg: sc.bg,
+      color: sc.color
+    })), React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 4,
+        justifyContent: "flex-end",
+        flexWrap: "wrap"
+      }
+    }, React.createElement(Btn, {
+      small: true,
+      onClick: () => openEdit(l)
+    }, "Modifier"), l.statut === "à commander" && React.createElement(Btn, {
+      small: true,
+      secondary: true,
+      onClick: () => openLink(l)
+    }, "Commander"), React.createElement(Btn, {
+      small: true,
+      secondary: true,
+      onClick: () => openReserve(l)
+    }, "Stock"), React.createElement(Btn, {
+      small: true,
+      danger: true,
+      onClick: () => removeLigne(l.id)
+    }, "✕")));
+  })), open && React.createElement("div", {
+    style: {
+      position: "fixed",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: "rgba(0,0,0,0.4)",
+      zIndex: 300,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    },
+    onClick: e => {
+      if (e.target === e.currentTarget) setOpen(false);
+    }
+  }, React.createElement("div", {
+    style: {
+      background: "#fff",
+      borderRadius: 12,
+      padding: 24,
+      width: 520,
+      maxWidth: "94vw",
+      maxHeight: "90vh",
+      overflow: "auto",
+      boxShadow: "0 8px 32px rgba(0,0,0,0.2)"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      marginBottom: 14
+    }
+  }, editing ? "Modifier l'article" : "Nouvel article au métré"), React.createElement(FG, {
+    label: "Article / désignation"
+  }, React.createElement(Inp, {
+    value: form.article || "",
+    onChange: e => f("article", e.target.value),
+    placeholder: "Ex: Vis inox A4 M8x40"
+  })), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 8
+    }
+  }, React.createElement(FG, {
+    label: "Quantité besoin"
+  }, React.createElement(Inp, {
+    type: "number",
+    value: form.qty_besoin || "",
+    onChange: e => f("qty_besoin", e.target.value),
+    placeholder: "0"
+  })), React.createElement(FG, {
+    label: "Unité"
+  }, React.createElement(Sel, {
+    value: form.unit || "pcs",
+    onChange: e => f("unit", e.target.value)
+  }, (typeof UNITS !== "undefined" ? UNITS : ["pcs", "m", "m²", "kg", "L"]).map(u => React.createElement("option", {
+    key: u
+  }, u))))), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 8
+    }
+  }, React.createElement(FG, {
+    label: "Fournisseur (optionnel)"
+  }, React.createElement(Sel, {
+    value: form.fourn || "",
+    onChange: e => f("fourn", e.target.value)
+  }, React.createElement("option", {
+    value: ""
+  }, "— Aucun —"), (fournisseurs?.rows || []).map(fo => React.createElement("option", {
+    key: fo.id
+  }, fo.nom)))), React.createElement(FG, {
+    label: "Prix estimé / unité"
+  }, React.createElement(Inp, {
+    type: "number",
+    value: form.prix_estime || "",
+    onChange: e => f("prix_estime", e.target.value),
+    placeholder: "0.00"
+  }))), React.createElement(FG, {
+    label: "Devis lié (optionnel)"
+  }, React.createElement(Sel, {
+    value: form.devis_id || "",
+    onChange: e => f("devis_id", e.target.value)
+  }, React.createElement("option", {
+    value: ""
+  }, "— Aucun —"), (devis?.rows || []).filter(d => d.projet === projet?.name || d.projet === String(projet?.id)).map(d => React.createElement("option", {
+    key: d.id,
+    value: d.id
+  }, d.titre, " — ", d.fourn)))), React.createElement(FG, {
+    label: "Référence stock (si applicable)"
+  }, React.createElement(Inp, {
+    value: form.stock_ref || "",
+    onChange: e => f("stock_ref", e.target.value),
+    placeholder: "Référence article dans le module Stocks"
+  })), React.createElement(FG, {
+    label: "Note"
+  }, React.createElement(Inp, {
+    rows: 2,
+    value: form.note || "",
+    onChange: e => f("note", e.target.value),
+    placeholder: "Précisions, contexte..."
+  })), err && React.createElement("div", {
+    style: {
+      color: "#CC2222",
+      fontSize: 12,
+      marginBottom: 8
+    }
+  }, err), React.createElement(PanelBtns, {
+    onCancel: () => setOpen(false),
+    onSave: save,
+    saving: saving,
+    saveLabel: editing ? "Mettre à jour" : "Ajouter"
+  }))), linking && React.createElement("div", {
+    style: {
+      position: "fixed",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: "rgba(0,0,0,0.4)",
+      zIndex: 300,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    },
+    onClick: e => {
+      if (e.target === e.currentTarget && !linkBusy) setLinking(null);
+    }
+  }, React.createElement("div", {
+    style: {
+      background: "#fff",
+      borderRadius: 12,
+      padding: 22,
+      width: 440,
+      maxWidth: "92vw"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      marginBottom: 4
+    }
+  }, "Commander « ", linking.article, " »"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#7A7A7A",
+      marginBottom: 14
+    }
+  }, linking.qty_besoin, " ", linking.unit, " — ", linking.fourn || "fournisseur non spécifié"), React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 8,
+      fontSize: 12,
+      cursor: "pointer"
+    }
+  }, React.createElement("input", {
+    type: "radio",
+    checked: linkMode === "new",
+    onChange: () => setLinkMode("new")
+  }), "Créer une nouvelle commande"), React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 10,
+      fontSize: 12,
+      cursor: "pointer"
+    }
+  }, React.createElement("input", {
+    type: "radio",
+    checked: linkMode === "link",
+    onChange: () => setLinkMode("link")
+  }), "Lier à une commande existante"), linkMode === "link" && React.createElement(Sel, {
+    value: linkCommandeId,
+    onChange: e => setLinkCommandeId(e.target.value)
+  }, React.createElement("option", {
+    value: ""
+  }, "— Choisir une commande —"), projOrders.map(o => React.createElement("option", {
+    key: o.id,
+    value: o.id
+  }, o.ref || o.article || ("Commande #" + o.id), " — ", o.fourn))), React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 8,
+      marginTop: 16
+    }
+  }, React.createElement(Btn, {
+    onClick: () => setLinking(null),
+    disabled: linkBusy
+  }, "Annuler"), React.createElement(Btn, {
+    primary: true,
+    onClick: confirmLink,
+    disabled: linkBusy || linkMode === "link" && !linkCommandeId
+  }, linkBusy ? "⟳ ..." : "Confirmer")))), reserving && React.createElement("div", {
+    style: {
+      position: "fixed",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: "rgba(0,0,0,0.4)",
+      zIndex: 300,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    },
+    onClick: e => {
+      if (e.target === e.currentTarget && !reserveBusy) setReserving(null);
+    }
+  }, React.createElement("div", {
+    style: {
+      background: "#fff",
+      borderRadius: 12,
+      padding: 22,
+      width: 420,
+      maxWidth: "92vw"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      marginBottom: 4
+    }
+  }, "Réserver du stock libre"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#7A7A7A",
+      marginBottom: 12
+    }
+  }, "Pour « ", reserving.article, " ». Indique la référence exacte du stock (module Stocks) à déduire."), React.createElement(FG, {
+    label: "Référence stock"
+  }, React.createElement(Inp, {
+    value: reserving.stock_ref || reserving.article || "",
+    onChange: e => setReserving(x => ({
+      ...x,
+      stock_ref: e.target.value
+    }))
+  })), React.createElement(FG, {
+    label: "Quantité à réserver"
+  }, React.createElement(Inp, {
+    type: "number",
+    value: reserveQty,
+    onChange: e => setReserveQty(e.target.value)
+  })), React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 8,
+      marginTop: 14
+    }
+  }, React.createElement(Btn, {
+    onClick: () => setReserving(null),
+    disabled: reserveBusy
+  }, "Annuler"), React.createElement(Btn, {
+    primary: true,
+    onClick: confirmReserve,
+    disabled: reserveBusy || !reserveQty
+  }, reserveBusy ? "⟳ ..." : "Déduire du stock")))));
+}
 function Taches({
   sheet,
   projects,
@@ -17646,6 +18405,8 @@ function BureauEtudes({
   timesheets,
   budgetHeures,
   fournisseurs,
+  devis,
+  metre,
   user,
   isMobile = false,
   conges = null
@@ -17708,7 +18469,9 @@ function BureauEtudes({
     budgetHeures: budgetHeures,
     user: user,
     suiviFab: suiviFab,
-    fournisseurs: fournisseurs
+    fournisseurs: fournisseurs,
+    devis: devis,
+    metre: metre
   }), onglet === "taches" && React.createElement(Taches, {
     sheet: tasks,
     projects: projects,
@@ -19036,7 +19799,8 @@ function ImportExcelHeures({
   timesheets,
   projets,
   team,
-  budgetHeures
+  budgetHeures,
+  suiviFab
 }) {
   const normL = s => String(s || "").trim().toLowerCase();
   const [uploadState, setUploadState] = useState("idle");
@@ -19148,31 +19912,45 @@ function ImportExcelHeures({
     } catch (e) {}
     const toDelete = (timesheets?.rows || []).filter(r => r.membre === uploadMembre && r.mois === uploadMois && r.type === "import");
     for (const r of toDelete) await timesheets.remove(r.id);
+    // Regroupe les lignes par projet en conservant les heures RÉELLES de chaque jour
+    // (pas de répartition équitable artificielle sur le nombre de jours)
     const parProjet = {};
     for (const l of parsedLignes) {
       const proj = matchMap[l.projet] || l.projet;
       if (!parProjet[proj]) parProjet[proj] = {
-        dates: [],
+        entries: [],
+        // [{date, heures, rd, note}]
+        totalExcel: 0
+      };
+      parProjet[proj].entries.push({
+        date: l.date,
+        heures: l.heures,
         rd: l.rd,
         note: l.note
-      };
-      parProjet[proj].dates.push(l.date);
+      });
+      parProjet[proj].totalExcel += l.heures;
     }
     for (const [proj, data] of Object.entries(parProjet)) {
-      const hFinales = heuresFinales[proj] ?? 0;
-      if (hFinales <= 0) continue;
+      if (!data.entries.length) continue;
       const pObj = (projets?.rows || []).find(p => normL(p.name) === normL(proj));
-      const hParDate = Math.round(hFinales / data.dates.length * 100) / 100;
-      for (const date of data.dates) {
+      const totalExcel = Math.round(data.totalExcel * 100) / 100;
+      const totalFinal = heuresFinales[proj] ?? totalExcel;
+      // Facteur de correction proportionnel : ne s'applique que si l'utilisateur a
+      // ajusté manuellement le total à l'écran de matching (totalFinal ≠ totalExcel).
+      // Sinon (cas normal) on garde les heures exactes de chaque jour telles que lues dans le fichier.
+      const ratio = totalExcel > 0 ? totalFinal / totalExcel : 1;
+      for (const entry of data.entries) {
+        const heuresAjustees = Math.round(entry.heures * ratio * 100) / 100;
+        if (heuresAjustees <= 0) continue;
         await timesheets.add({
           membre: uploadMembre,
-          date,
+          date: entry.date,
           projet: proj,
-          heures: hParDate,
+          heures: heuresAjustees,
           type: "import",
           mois: uploadMois,
-          note: data.note,
-          rd: data.rd ? "oui" : "",
+          note: entry.note,
+          rd: entry.rd ? "oui" : "",
           projet_id: pObj ? String(pObj.id) : ""
         });
       }
@@ -19845,7 +20623,8 @@ function Equipes({
   budgetHeures,
   conges,
   atelierChantier,
-  missionsBE
+  missionsBE,
+  suiviFab
 }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EM);
@@ -20448,7 +21227,8 @@ function Equipes({
     timesheets: timesheets,
     projets: projets,
     team: sheet,
-    budgetHeures: budgetHeures
+    budgetHeures: budgetHeures,
+    suiviFab: suiviFab
   }));
 }
 const EF = {
@@ -22148,7 +22928,8 @@ const EO = {
   lieuLivraison: "La Rochelle",
   projet: "",
   lignes: "",
-  tags: ""
+  tags: "",
+  titre: ""
 };
 const ED = {
   titre: "",
@@ -23582,13 +24363,19 @@ function Commandes({
     setErr("");
     try {
       const l0 = lignesForm[0];
-      const lignesJSON = lignesForm.length > 1 ? JSON.stringify(lignesForm) : "";
+      const isMulti = lignesForm.length > 1;
+      const totalQty = lignesForm.reduce((s, l) => s + (+l.qty || 0), 0);
+      const totalPrix = lignesForm.reduce((s, l) => s + (+l.qty || 0) * (+l.prix || 0), 0);
+      const lignesJSON = isMulti ? JSON.stringify(lignesForm) : "";
       const data = {
         ...form,
-        article: l0.article,
-        qty: +l0.qty || 0,
-        unit: l0.unit || "pcs",
-        prix: +l0.prix || 0,
+        // Colonnes legacy (visibles directement dans la Sheet) : pour une commande multi-articles,
+        // elles affichent un résumé agrégé honnête (qté totale, montant total) au lieu de dupliquer
+        // uniquement la 1ère ligne — le détail complet par article reste dans "lignes" (JSON).
+        article: isMulti ? `${lignesForm.length} articles — ${l0.article}` : l0.article,
+        qty: isMulti ? totalQty : (+l0.qty || 0),
+        unit: isMulti ? "lot" : (l0.unit || "pcs"),
+        prix: isMulti ? totalPrix : (+l0.prix || 0),
         cat: l0.cat || form.cat || "",
         lignes: lignesJSON
       };
@@ -23667,6 +24454,12 @@ function Commandes({
       }]);
     }
   }, "    ", React.createElement(FG, {
+    label: "Nom du groupe (optionnel)"
+  }, React.createElement(Inp, {
+    value: form.titre || "",
+    onChange: e => f("titre", e.target.value),
+    placeholder: "Ex: Visserie ALCOV — Tout Brico"
+  })), React.createElement(FG, {
     label: "Référence commande"
   }, React.createElement(Inp, {
     value: form.ref,
@@ -24398,7 +25191,7 @@ function Commandes({
         fontWeight: 700,
         color: "#1C1C1C"
       }
-    }, getLignes(o).length > 1 ? `${getLignes(o).length} articles — ${o.ref || o.fourn}` : getLignes(o)[0].article), o.ref && getLignes(o).length <= 1 && React.createElement("span", {
+    }, getLignes(o).length > 1 ? (o.titre ? o.titre : `${getLignes(o).length} articles — ${o.ref || o.fourn}`) : getLignes(o)[0].article), o.ref && getLignes(o).length <= 1 && React.createElement("span", {
       style: {
         fontSize: 11,
         color: "#7A7A7A",
@@ -25178,6 +25971,7 @@ function AppContent({
   const planificateur = useSheet("planificateur");
   const missionsBE = useSheet("missionsBE");
   const conges = useSheet("conges");
+  const metre = useSheet("metre");
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth < 700);
     window.addEventListener("resize", handler);
@@ -25216,7 +26010,9 @@ function AppContent({
     timesheets,
     budgetHeures,
     planificateur,
-    missionsBE
+    missionsBE,
+    conges,
+    metre
   };
   useEffect(() => {
     const role = user.role;
@@ -25736,6 +26532,8 @@ function AppContent({
     timesheets: timesheets,
     budgetHeures: budgetHeures,
     fournisseurs: fournisseurs,
+    devis: devis,
+    metre: metre,
     user: user,
     isMobile: isMobile,
     conges: conges
@@ -25747,7 +26545,8 @@ function AppContent({
     budgetHeures: budgetHeures,
     conges: conges,
     atelierChantier: atelierChantier,
-    missionsBE: missionsBE
+    missionsBE: missionsBE,
+    suiviFab: suiviFab
   }), panel === "atelier" && React.createElement(MissionModule, {
     moduleType: "atelier",
     sheet: atelierChantierView,
