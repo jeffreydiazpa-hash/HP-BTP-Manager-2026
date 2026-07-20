@@ -331,8 +331,10 @@ function calcDepensesProjet(p, orders, prestMissions){
   const isBool=v=>v===true||String(v).toUpperCase()==="TRUE";
   const normP=s=>String(s||"").trim().toLowerCase();
   const projCmd=(orders?.rows||[]).filter(o=>normP(o.projet)===normP(p.name)||o.projet===String(p.id));
-  const cmdEngagees=projCmd.reduce((s,o)=>s+(+o.prix||0)*(+o.qty||0),0);
-  const cmdRecues=projCmd.filter(o=>isBool(o.recue)).reduce((s,o)=>s+(+o.prix||0)*(+o.qty||0),0);
+  // Utiliser totalCommande() qui lit le JSON "lignes" pour les commandes multi-articles,
+  // au lieu de o.prix*o.qty qui ne reflète que la première ligne (colonne legacy).
+  const cmdEngagees=projCmd.reduce((s,o)=>s+totalCommande(o),0);
+  const cmdRecues=projCmd.filter(o=>isBool(o.recue)).reduce((s,o)=>s+totalCommande(o),0);
   const projPrest=(prestMissions?.rows||[]).filter(m=>normP(m.projet)===normP(p.name)||m.projet===String(p.id));
   const prestTotal=projPrest.reduce((s,m)=>s+Number(m.prix||0),0);
   const prestTerminees=projPrest.filter(m=>m.statut==="terminé").reduce((s,m)=>s+Number(m.prix||0),0);
@@ -499,7 +501,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.13";
+const VERSION = "v4.6.15";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -1352,7 +1354,7 @@ function Dashboard({
         return !!p;
       }).map(o => ({
         ...o,
-        total: (+o.prix || 0) * (+o.qty || 0)
+        total: totalCommande(o)
       })).filter(x => x.total > 0).sort((a, b) => b.total - a.total).slice(0, 5);
       const topPrest = [...(prestMissions?.rows || [])].filter(m => {
         if (!m.projet) return true;
@@ -5702,7 +5704,12 @@ function Projets({
       }
       if (projOrders.length) {
         sections += secTitle(4, `Commandes (${projOrders.length})`);
-        sections += table(["Article", "Fournisseur", "Qté", "Prix unitaire", "Total", "Statut"], projOrders.map(o => [o.article, o.fourn, `${o.qty} ${o.unit || ""}`, hideFinances ? "•••" : o.prix > 0 ? Number(o.prix).toLocaleString("fr-FR") + " €" : "—", hideFinances ? "•••" : o.prix > 0 ? (+o.prix * (+o.qty || 1)).toLocaleString("fr-FR") + " €" : "—", isBool(o.recue) ? "Reçue" : "En cours"]));
+        sections += table(["Désignation", "Fournisseur", "Qté", "Total", "Statut"], projOrders.map(o => {
+          const lignes = getLignes(o);
+          const isMulti = lignes.length > 1;
+          const label = o.titre || (isMulti ? `${lignes.length} articles — ${o.fourn}` : lignes[0].article);
+          return [label, o.fourn, isMulti ? lignes.length + " art." : `${lignes[0].qty} ${lignes[0].unit || ""}`, hideFinances ? "•••" : totalCommande(o) > 0 ? totalCommande(o).toLocaleString("fr-FR") + " €" : "—", isBool(o.recue) ? "Reçue" : "En cours"];
+        }));
       }
       if (projPrest.length) {
         sections += secTitle(5, `Prestations (${projPrest.length})`);
@@ -6564,7 +6571,7 @@ ${sections}
         color: "#2A7A2A",
         fontWeight: 600
       }
-    }, hideFinances ? "•••" : projOrders.filter(o => isBool(o.recue)).reduce((s, o) => s + (+o.prix || 0) * (+o.qty || 0), 0).toLocaleString("fr-FR") + " €", " reçues")), !projOrders.length && React.createElement("div", {
+    }, hideFinances ? "•••" : projOrders.filter(o => isBool(o.recue)).reduce((s, o) => s + totalCommande(o), 0).toLocaleString("fr-FR") + " €", " reçues")), !projOrders.length && React.createElement("div", {
       style: {
         fontSize: 13,
         color: "#7A7A7A"
@@ -6657,7 +6664,7 @@ ${sections}
           fontSize: 11,
           color: "#7A7A7A"
         }
-      }, o.fourn, " · ", o.qty, " ", o.unit, o.prix > 0 && (hideFinances ? ` · •••` : `  · ${(+o.prix * (+o.qty || 1)).toLocaleString("fr-FR")} €`))), React.createElement(Badge, {
+      }, o.fourn, " · ", o.qty, " ", o.unit, totalCommande(o) > 0 && (hideFinances ? ` · •••` : `  · ${totalCommande(o).toLocaleString("fr-FR")} €`))), React.createElement(Badge, {
         label: isBool(o.recue) ? "Reçue" : "En cours",
         bg: isBool(o.recue) ? "#F0FFF0" : "#F2F0ED",
         color: isBool(o.recue) ? "#2A7A2A" : "#3A3A3A"
@@ -24431,7 +24438,11 @@ function Commandes({
   const normC = s => String(s || "").trim().toLowerCase();
   const projTermines = new Set((projects?.rows || []).filter(p => p.statut === "terminé").map(p => normC(p.name)));
   const isProjetTermine = o => o.projet && projTermines.has(normC(o.projet));
+  const projParFamille = filterFamille
+    ? new Set((projects?.rows || []).filter(p => normC(p.famille || "") === normC(filterFamille)).map(p => normC(p.name)))
+    : null;
   const applyFiltre = o => {
+    if (projParFamille && o.projet && !projParFamille.has(normC(o.projet))) return false;
     if (filterProjet && normC(o.projet) !== normC(filterProjet)) return false;
     if (filterTag) {
       const t = (o.tags || "").split(",").map(x => x.trim());
@@ -24443,6 +24454,38 @@ function Commandes({
   const encours = sheet.rows.filter(o => !isBool(o.recue) && !isProjetTermine(o) && applyFiltre(o));
   const attenteFacture = sheet.rows.filter(o => isBool(o.recue) && !isBool(o.factureCompta) && !isProjetTermine(o) && applyFiltre(o)).sort((a, b) => toISO(b.date || "").localeCompare(toISO(a.date || "")));
   const historique = sheet.rows.filter(o => isBool(o.recue) && isBool(o.factureCompta) && applyFiltre(o)).sort((a, b) => toISO(b.date || "").localeCompare(toISO(a.date || "")));
+  function exportPDFCommandes() {
+    const fmt2 = v => Number(v || 0).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const sections = [
+      { titre: "En cours", items: encours, couleur: "#1C1C1C" },
+      { titre: "En attente de facturation", items: attenteFacture, couleur: "#CC8800" },
+      { titre: "Historique (reçues + facturées)", items: historique, couleur: "#3A7A3A" }
+    ].filter(s => s.items.length > 0);
+    const totalGeneral = [...encours, ...attenteFacture, ...historique].reduce((s, o) => s + totalCommande(o), 0);
+    const filtresActifs = [
+      filterFamille && `Famille : ${filterFamille.toUpperCase()}`,
+      filterProjet && `Projet : ${filterProjet}`,
+      filterTag && `Tag : ${filterTag}`
+    ].filter(Boolean);
+    const lignesSection = s => {
+      const total = s.items.reduce((acc, o) => acc + totalCommande(o), 0);
+      const rows = s.items.map(o => {
+        const lignes = getLignes(o);
+        const isMulti = lignes.length > 1;
+        const nomGroupe = o.titre || (isMulti ? `${lignes.length} articles \u2014 ${o.ref || o.fourn}` : lignes[0].article);
+        const detailLignes = isMulti
+          ? lignes.map(l => `<tr style="background:#FAFAFA"><td style="padding:3px 8px 3px 24px;font-size:7.5pt;color:#555;border-bottom:0.5px solid #F0F0F0">${l.article || "\u2014"}</td><td style="padding:3px 8px;font-size:7.5pt;color:#555;border-bottom:0.5px solid #F0F0F0;text-align:right">${l.qty} ${l.unit}</td><td style="padding:3px 8px;font-size:7.5pt;color:#555;border-bottom:0.5px solid #F0F0F0;text-align:right">${fmt2(l.prix)}</td><td style="padding:3px 8px;font-size:7.5pt;color:#555;border-bottom:0.5px solid #F0F0F0;text-align:right">${fmt2((+l.qty||0)*(+l.prix||0))}</td><td style="padding:3px 8px;font-size:7.5pt;color:#555;border-bottom:0.5px solid #F0F0F0">${l.cat||""}</td><td></td></tr>`).join("")
+          : "";
+        return `<tr style="background:#fff"><td style="padding:5px 8px;font-size:8.5pt;border-bottom:0.5px solid #EEE;font-weight:${isMulti?600:400}">${nomGroupe}</td><td style="padding:5px 8px;font-size:8.5pt;border-bottom:0.5px solid #EEE;text-align:right">${isMulti ? lignes.length+" art." : (lignes[0].qty+" "+(lignes[0].unit||""))}</td><td style="padding:5px 8px;font-size:8.5pt;border-bottom:0.5px solid #EEE;text-align:right">${isMulti ? "\u2014" : fmt2(lignes[0].prix)}</td><td style="padding:5px 8px;font-size:8.5pt;border-bottom:0.5px solid #EEE;text-align:right;font-weight:600">${fmt2(totalCommande(o))}</td><td style="padding:5px 8px;font-size:8.5pt;border-bottom:0.5px solid #EEE;color:#7A7A7A">${o.fourn||""}</td><td style="padding:5px 8px;font-size:8.5pt;border-bottom:0.5px solid #EEE;color:#7A7A7A">${o.projet||""}${o.tags ? ' <span style="background:#F0F0F0;border-radius:3px;padding:1px 5px;font-size:7pt">'+o.tags+'</span>' : ""}</td></tr>${detailLignes}`;
+      }).join("");
+      return `<div style="margin-bottom:20px"><div style="background:${s.couleur};color:#fff;font-weight:700;font-size:9.5pt;padding:6px 10px;border-radius:4px 4px 0 0;display:flex;justify-content:space-between;align-items:center"><span>${s.titre.toUpperCase()} \u2014 ${s.items.length} commande(s)</span><span>${fmt2(total)} \u20ac</span></div><table style="width:100%;border-collapse:collapse;border:0.5px solid #DDD;border-top:none"><thead><tr style="background:#F5F5F5"><th style="padding:5px 8px;font-size:8pt;text-align:left;border-bottom:1px solid #DDD">D\xe9signation</th><th style="padding:5px 8px;font-size:8pt;text-align:right;border-bottom:1px solid #DDD">Qt\xe9</th><th style="padding:5px 8px;font-size:8pt;text-align:right;border-bottom:1px solid #DDD">PU \u20ac</th><th style="padding:5px 8px;font-size:8pt;text-align:right;border-bottom:1px solid #DDD">Total \u20ac</th><th style="padding:5px 8px;font-size:8pt;text-align:left;border-bottom:1px solid #DDD">Fournisseur</th><th style="padding:5px 8px;font-size:8pt;text-align:left;border-bottom:1px solid #DDD">Projet / Tag</th></tr></thead><tbody>${rows}</tbody><tfoot><tr style="background:#F9F9F9;border-top:1.5px solid #CCC"><td colspan="3" style="padding:6px 8px;font-size:8.5pt;font-weight:700;color:${s.couleur}">SOUS-TOTAL ${s.titre.toUpperCase()}</td><td style="padding:6px 8px;font-size:9pt;font-weight:700;text-align:right;color:${s.couleur}">${fmt2(total)} \u20ac</td><td colspan="2"></td></tr></tfoot></table></div>`;
+    };
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Export commandes \u2014 High Point Structures</title><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Arial,sans-serif;color:#1C1C1C;font-size:10pt;padding:20px 24px;}@media print{@page{margin:14mm 12mm;size:A4 landscape;}body{padding:0;}}</style></head><body><div style="display:flex;align-items:center;gap:16px;padding-bottom:12px;border-bottom:3px solid #CC2222;margin-bottom:16px"><div style="font-size:22pt;font-weight:900;color:#CC2222;letter-spacing:-1px">HP</div><div><div style="font-size:13pt;font-weight:700">High Point Structures</div><div style="font-size:8pt;color:#7A7A7A">Structures l\xe9g\xe8res \u2014 ETFE &amp; Membranes</div></div><div style="margin-left:auto;text-align:right"><div style="font-size:14pt;font-weight:700">Export commandes</div><div style="font-size:9pt;color:#7A7A7A">G\xe9n\xe9r\xe9 le ${new Date().toLocaleDateString("fr-FR")}</div>${filtresActifs.length ? `<div style="font-size:8.5pt;color:#CC2222;margin-top:2px">Filtres\u00a0: ${filtresActifs.join(" \u00b7 ")}</div>` : ""}</div></div>${sections.map(lignesSection).join("")}<div style="margin-top:12px;padding:10px 14px;background:#1C1C1C;border-radius:4px;display:flex;justify-content:space-between;align-items:center"><span style="color:#fff;font-weight:700;font-size:10pt;letter-spacing:.04em">TOTAL G\xc9N\xc9RAL (${[...encours,...attenteFacture,...historique].length} commandes)</span><span style="color:#CC2222;font-weight:900;font-size:14pt">${fmt2(totalGeneral)} \u20ac</span></div></body></html>`;
+    const w = window.open("", "_blank");
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => w.print(), 400);
+  }
   const panel = open && React.createElement(SidePanel, {
     title: editing ? "Modifier la commande" : "Nouvelle commande",
     onClose: () => {
@@ -25156,7 +25199,24 @@ function Commandes({
       alignItems: "center",
       gap: 5
     }
-  }, "🤖 Import IA"), React.createElement(Btn, {
+  }, "🤖 Import IA"), React.createElement("button", {
+    onClick: exportPDFCommandes,
+    title: "Exporter les commandes affichées en PDF",
+    style: {
+      padding: "6px 12px",
+      borderRadius: 4,
+      border: "1px solid #3A7A3A",
+      background: "#F0F7F0",
+      cursor: "pointer",
+      fontSize: 12,
+      fontFamily: "'DM Sans',sans-serif",
+      color: "#3A7A3A",
+      fontWeight: 600,
+      display: "flex",
+      alignItems: "center",
+      gap: 5
+    }
+  }, "📄 Export PDF"), React.createElement(Btn, {
     primary: true,
     onClick: () => {
       setErr("");
