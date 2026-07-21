@@ -296,6 +296,11 @@ function diffWorkDays(d){
   return sign*count;
 }
 function diffDays(d){return diffWorkDays(d);}
+// Différence calendaire entre deux dates ISO (d2 - d1), en jours entiers
+function diffDays2(d1, d2){
+  if(!d1||!d2)return 0;
+  return Math.round((new Date(d2+"T12:00:00")-new Date(d1+"T12:00:00"))/(86400000));
+}
 function autoUrgence(due, done){
   if(done===true||done==="TRUE")return"low";
   const d=diffWorkDays(due);
@@ -501,7 +506,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.15";
+const VERSION = "v4.6.24";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -1172,6 +1177,22 @@ function Dashboard({
   const tachesRetard = [...pending].filter(t => autoUrgence(t.due, t.done) === "critique").sort((a, b) => toISO(a.due).localeCompare(toISO(b.due)));
   const tachesUrgent = [...pending].filter(t => autoUrgence(t.due, t.done) === "high").sort((a, b) => toISO(a.due).localeCompare(toISO(b.due)));
   const stockAlerts = stocks.rows.filter(s => Number(s.qty) < Number(s.min));
+  const camionsAlerte = (() => {
+    const cRows = (sheets.camions && sheets.camions.rows) || [];
+    const kRows = (sheets.kilometrage && sheets.kilometrage.rows) || [];
+    const nowD = new Date(TODAY + "T00:00:00");
+    return cRows.filter(c => c.statut !== "inactif").map(c => {
+      const rl = kRows.filter(r => String(r.camion_id) === String(c.id) || (r.camion_id === "" && String(r.camion_nom || "") === String(c.nom || "")))
+        .slice().sort((a, b) => (toISO(a.date) || "").localeCompare(toISO(b.date) || ""));
+      const last = rl.length ? rl[rl.length - 1] : null;
+      const interval = Number(c.intervalle_mois) || 6;
+      if (!last) return { nom: c.nom, jours: null, jamais: true };
+      const due = new Date(toISO(last.date) + "T00:00:00");
+      due.setMonth(due.getMonth() + interval);
+      const jours = Math.round((due.getTime() - nowD.getTime()) / 86400000);
+      return { nom: c.nom, jours: jours, jamais: false };
+    }).filter(x => x.jamais || x.jours <= 30).sort((a, b) => (a.jamais ? -1 : a.jours) - (b.jamais ? -1 : b.jours));
+  })();
   const retardsProjets = projects.rows.filter(p => p.statut === "retard");
   const upcoming = [...events.rows].sort((a, b) => toISO(a.date).localeCompare(toISO(b.date))).filter(e => toISO(e.date) >= TODAY).slice(0, 5);
   const loading = Object.values(sheets).some(s => s.loading);
@@ -1287,7 +1308,69 @@ function Dashboard({
       color: "#AA0000",
       fontWeight: 700
     }
-  }, " · ", Math.abs(diffDays(t.due)), "j"))))), React.createElement("div", {
+  }, " · ", Math.abs(diffDays(t.due)), "j"))))), camionsAlerte.length > 0 && React.createElement("div", {
+    style: {
+      background: "#FFF6E6",
+      border: "1px solid #FFE0B0",
+      borderLeft: "4px solid #CC6600",
+      borderRadius: 8,
+      padding: "12px 16px",
+      marginBottom: 14
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 10
+    }
+  }, React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#CC6600"
+    }
+  }, "🚚 ", camionsAlerte.length, " camion", camionsAlerte.length > 1 ? "s" : "", " à relever")), React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, camionsAlerte.map((c, i) => {
+    const retard = !c.jamais && c.jours < 0;
+    const label = c.jamais ? "jamais relevé" : retard ? "retard " + Math.abs(c.jours) + "j" : "dans " + c.jours + "j";
+    const col = retard || c.jamais ? "#CC2222" : "#CC6600";
+    const bord = retard || c.jamais ? "#FFAAAA" : "#FFCC88";
+    return React.createElement("span", {
+      key: i,
+      style: {
+        background: "#fff",
+        border: "1px solid " + bord,
+        color: col,
+        fontSize: 11,
+        padding: "3px 10px",
+        borderRadius: 20,
+        fontWeight: 600,
+        display: "flex",
+        alignItems: "center",
+        gap: 5
+      }
+    }, React.createElement("span", {
+      style: {
+        width: 6,
+        height: 6,
+        borderRadius: "50%",
+        background: col,
+        display: "inline-block",
+        flexShrink: 0
+      }
+    }), c.nom, React.createElement("span", {
+      style: {
+        color: col,
+        fontWeight: 700
+      }
+    }, " · ", label));
+  }))), React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(4,1fr)",
@@ -3807,13 +3890,28 @@ function ModuleCR({
     setSaving(false);
   }
   async function saveActionsAsTasks(actions) {
+    const membres = (team?.rows || []).filter(t => t.statut !== "inactif");
+    // Fait correspondre un nom extrait du CR à un vrai membre de l'équipe.
+    // Accepte : correspondance exacte, prénom seul, ou nom contenu dans l'autre.
+    const matchResponsable = raw => {
+      const n = String(raw || "").trim().toLowerCase();
+      if (!n) return "";
+      let m = membres.find(x => String(x.nom || "").trim().toLowerCase() === n);
+      if (m) return m.nom;
+      m = membres.find(x => {
+        const mn = String(x.nom || "").trim().toLowerCase();
+        return mn && (mn.includes(n) || n.includes(mn) || mn.split(" ")[0] === n.split(" ")[0]);
+      });
+      return m ? m.nom : "";
+    };
     for (const a of actions) {
       if (!a.texte) continue;
       await tasks.add({
         text: `[CR] ${a.texte}`,
         projet: projet.name,
         due: a.echeance || "",
-        done: false
+        done: false,
+        responsable: matchResponsable(a.responsable)
       });
     }
   }
@@ -4094,14 +4192,13 @@ function ModuleCR({
         texte: e.target.value
       } : x)),
       placeholder: "Action à réaliser"
-    }), React.createElement(Inp, {
+    }), React.createElement(Sel, {
       value: a.responsable,
       onChange: e => setActionsForm(l => l.map((x, j) => j === i ? {
         ...x,
         responsable: e.target.value
-      } : x)),
-      placeholder: "Responsable"
-    }), React.createElement(Inp, {
+      } : x))
+    }, React.createElement("option", { value: "" }, "— Resp. —"), (team?.rows || []).filter(t => t.statut !== "inactif").map(t => React.createElement("option", { key: t.id, value: t.nom }, t.nom))), React.createElement(Inp, {
       type: "date",
       value: a.echeance,
       onChange: e => setActionsForm(l => l.map((x, j) => j === i ? {
@@ -4308,26 +4405,41 @@ function ModuleCR({
         fontWeight: 700,
         marginBottom: 6
       }
-    }, "Actions détectées (", (aiPreview.actions || []).length, ")"), (aiPreview.actions || []).map((a, i) => React.createElement("div", {
-      key: i,
-      style: {
-        padding: "6px 10px",
-        background: "#FFF8EC",
-        borderRadius: 4,
-        marginBottom: 4,
-        border: "0.5px solid #FFDD99",
-        fontSize: 12
-      }
-    }, React.createElement("div", {
-      style: {
-        fontWeight: 500
-      }
-    }, a.texte), React.createElement("div", {
-      style: {
-        color: "#7A7A7A",
-        fontSize: 11
-      }
-    }, a.responsable && `→ ${a.responsable}`, a.echeance && ` · ${fmt(a.echeance)}`))), React.createElement("div", {
+    }, "Actions détectées (", (aiPreview.actions || []).length, ")"), (aiPreview.actions || []).map((a, i) => {
+      const membresCR = (team?.rows || []).filter(t => t.statut !== "inactif");
+      const matchInit = raw => {
+        const n = String(raw || "").trim().toLowerCase();
+        if (!n) return "";
+        let m = membresCR.find(x => String(x.nom || "").trim().toLowerCase() === n);
+        if (m) return m.nom;
+        m = membresCR.find(x => {
+          const mn = String(x.nom || "").trim().toLowerCase();
+          return mn && (mn.includes(n) || n.includes(mn) || mn.split(" ")[0] === n.split(" ")[0]);
+        });
+        return m ? m.nom : "";
+      };
+      const respSel = a.responsable !== undefined && membresCR.some(m => m.nom === a.responsable) ? a.responsable : matchInit(a.responsable);
+      return React.createElement("div", {
+        key: i,
+        style: { padding: "6px 10px", background: "#FFF8EC", borderRadius: 4, marginBottom: 4, border: "0.5px solid #FFDD99", fontSize: 12 }
+      }, React.createElement("div", { style: { fontWeight: 500, marginBottom: 4 } }, a.texte),
+      React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+        React.createElement("span", { style: { color: "#7A7A7A", fontSize: 11 } }, "Responsable :"),
+        React.createElement("select", {
+          value: respSel,
+          onChange: e => {
+            setAiPreview(prev => {
+              const acts = [...(prev.actions || [])];
+              acts[i] = { ...acts[i], responsable: e.target.value };
+              return { ...prev, actions: acts };
+            });
+          },
+          style: { padding: "2px 6px", borderRadius: 4, border: "1px solid " + (respSel ? "#1A5DAB" : "#CC8800"), fontSize: 11, fontFamily: "'DM Sans',sans-serif", background: respSel ? "#fff" : "#FFF0F0" }
+        }, React.createElement("option", { value: "" }, "— Non assigné —"),
+          membresCR.map(m => React.createElement("option", { key: m.id, value: m.nom }, m.nom))),
+        a.responsable && !respSel && React.createElement("span", { style: { color: "#CC8800", fontSize: 10.5, fontStyle: "italic" } }, "(CR: « ", a.responsable, " » — non reconnu)"),
+        a.echeance && React.createElement("span", { style: { color: "#7A7A7A", fontSize: 11 } }, "· échéance ", fmt(a.echeance))));
+    }), React.createElement("div", {
       style: {
         display: "flex",
         gap: 8,
@@ -7142,10 +7254,14 @@ ${sections}
         }, t.text), t.due && React.createElement("div", {
           style: {
             fontSize: 11,
-            color: done ? "#CCCCCC" : toISO(t.due) < TODAY ? "#CC2222" : "#7A7A7A",
+            color: done ? "#7A7A7A" : toISO(t.due) < TODAY ? "#CC2222" : "#7A7A7A",
             marginTop: 2
           }
-        }, done ? "" : "📅 ", fmt(t.due), !done && toISO(t.due) < TODAY ? " — en retard" : "")));
+        }, done
+          ? (t.done_at
+              ? ("✓ Terminée le " + fmt(t.done_at) + (toISO(t.done_at) > toISO(t.due) ? " (+" + diffDays2(toISO(t.due), toISO(t.done_at)) + "j)" : ""))
+              : ("✓ Terminée — éch. " + fmt(t.due)))
+          : ((toISO(t.due) < TODAY ? "🚨 " : "📅 ") + fmt(t.due) + (toISO(t.due) < TODAY ? " — en retard" : "")))));
       }));
     })(), ongletDetail === "metre" && React.createElement(MetreProjet, {
       metre: metre,
@@ -15258,9 +15374,11 @@ function Taches({
     setSaving(false);
   }
   async function toggle(t) {
+    const nowDone = !isDone(t);
     await sheet.update(t.id, {
       ...t,
-      done: !isDone(t)
+      done: nowDone,
+      done_at: nowDone ? TODAY : ""
     });
   }
   const urgOrder = {
@@ -15272,9 +15390,13 @@ function Taches({
   };
   const baseRows = standalone ? sheet.rows : sheet.rows.filter(t => !t.responsable || (t.responsable || "") === (user?.nom || ""));
   const sorted = [...baseRows].sort((a, b) => {
-    const da = isDone(a),
-      db = isDone(b);
+    const da = isDone(a), db = isDone(b);
     if (da !== db) return da ? 1 : -1;
+    // Terminées : trier par done_at décroissant (la plus récemment terminée en premier)
+    if (da && db) {
+      const da_at = toISO(a.done_at) || "", db_at = toISO(b.done_at) || "";
+      return db_at.localeCompare(da_at);
+    }
     const oa = urgOrder[autoUrgence(a.due, a.done)] ?? 3,
       ob = urgOrder[autoUrgence(b.due, b.done)] ?? 3;
     if (oa !== ob) return oa - ob;
@@ -15459,8 +15581,25 @@ function Taches({
     const done = isDone(t);
     const urg = done ? "done" : autoUrgence(t.due, t.done);
     const u = UC[urg] || UC.low;
-    const d = diffDays(t.due);
-    const dueLbl = t.due ? d < 0 ? `${Math.abs(d)}j de retard` : d === 0 ? "Aujourd'hui" : d === 1 ? "Demain" : `${fmt(t.due)}` : null;
+    // Pour une tâche terminée : retard figé à done_at (pas aujourd'hui), et on affiche la date de complétion
+    let dueLbl = null;
+    if (done) {
+      if (t.done_at) {
+        const doneDate = toISO(t.done_at);
+        const dueDate = t.due ? toISO(t.due) : null;
+        if (dueDate && doneDate > dueDate) {
+          const retardJ = Math.abs(diffDays2(dueDate, doneDate));
+          dueLbl = `✓ Terminée le ${fmt(t.done_at)}${retardJ > 0 ? ` (${retardJ}j de retard)` : ""}`;
+        } else {
+          dueLbl = `✓ Terminée le ${fmt(t.done_at)}`;
+        }
+      } else {
+        dueLbl = t.due ? `✓ Terminée — échéance ${fmt(t.due)}` : "✓ Terminée";
+      }
+    } else if (t.due) {
+      const d = diffDays(t.due);
+      dueLbl = d < 0 ? `${Math.abs(d)}j de retard` : d === 0 ? "Aujourd'hui" : d === 1 ? "Demain" : `${fmt(t.due)}`;
+    }
     const mc = t.responsable ? getMemberColor(t.responsable) : null;
     return React.createElement("div", {
       key: t.id,
@@ -18491,7 +18630,8 @@ function BureauEtudes({
     atelierChantier: atelierChantier,
     cr: cr,
     tasks: tasks,
-    conges: conges
+    conges: conges,
+    team: team
   }), onglet === "missionsBE" && React.createElement(MissionModule, {
     moduleType: "be",
     sheet: missionsBE,
@@ -18527,13 +18667,271 @@ function BureauEtudes({
     user: user
   }));
 }
+function ChantierWrapper({ missionProps, camions, kilometrage, team, user, isMobile }) {
+  const [sub, setSub] = useState("missions");
+  const tab = (id, label) => React.createElement("button", {
+    key: id,
+    onClick: () => setSub(id),
+    style: {
+      padding: "8px 16px",
+      border: "none",
+      background: "none",
+      cursor: "pointer",
+      fontSize: 14,
+      fontFamily: "'DM Sans',sans-serif",
+      fontWeight: sub === id ? 700 : 400,
+      color: sub === id ? "#CC2222" : "#7A7A7A",
+      borderBottom: sub === id ? "2.5px solid #CC2222" : "2.5px solid transparent"
+    }
+  }, label);
+  return React.createElement("div", null,
+    React.createElement("div", { style: { display: "flex", gap: 4, borderBottom: "1px solid #EEEEEE", marginBottom: 16 } },
+      tab("missions", "Missions chantier"),
+      tab("kilometrage", "🚚 Kilométrage")
+    ),
+    sub === "missions" && React.createElement(MissionModule, missionProps),
+    sub === "kilometrage" && React.createElement(Kilometrage, { camions: camions, kilometrage: kilometrage, team: team, user: user, isMobile: isMobile })
+  );
+}
+// ═══ Module Kilométrage camions (Chantier) — v4.6.23 ═══
+function Kilometrage({ camions, kilometrage, team = null, user = null, isMobile = false }) {
+  const membresActifs = (team && team.rows || []).filter(t => t.statut !== "inactif");
+  const parseD = s => { const t = toISO(s); return t ? new Date(t + "T00:00:00") : null; };
+  const frDate = s => { const d = parseD(s); return d ? d.toLocaleDateString("fr-FR") : "—"; };
+  const addMonths = (d, n) => { const x = new Date(d.getTime()); x.setMonth(x.getMonth() + n); return x; };
+  const daysBetween = (a, b) => Math.round((b.getTime() - a.getTime()) / 86400000);
+  const fmtKm = n => Number(n || 0).toLocaleString("fr-FR");
+  const now = new Date(TODAY + "T00:00:00");
+
+  const [showTruck, setShowTruck] = useState(false);
+  const [truckForm, setTruckForm] = useState({ nom: "", immatriculation: "", marque: "", modele: "", annee: "", statut: "actif", intervalle_mois: "6" });
+  const [editTruck, setEditTruck] = useState(null);
+  const [editData, setEditData] = useState({});
+  const [savingT, setSavingT] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const [relDraft, setRelDraft] = useState({ date: TODAY, km: "", releve_par: user ? user.nom : "", note: "" });
+  const [savingR, setSavingR] = useState(false);
+
+  const trucks = (camions.rows || []).slice().sort((a, b) => String(a.nom || "").localeCompare(String(b.nom || "")));
+  const relevesFor = t => (kilometrage.rows || [])
+    .filter(r => String(r.camion_id) === String(t.id) || (r.camion_id === "" && String(r.camion_nom || "") === String(t.nom || "")))
+    .slice()
+    .sort((a, b) => (toISO(a.date) || "").localeCompare(toISO(b.date) || ""));
+
+  const addTruck = async () => {
+    if (!truckForm.nom.trim()) return;
+    setSavingT(true);
+    await camions.add({
+      nom: truckForm.nom.trim(),
+      immatriculation: truckForm.immatriculation.trim(),
+      marque: truckForm.marque.trim(),
+      modele: truckForm.modele.trim(),
+      annee: truckForm.annee.trim(),
+      statut: truckForm.statut || "actif",
+      intervalle_mois: String(Number(truckForm.intervalle_mois) || 6),
+      note: ""
+    });
+    setTruckForm({ nom: "", immatriculation: "", marque: "", modele: "", annee: "", statut: "actif", intervalle_mois: "6" });
+    setShowTruck(false);
+    setSavingT(false);
+  };
+
+  const saveEditTruck = async id => {
+    await camions.update(id, editData);
+    setEditTruck(null);
+    setEditData({});
+  };
+
+  const addReleve = async t => {
+    if (!relDraft.km || isNaN(Number(relDraft.km))) return;
+    setSavingR(true);
+    await kilometrage.add({
+      camion_id: String(t.id),
+      camion_nom: t.nom || "",
+      date: toISO(relDraft.date) || TODAY,
+      km: String(Number(relDraft.km)),
+      releve_par: relDraft.releve_par || "",
+      note: relDraft.note || ""
+    });
+    setRelDraft({ date: TODAY, km: "", releve_par: user ? user.nom : "", note: "" });
+    setSavingR(false);
+  };
+
+  // ── En-tête + bouton ajout camion ──
+  const header = React.createElement("div", {
+    style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }
+  },
+    React.createElement("div", null,
+      React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: "#1C1C1C", fontFamily: "'DM Sans',sans-serif" } }, "🚚 Kilométrage des camions"),
+      React.createElement("div", { style: { fontSize: 12, color: "#7A7A7A", fontFamily: "'DM Sans',sans-serif" } }, "Relevé recommandé tous les 6 mois — un relevé de plus quand vous le souhaitez")
+    ),
+    React.createElement(Btn, { primary: true, onClick: () => setShowTruck(v => !v) }, showTruck ? "✕ Fermer" : "+ Ajouter un camion")
+  );
+
+  // ── Formulaire ajout camion ──
+  const truckAddForm = showTruck && React.createElement("div", {
+    style: { border: "1px solid #EEE", borderRadius: 8, padding: 14, marginBottom: 16, background: "#F2F0ED" }
+  },
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.2fr 1fr 1fr 1fr 0.7fr 1fr", gap: 8, marginBottom: 8 } },
+      React.createElement(FG, { label: "Nom / surnom *" }, React.createElement(Inp, { value: truckForm.nom, onChange: e => setTruckForm(f => ({ ...f, nom: e.target.value })), placeholder: "ex : Camion 1, Le Master" })),
+      React.createElement(FG, { label: "Immatriculation" }, React.createElement(Inp, { value: truckForm.immatriculation, onChange: e => setTruckForm(f => ({ ...f, immatriculation: e.target.value })), placeholder: "AA-123-BB" })),
+      React.createElement(FG, { label: "Marque" }, React.createElement(Inp, { value: truckForm.marque, onChange: e => setTruckForm(f => ({ ...f, marque: e.target.value })), placeholder: "Renault…" })),
+      React.createElement(FG, { label: "Modèle" }, React.createElement(Inp, { value: truckForm.modele, onChange: e => setTruckForm(f => ({ ...f, modele: e.target.value })), placeholder: "Master…" })),
+      React.createElement(FG, { label: "Année" }, React.createElement(Inp, { value: truckForm.annee, onChange: e => setTruckForm(f => ({ ...f, annee: e.target.value })), placeholder: "2021" })),
+      React.createElement(FG, { label: "Rappel tous les (mois)" }, React.createElement(Sel, { value: truckForm.intervalle_mois, onChange: e => setTruckForm(f => ({ ...f, intervalle_mois: e.target.value })) },
+        [1, 2, 3, 4, 6, 12].map(n => React.createElement("option", { key: n, value: String(n) }, n + " mois"))
+      ))
+    ),
+    React.createElement("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end" } },
+      React.createElement(Btn, { onClick: () => setShowTruck(false) }, "Annuler"),
+      React.createElement(Btn, { primary: true, disabled: savingT || !truckForm.nom.trim(), onClick: addTruck }, savingT ? "…" : "Enregistrer le camion")
+    )
+  );
+
+  // ── Carte par camion ──
+  const cards = trucks.map(t => {
+    const rl = relevesFor(t);
+    const last = rl.length ? rl[rl.length - 1] : null;
+    const prev = rl.length > 1 ? rl[rl.length - 2] : null;
+    const lastDate = last ? parseD(last.date) : null;
+    const interval = Number(t.intervalle_mois) || 6;
+    const due = lastDate ? addMonths(lastDate, interval) : null;
+    const joursAvant = due ? daysBetween(now, due) : null;
+    let statut = { txt: "Jamais relevé", bg: "#F2F0ED", tx: "#7A7A7A" };
+    if (last) {
+      if (joursAvant < 0) statut = { txt: "⚠ Relevé en retard de " + Math.abs(joursAvant) + " j", bg: "#FFF0F0", tx: "#CC2222" };
+      else if (joursAvant <= 30) statut = { txt: "Relevé dû dans " + joursAvant + " j", bg: "#FFF6E6", tx: "#CC6600" };
+      else statut = { txt: "À jour — prochain le " + frDate(due.toISOString().split("T")[0]), bg: "#F0FFF0", tx: "#2A7A2A" };
+    }
+    let kmParcourus = null, kmParMois = null;
+    if (last && prev) {
+      kmParcourus = Number(last.km) - Number(prev.km);
+      const dj = daysBetween(parseD(prev.date), parseD(last.date));
+      if (dj > 0) kmParMois = Math.round(kmParcourus / (dj / 30.44));
+    }
+    const isEdit = editTruck === t.id;
+    const isOpen = expanded === t.id;
+    const inactif = t.statut === "inactif";
+
+    const infoLine = [t.marque, t.modele].filter(Boolean).join(" ") + (t.annee ? " (" + t.annee + ")" : "");
+
+    return React.createElement("div", {
+      key: t.id,
+      style: { border: "1px solid #EEE", borderRadius: 10, marginBottom: 12, background: "#fff", opacity: inactif ? 0.6 : 1, overflow: "hidden" }
+    },
+      // Bandeau camion
+      React.createElement("div", { style: { padding: 14, borderBottom: isOpen ? "1px solid #EEE" : "none" } },
+        isEdit
+          ? React.createElement("div", { style: { display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.2fr 1fr 1fr 1fr 0.7fr 1fr 1fr", gap: 8 } },
+              React.createElement(Inp, { value: editData.nom, onChange: e => setEditData(d => ({ ...d, nom: e.target.value })), placeholder: "Nom" }),
+              React.createElement(Inp, { value: editData.immatriculation, onChange: e => setEditData(d => ({ ...d, immatriculation: e.target.value })), placeholder: "Immat." }),
+              React.createElement(Inp, { value: editData.marque, onChange: e => setEditData(d => ({ ...d, marque: e.target.value })), placeholder: "Marque" }),
+              React.createElement(Inp, { value: editData.modele, onChange: e => setEditData(d => ({ ...d, modele: e.target.value })), placeholder: "Modèle" }),
+              React.createElement(Inp, { value: editData.annee, onChange: e => setEditData(d => ({ ...d, annee: e.target.value })), placeholder: "Année" }),
+              React.createElement(Sel, { value: editData.statut || "actif", onChange: e => setEditData(d => ({ ...d, statut: e.target.value })) },
+                React.createElement("option", { value: "actif" }, "Actif"),
+                React.createElement("option", { value: "inactif" }, "Inactif / vendu")
+              ),
+              React.createElement(Sel, { value: editData.intervalle_mois || "6", onChange: e => setEditData(d => ({ ...d, intervalle_mois: e.target.value })) },
+                [1, 2, 3, 4, 6, 12].map(n => React.createElement("option", { key: n, value: String(n) }, "tous les " + n + " mois"))
+              )
+            )
+          : React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" } },
+              React.createElement("div", { style: { minWidth: 180 } },
+                React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: "#1C1C1C", fontFamily: "'DM Sans',sans-serif" } },
+                  t.nom, t.immatriculation ? React.createElement("span", { style: { fontFamily: "'DM Mono',monospace", fontSize: 12, color: "#7A7A7A", marginLeft: 8, fontWeight: 400 } }, t.immatriculation) : null
+                ),
+                infoLine.trim() ? React.createElement("div", { style: { fontSize: 12, color: "#7A7A7A", fontFamily: "'DM Sans',sans-serif" } }, infoLine) : null
+              ),
+              React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+                React.createElement("div", { style: { textAlign: "right" } },
+                  React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: "#1C1C1C", fontFamily: "'DM Mono',monospace" } }, last ? fmtKm(last.km) + " km" : "— km"),
+                  React.createElement("div", { style: { fontSize: 11, color: "#7A7A7A", fontFamily: "'DM Sans',sans-serif" } }, last ? "au " + frDate(last.date) : "aucun relevé")
+                ),
+                React.createElement("span", { style: { fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 20, background: statut.bg, color: statut.tx, fontFamily: "'DM Sans',sans-serif", whiteSpace: "nowrap" } }, statut.txt)
+              )
+            ),
+        // stats + actions
+        !isEdit && React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, flexWrap: "wrap", gap: 8 } },
+          React.createElement("div", { style: { display: "flex", gap: 16, fontSize: 12, color: "#3A3A3A", fontFamily: "'DM Sans',sans-serif", flexWrap: "wrap" } },
+            React.createElement("span", { style: { color: "#7A7A7A" } }, "Rappel tous les ", React.createElement("b", null, interval + " mois")),
+            kmParcourus != null ? React.createElement("span", null, "Depuis le dernier relevé : ", React.createElement("b", null, fmtKm(kmParcourus) + " km")) : null,
+            kmParMois != null ? React.createElement("span", null, "≈ ", React.createElement("b", null, fmtKm(kmParMois) + " km/mois")) : null,
+            React.createElement("span", null, rl.length, " relevé", rl.length > 1 ? "s" : "")
+          ),
+          React.createElement("div", { style: { display: "flex", gap: 6 } },
+            React.createElement(Btn, { small: true, primary: true, onClick: () => { setExpanded(isOpen ? null : t.id); setRelDraft({ date: TODAY, km: last ? String(last.km) : "", releve_par: user ? user.nom : "", note: "" }); } }, isOpen ? "Fermer" : "+ Relevé / historique"),
+            React.createElement(Btn, { small: true, onClick: () => { setEditTruck(t.id); setEditData({ nom: t.nom, immatriculation: t.immatriculation, marque: t.marque, modele: t.modele, annee: t.annee, statut: t.statut || "actif", intervalle_mois: t.intervalle_mois || "6" }); } }, "✎")
+          )
+        ),
+        isEdit && React.createElement("div", { style: { display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 8 } },
+          React.createElement(Btn, { small: true, danger: true, onClick: async () => { if (confirm("Supprimer ce camion et le retirer de la liste ? (les relevés restent dans l'onglet Sheets)")) { await camions.remove(t.id); setEditTruck(null); } } }, "Supprimer"),
+          React.createElement(Btn, { small: true, onClick: () => { setEditTruck(null); setEditData({}); } }, "Annuler"),
+          React.createElement(Btn, { small: true, primary: true, onClick: () => saveEditTruck(t.id) }, "Enregistrer")
+        )
+      ),
+      // Panneau relevé + historique
+      isOpen && React.createElement("div", { style: { padding: 14, background: "#FAFAFA" } },
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: isMobile ? "1fr" : "130px 1fr 1fr 1.4fr auto", gap: 8, alignItems: "flex-end", marginBottom: 14 } },
+          React.createElement(FG, { label: "Date du relevé" }, React.createElement(Inp, { type: "date", value: relDraft.date, onChange: e => setRelDraft(d => ({ ...d, date: e.target.value })) })),
+          React.createElement(FG, { label: "Kilométrage (km)" }, React.createElement(Inp, { type: "number", value: relDraft.km, onChange: e => setRelDraft(d => ({ ...d, km: e.target.value })), placeholder: "ex : 84500" })),
+          React.createElement(FG, { label: "Relevé par" },
+            membresActifs.length
+              ? React.createElement(Sel, { value: relDraft.releve_par, onChange: e => setRelDraft(d => ({ ...d, releve_par: e.target.value })) },
+                  React.createElement("option", { value: "" }, "—"),
+                  membresActifs.map(m => React.createElement("option", { key: m.id, value: m.nom }, m.nom))
+                )
+              : React.createElement(Inp, { value: relDraft.releve_par, onChange: e => setRelDraft(d => ({ ...d, releve_par: e.target.value })), placeholder: "Nom" })
+          ),
+          React.createElement(FG, { label: "Note (optionnel)" }, React.createElement(Inp, { value: relDraft.note, onChange: e => setRelDraft(d => ({ ...d, note: e.target.value })), placeholder: "révision, contrôle technique…" })),
+          React.createElement(Btn, { primary: true, disabled: savingR || !relDraft.km, onClick: () => addReleve(t) }, savingR ? "…" : "Ajouter")
+        ),
+        rl.length === 0
+          ? React.createElement("div", { style: { fontSize: 12, color: "#7A7A7A", fontStyle: "italic", fontFamily: "'DM Sans',sans-serif" } }, "Aucun relevé pour ce camion.")
+          : React.createElement("div", { style: { border: "1px solid #EEE", borderRadius: 8, overflow: "hidden", background: "#fff" } },
+              React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1.4fr 30px", gap: 6, padding: "6px 10px", background: "#F2F0ED", fontSize: 11, fontWeight: 600, color: "#7A7A7A", fontFamily: "'DM Sans',sans-serif" } },
+                React.createElement("div", null, "Date"), React.createElement("div", null, "Kilométrage"), React.createElement("div", null, "Δ depuis précédent"), React.createElement("div", null, "Relevé par / note"), React.createElement("div", null, "")
+              ),
+              rl.slice().reverse().map((r, idx, arr) => {
+                const older = arr[idx + 1];
+                const delta = older ? Number(r.km) - Number(older.km) : null;
+                return React.createElement("div", { key: r.id, style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1.4fr 30px", gap: 6, padding: "8px 10px", borderTop: "1px solid #F5F5F5", fontSize: 12, alignItems: "center", fontFamily: "'DM Sans',sans-serif", color: "#1C1C1C" } },
+                  React.createElement("div", null, frDate(r.date)),
+                  React.createElement("div", { style: { fontFamily: "'DM Mono',monospace", fontWeight: 600 } }, fmtKm(r.km), " km"),
+                  React.createElement("div", { style: { color: delta != null && delta < 0 ? "#CC2222" : "#3A3A3A" } }, delta != null ? "+" + fmtKm(delta) + " km" : "—"),
+                  React.createElement("div", { style: { color: "#7A7A7A" } }, [r.releve_par, r.note].filter(Boolean).join(" · ") || "—"),
+                  React.createElement("button", { onClick: async () => { if (confirm("Supprimer ce relevé ?")) await kilometrage.remove(r.id); }, style: { background: "none", border: "none", cursor: "pointer", color: "#CC2222", fontSize: 13 } }, "✕")
+                );
+              })
+            )
+      )
+    );
+  });
+
+  const emptyState = trucks.length === 0 && !showTruck && React.createElement("div", {
+    style: { textAlign: "center", padding: "40px 20px", color: "#7A7A7A", fontFamily: "'DM Sans',sans-serif", border: "1px dashed #DDD", borderRadius: 10 }
+  },
+    React.createElement("div", { style: { fontSize: 32, marginBottom: 8 } }, "🚚"),
+    React.createElement("div", { style: { fontSize: 14, marginBottom: 4 } }, "Aucun camion enregistré"),
+    React.createElement("div", { style: { fontSize: 12 } }, "Commencez par ajouter vos camions à l'inventaire, puis saisissez leurs relevés kilométriques.")
+  );
+
+  return React.createElement("div", { style: { fontFamily: "'DM Sans',sans-serif" } },
+    header,
+    truckAddForm,
+    emptyState,
+    React.createElement("div", null, cards)
+  );
+}
+
 function Calendrier({
   sheet,
   projects,
   atelierChantier,
   cr,
   tasks,
-  conges = null
+  conges = null,
+  team = null
 }) {
   const [year, setYear] = useState(() => new Date().getFullYear());
   const [month, setMonth] = useState(() => new Date().getMonth());
@@ -19190,14 +19588,18 @@ function Calendrier({
       texte: e.target.value
     } : x)),
     placeholder: "Action"
-  }), React.createElement(Inp, {
+  }), React.createElement(Sel, {
     value: a.responsable,
     onChange: e => setCrActionsForm(l => l.map((x, j) => j === i ? {
       ...x,
       responsable: e.target.value
-    } : x)),
-    placeholder: "Responsable"
-  }), React.createElement(Inp, {
+    } : x))
+  }, React.createElement("option", {
+    value: ""
+  }, "— Resp. —"), (team?.rows || []).filter(t => t.statut !== "inactif").map(t => React.createElement("option", {
+    key: t.id,
+    value: t.nom
+  }, t.nom))), React.createElement(Inp, {
     type: "date",
     value: a.echeance,
     onChange: e => setCrActionsForm(l => l.map((x, j) => j === i ? {
@@ -19269,7 +19671,8 @@ function Calendrier({
           text: `[CR] ${a.texte}`,
           projet,
           due: a.echeance || "",
-          done: false
+          done: false,
+          responsable: a.responsable || ""
         });
       }
       setCrModal(null);
@@ -19813,6 +20216,8 @@ function ImportExcelHeures({
   const [uploadState, setUploadState] = useState("idle");
   const [parsedLignes, setParsedLignes] = useState([]);
   const [matchMap, setMatchMap] = useState({});
+  const [splitMap, setSplitMap] = useState({});
+  const [ignoreMap, setIgnoreMap] = useState({});
   const [uploadMembre, setUploadMembre] = useState("");
   const [uploadMois, setUploadMois] = useState("");
   const [moisSelectionne, setMoisSelectionne] = useState("");
@@ -19821,6 +20226,24 @@ function ImportExcelHeures({
   const [heuresFinales, setHeuresFinales] = useState({});
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
+  const recalcHeuresTout = (newMap, newSplitMap, newIgnoreMap, lignes) => {
+    const hRecalc = {};
+    for (const l of lignes) {
+      if (newIgnoreMap[l.projet]) continue;
+      const proj1 = newMap[l.projet] || l.projet;
+      if (!proj1) continue;
+      const sp = newSplitMap[l.projet];
+      if (sp && sp.proj2 && sp.pct > 0 && sp.pct < 100) {
+        hRecalc[proj1] = (hRecalc[proj1] || 0) + l.heures * (100 - sp.pct) / 100;
+        hRecalc[sp.proj2] = (hRecalc[sp.proj2] || 0) + l.heures * sp.pct / 100;
+      } else {
+        hRecalc[proj1] = (hRecalc[proj1] || 0) + l.heures;
+      }
+    }
+    const out = {};
+    for (const [proj, h] of Object.entries(hRecalc)) out[proj] = Math.round(h * 10) / 10;
+    return out;
+  };
   const handleUpload = async e => {
     const file = e.target.files[0];
     if (!file) return;
@@ -19919,23 +20342,23 @@ function ImportExcelHeures({
     } catch (e) {}
     const toDelete = (timesheets?.rows || []).filter(r => r.membre === uploadMembre && r.mois === uploadMois && r.type === "import");
     for (const r of toDelete) await timesheets.remove(r.id);
-    // Regroupe les lignes par projet en conservant les heures RÉELLES de chaque jour
-    // (pas de répartition équitable artificielle sur le nombre de jours)
+    // Regroupe les lignes par projet en conservant les heures RÉELLES de chaque jour.
+    // Gère aussi le split (répartition sur 2 projets) et l'exclusion (ignoreMap).
     const parProjet = {};
     for (const l of parsedLignes) {
-      const proj = matchMap[l.projet] || l.projet;
-      if (!parProjet[proj]) parProjet[proj] = {
-        entries: [],
-        // [{date, heures, rd, note}]
-        totalExcel: 0
-      };
-      parProjet[proj].entries.push({
-        date: l.date,
-        heures: l.heures,
-        rd: l.rd,
-        note: l.note
-      });
-      parProjet[proj].totalExcel += l.heures;
+      if (ignoreMap[l.projet]) continue;
+      const proj1 = matchMap[l.projet] || l.projet;
+      if (!proj1) continue;
+      const sp = splitMap[l.projet];
+      const hasSp = sp && sp.proj2 && sp.pct > 0 && sp.pct < 100;
+      const parts = hasSp
+        ? [{ proj: proj1, heures: l.heures * (100 - sp.pct) / 100 }, { proj: sp.proj2, heures: l.heures * sp.pct / 100 }]
+        : [{ proj: proj1, heures: l.heures }];
+      for (const part of parts) {
+        if (!parProjet[part.proj]) parProjet[part.proj] = { entries: [], totalExcel: 0 };
+        parProjet[part.proj].entries.push({ date: l.date, heures: part.heures, rd: l.rd, note: l.note });
+        parProjet[part.proj].totalExcel += part.heures;
+      }
     }
     for (const [proj, data] of Object.entries(parProjet)) {
       if (!data.entries.length) continue;
@@ -19969,6 +20392,8 @@ function ImportExcelHeures({
       setOpen(false);
       setParsedLignes([]);
       setHeuresFinales({});
+      setSplitMap({});
+      setIgnoreMap({});
     }, 2000);
   };
   const genRapportHeures = moisFiltre => {
@@ -20325,7 +20750,7 @@ function ImportExcelHeures({
       color: "#7A7A7A",
       marginTop: 2
     }
-  }, "Étape 1 : Vérifiez la correspondance des projets. Étape 2 : Ajustez les heures finales si besoin.")), React.createElement("div", {
+  }, "Étape 1 : Vérifiez la correspondance des projets (⇄ = répartir sur 2 projets, ✕ = ignorer ces heures). Étape 2 : Ajustez les heures finales si besoin.")), React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
@@ -20334,59 +20759,29 @@ function ImportExcelHeures({
       textTransform: "uppercase",
       letterSpacing: ".04em"
     }
-  }, "1. Correspondance des projets"), Object.keys(matchMap).map(nom => React.createElement("div", {
-    key: nom,
-    style: {
-      display: "grid",
-      gridTemplateColumns: "1fr auto 1fr",
-      gap: 8,
-      alignItems: "center",
-      padding: "5px 0",
-      borderBottom: "0.5px solid #EEE"
-    }
-  }, React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 600
-    }
-  }, nom), React.createElement("div", {
-    style: {
-      color: "#AAAAAA"
-    }
-  }, "→"), React.createElement("select", {
-    value: matchMap[nom],
-    onChange: e => {
-      const newNom = e.target.value;
-      const oldNom = matchMap[nom];
-      setMatchMap(m => ({
-        ...m,
-        [nom]: newNom
-      }));
-      if (oldNom !== newNom) {
-        setHeuresFinales(prev => {
-          const next = {
-            ...prev
-          };
-          const h = next[oldNom] || 0;
-          delete next[oldNom];
-          next[newNom] = (next[newNom] || 0) + h;
-          return next;
-        });
-      }
-    },
-    style: {
-      padding: "4px 8px",
-      borderRadius: 4,
-      border: "1px solid #DDD",
-      fontSize: 11,
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, React.createElement("option", {
-    value: ""
-  }, "— Non mappé —"), (projets?.rows || []).map(p => React.createElement("option", {
-    key: p.id,
-    value: p.name
-  }, p.name))))), React.createElement("div", {
+  }, "1. Correspondance des projets"), Object.keys(matchMap).map(nom => {
+    const isIgnored = !!ignoreMap[nom];
+    const sp = splitMap[nom] || null;
+    const splitActif = !!sp;              // le bouton ⇄ a été cliqué (slider visible)
+    const hasSplit = !!(sp && sp.proj2);  // split réellement appliqué (2e projet choisi)
+    const hExcel = Math.round(parsedLignes.filter(l => l.projet === nom).reduce((s, l) => s + l.heures, 0) * 10) / 10;
+    return React.createElement("div", { key: nom, style: { padding: "7px 0", borderBottom: "0.5px solid #EEE", opacity: isIgnored ? 0.45 : 1 } },
+      React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr auto 1fr auto auto", gap: 6, alignItems: "center" } },
+        React.createElement("div", { style: { fontSize: 11, fontWeight: 600, textDecoration: isIgnored ? "line-through" : "none", color: isIgnored ? "#AAAAAA" : "#1C1C1C" } }, nom, React.createElement("span", { style: { fontWeight: 400, color: "#AAAAAA", marginLeft: 5 } }, hExcel + "h")),
+        React.createElement("div", { style: { color: "#AAAAAA", fontSize: 11 } }, "\u2192"),
+        React.createElement("select", { value: matchMap[nom] || "", disabled: isIgnored, onChange: e => { const newMap = { ...matchMap, [nom]: e.target.value }; setMatchMap(newMap); setHeuresFinales(recalcHeuresTout(newMap, splitMap, ignoreMap, parsedLignes)); }, style: { padding: "3px 6px", borderRadius: 4, border: "1px solid #DDD", fontSize: 11, fontFamily: "'DM Sans',sans-serif", background: isIgnored ? "#F5F5F5" : "#fff" } },
+          React.createElement("option", { value: "" }, "\u2014 Non mapp\u00e9 \u2014"),
+          (projets?.rows || []).map(p => React.createElement("option", { key: p.id, value: p.name }, p.name))),
+        React.createElement("button", { title: splitActif ? "Supprimer le split" : "R\u00e9partir sur 2 projets", disabled: isIgnored, onClick: () => { const ns = { ...splitMap }; if (splitActif) delete ns[nom]; else ns[nom] = { proj2: "", pct: 50 }; setSplitMap(ns); setHeuresFinales(recalcHeuresTout(matchMap, ns, ignoreMap, parsedLignes)); }, style: { padding: "3px 7px", borderRadius: 4, border: "1px solid " + (splitActif ? "#1A5DAB" : "#DDD"), background: splitActif ? "#EEF4FF" : "#fff", color: splitActif ? "#1A5DAB" : "#7A7A7A", cursor: "pointer", fontSize: 11, fontFamily: "'DM Sans',sans-serif", whiteSpace: "nowrap" } }, splitActif ? "\u21c4 Split" : "\u21c4"),
+        React.createElement("button", { title: isIgnored ? "R\u00e9int\u00e9grer" : "Ignorer ces heures", onClick: () => { const ni = { ...ignoreMap, [nom]: !isIgnored }; setIgnoreMap(ni); setHeuresFinales(recalcHeuresTout(matchMap, splitMap, ni, parsedLignes)); }, style: { padding: "3px 7px", borderRadius: 4, border: "1px solid " + (isIgnored ? "#CC8800" : "#DDD"), background: isIgnored ? "#FFF8EC" : "#fff", color: isIgnored ? "#CC8800" : "#7A7A7A", cursor: "pointer", fontSize: 11, fontFamily: "'DM Sans',sans-serif", whiteSpace: "nowrap" } }, isIgnored ? "\u21a9 R\u00e9tablir" : "\u2715 Ignorer")),
+      splitActif && !isIgnored && React.createElement("div", { style: { display: "grid", gridTemplateColumns: "auto 1fr auto 90px", gap: 6, alignItems: "center", marginTop: 5, background: "#F0F5FF", borderRadius: 4, padding: "6px 10px" } },
+        React.createElement("span", { style: { fontSize: 10.5, color: "#7A7A7A", whiteSpace: "nowrap" } }, (100 - (sp.pct || 50)) + "% \u2192 " + (matchMap[nom] || "\u2014")),
+        React.createElement("input", { type: "range", min: 5, max: 95, step: 5, value: sp.pct || 50, onChange: e => { const ns = { ...splitMap, [nom]: { ...splitMap[nom], pct: +e.target.value } }; setSplitMap(ns); setHeuresFinales(recalcHeuresTout(matchMap, ns, ignoreMap, parsedLignes)); }, style: { width: "100%", accentColor: "#1A5DAB" } }),
+        React.createElement("span", { style: { fontSize: 10.5, color: "#7A7A7A", whiteSpace: "nowrap" } }, (sp.pct || 50) + "% \u2192"),
+        React.createElement("select", { value: sp.proj2 || "", onChange: e => { const ns = { ...splitMap, [nom]: { ...splitMap[nom], proj2: e.target.value } }; setSplitMap(ns); setHeuresFinales(recalcHeuresTout(matchMap, ns, ignoreMap, parsedLignes)); }, style: { padding: "3px 6px", borderRadius: 4, border: "1px solid #1A5DAB", fontSize: 11, fontFamily: "'DM Sans',sans-serif" } },
+          React.createElement("option", { value: "" }, "\u2014 2e projet \u2014"),
+          (projets?.rows || []).filter(p => p.name !== matchMap[nom]).map(p => React.createElement("option", { key: p.id, value: p.name }, p.name)))));
+  }), React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
@@ -20452,10 +20847,20 @@ function ImportExcelHeures({
     }
     const estimMois = estimData.parMembreMois[uploadMembre] || {};
     const estimTotal = estimMois[uploadMois] || 0;
+    // Excel par projet APRÈS application de matchMap + split + ignore,
+    // pour que les clés correspondent exactement à heuresFinales.
     const excelParProjet = {};
     for (const l of parsedLignes) {
-      const proj = matchMap[l.projet] || l.projet;
-      excelParProjet[proj] = (excelParProjet[proj] || 0) + l.heures;
+      if (ignoreMap[l.projet]) continue;
+      const proj1 = matchMap[l.projet] || l.projet;
+      if (!proj1) continue;
+      const sp = splitMap[l.projet];
+      if (sp && sp.proj2 && sp.pct > 0 && sp.pct < 100) {
+        excelParProjet[proj1] = (excelParProjet[proj1] || 0) + l.heures * (100 - sp.pct) / 100;
+        excelParProjet[sp.proj2] = (excelParProjet[sp.proj2] || 0) + l.heures * sp.pct / 100;
+      } else {
+        excelParProjet[proj1] = (excelParProjet[proj1] || 0) + l.heures;
+      }
     }
     const tousProj = [...new Set([...Object.keys(excelParProjet), ...Object.keys(heuresFinales)])];
     return React.createElement(React.Fragment, null, estimTotal > 0 && React.createElement("tr", {
@@ -20569,7 +20974,7 @@ function ImportExcelHeures({
         fontWeight: 700,
         color: "#1A5DAB"
       }
-    }, Math.round(parsedLignes.reduce((a, l) => a + l.heures, 0) * 10) / 10, "h"), React.createElement("td", {
+    }, Math.round(parsedLignes.filter(l => !ignoreMap[l.projet]).reduce((a, l) => a + l.heures, 0) * 10) / 10, "h"), React.createElement("td", {
       style: {
         padding: "5px 8px",
         textAlign: "right",
@@ -20578,16 +20983,18 @@ function ImportExcelHeures({
       }
     }, Math.round(Object.values(heuresFinales).reduce((a, b) => a + b, 0) * 10) / 10, "h")));
   })()))), React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      justifyContent: "flex-end"
-    }
-  }, React.createElement("button", {
+    style: { display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }
+  }, (() => {
+    const nm = Object.keys(matchMap).filter(n => !ignoreMap[n] && !matchMap[n]);
+    const hnm = Math.round(nm.reduce((s, n) => s + parsedLignes.filter(l => l.projet === n).reduce((ss, l) => ss + l.heures, 0), 0) * 10) / 10;
+    return nm.length > 0 ? React.createElement("div", { style: { background: "#FFF0F0", border: "0.5px solid #CC2222", borderRadius: 4, padding: "6px 10px", fontSize: 11, color: "#CC2222", width: "100%", marginBottom: 2 } }, "⚠ ", nm.length, " projet(s) non mappé(s) — ", React.createElement("b", null, hnm + "h"), " seront enregistrées avec le nom Excel brut. Utilisez ✕ Ignorer pour les exclure.") : null;
+  })(), React.createElement("div", { style: { display: "flex", gap: 8 } }, React.createElement("button", {
     onClick: () => {
       setUploadState("idle");
       setParsedLignes([]);
       setHeuresFinales({});
+      setSplitMap({});
+      setIgnoreMap({});
     },
     style: {
       padding: "6px 12px",
@@ -20612,7 +21019,7 @@ function ImportExcelHeures({
       color: "#fff",
       fontWeight: 700
     }
-  }, saving ? "..." : "✓ Confirmer l'import"))), uploadState === "done" && React.createElement("div", {
+  }, saving ? "..." : "✓ Confirmer l'import")))), uploadState === "done" && React.createElement("div", {
     style: {
       textAlign: "center",
       padding: 16,
@@ -26032,6 +26439,8 @@ function AppContent({
   const missionsBE = useSheet("missionsBE");
   const conges = useSheet("conges");
   const metre = useSheet("metre");
+  const camions = useSheet("camions");
+  const kilometrage = useSheet("kilometrage");
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth < 700);
     window.addEventListener("resize", handler);
@@ -26072,7 +26481,9 @@ function AppContent({
     planificateur,
     missionsBE,
     conges,
-    metre
+    metre,
+    camions,
+    kilometrage
   };
   useEffect(() => {
     const role = user.role;
@@ -26115,7 +26526,9 @@ function AppContent({
     prestataires,
     prestMissions,
     atelierChantier,
-    cr
+    cr,
+    camions,
+    kilometrage
   };
   const norm = s => String(s || "").trim().toLowerCase();
   const familleDefautRole = user.role === "chef_atelier" ? "indus" : user.role === "chef_projet" ? "maintenances" : null;
@@ -26627,26 +27040,33 @@ function AppContent({
     atelierChantierAll: atelierChantier,
     missionsBEAll: missionsBE,
     conges: conges
-  }), panel === "chantier" && React.createElement(MissionModule, {
-    moduleType: "chantier",
-    sheet: atelierChantierView,
-    projects: projetsView,
+  }), panel === "chantier" && React.createElement(ChantierWrapper, {
+    camions: camions,
+    kilometrage: kilometrage,
     team: team,
-    stocks: stocksView,
-    events: eventsView,
-    orders: ordersView,
-    fournisseurs: fournisseurs,
-    etapes: etapes,
-    suiviFab: suiviFab,
-    templates: templates,
-    journal: journalChantier,
     user: user,
-    timesheets: timesheets,
-    budgetHeures: budgetHeures,
     isMobile: isMobile,
-    atelierChantierAll: atelierChantier,
-    missionsBEAll: missionsBE,
-    conges: conges
+    missionProps: {
+      moduleType: "chantier",
+      sheet: atelierChantierView,
+      projects: projetsView,
+      team: team,
+      stocks: stocksView,
+      events: eventsView,
+      orders: ordersView,
+      fournisseurs: fournisseurs,
+      etapes: etapes,
+      suiviFab: suiviFab,
+      templates: templates,
+      journal: journalChantier,
+      user: user,
+      timesheets: timesheets,
+      budgetHeures: budgetHeures,
+      isMobile: isMobile,
+      atelierChantierAll: atelierChantier,
+      missionsBEAll: missionsBE,
+      conges: conges
+    }
   }), panel === "prestataires" && React.createElement(Prestataires, {
     sheet: prestataires,
     missions: prestMissionsView,
