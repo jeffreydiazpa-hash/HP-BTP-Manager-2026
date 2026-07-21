@@ -506,7 +506,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.24";
+const VERSION = "v4.6.26";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -607,17 +607,25 @@ const EQUIPES = [{
   icon: "🏗",
   couleur: "#2A7A2A"
 }];
-const getEquipeMembre = membre => {
-  if (!membre) return null;
+const getEquipeMembres = membre => {
+  if (!membre) return [];
+  const tags = new Set();
+  String(membre.role || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean).forEach(p => {
+    if (p === "be" || p === "bureau" || /bureau|étude|etude|ingénieur|ingenieur|conception|dessin|calcul/.test(p)) tags.add("be");
+    if (p === "atelier" || /atelier|fabric|production|montage|assembl|soudure|découpe|decoupe/.test(p)) tags.add("atelier");
+    if (p === "chantier" || /chantier|pose|installation|terrain|site/.test(p)) tags.add("chantier");
+  });
+  if (tags.size) return [...tags];
+  // Fallback legacy : ancienne colonne statut
   const st = String(membre.statut || "").trim().toLowerCase();
-  if (st === "bureau") return "be";
-  if (st === "atelier") return "atelier";
-  if (st === "chantier") return "chantier";
-  const role = String(membre.role || "").toLowerCase();
-  if (/bureau|étude|etude|ingénieur|ingenieur|\bbe\b|conception|dessin|calcul/.test(role)) return "be";
-  if (/atelier|fabric|production|montage|assembl|soudure|découpe|decoupe/.test(role)) return "atelier";
-  if (/chantier|pose|installation|terrain|site/.test(role)) return "chantier";
-  return null;
+  if (st === "bureau") return ["be"];
+  if (st === "atelier") return ["atelier"];
+  if (st === "chantier") return ["chantier"];
+  return [];
+};
+const getEquipeMembre = membre => {
+  const a = getEquipeMembres(membre);
+  return a.length ? a[0] : null;
 };
 const getEquipeLabel = key => {
   const e = EQUIPES.find(x => x.key === key);
@@ -627,7 +635,7 @@ const getEquipeCouleur = key => {
   const e = EQUIPES.find(x => x.key === key);
   return e ? e.couleur : "#7A7A7A";
 };
-const getMembresEquipe = (rows, equipeKey) => (rows || []).filter(m => getEquipeMembre(m) === equipeKey);
+const getMembresEquipe = (rows, equipeKey) => (rows || []).filter(m => getEquipeMembres(m).includes(equipeKey));
 const datesSeChevauchent = (aStart, aEnd, bStart, bEnd) => {
   if (!aStart || !aEnd || !bStart || !bEnd) return false;
   return toISO(aStart) <= toISO(bEnd) && toISO(aEnd) >= toISO(bStart);
@@ -20198,7 +20206,6 @@ function Calendrier({
 const EM = {
   nom: "",
   role: "",
-  statut: "chantier",
   loc: "",
   tel: "",
   email: "",
@@ -21166,19 +21173,36 @@ function Equipes({
     onChange: e => f("nom", e.target.value),
     placeholder: "Ex: Marc Dupont"
   })), React.createElement(FG, {
-    label: "Rôle / poste"
-  }, React.createElement(Inp, {
-    value: form.role,
-    onChange: e => f("role", e.target.value),
-    placeholder: "Ex: Chef d'équipe chantier"
-  })), React.createElement(FG, {
-    label: "Statut"
-  }, React.createElement(Sel, {
-    value: form.statut,
-    onChange: e => f("statut", e.target.value)
-  }, STATUTS_TEAM.map(s => React.createElement("option", {
-    key: s
-  }, s)))), React.createElement(FG, {
+    label: "Rôles (plusieurs possibles)"
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap"
+    }
+  }, EQUIPES.map(eq => {
+    const actif = getEquipeMembres(form).includes(eq.key);
+    return React.createElement("button", {
+      key: eq.key,
+      type: "button",
+      onClick: () => {
+        const cur = getEquipeMembres(form);
+        const next = cur.includes(eq.key) ? cur.filter(k => k !== eq.key) : [...cur, eq.key];
+        f("role", next.join(","));
+      },
+      style: {
+        padding: "7px 14px",
+        borderRadius: 20,
+        cursor: "pointer",
+        border: "1.5px solid " + (actif ? eq.couleur : "#DDDDDD"),
+        background: actif ? eq.couleur + "0D" : "#FAFAFA",
+        color: actif ? eq.couleur : "#7A7A7A",
+        fontWeight: actif ? 700 : 500,
+        fontSize: 12,
+        fontFamily: "'DM Sans',sans-serif"
+      }
+    }, eq.icon, " ", eq.label);
+  }))), React.createElement(FG, {
     label: "Localisation"
   }, React.createElement(Inp, {
     value: form.loc,
@@ -21364,8 +21388,24 @@ function Equipes({
       gap: 10,
       marginBottom: 14
     }
-  }, sheet.rows.map((m, i) => {
-    const [bg, tx] = AVATARS_BG[i % 6].split(":");
+  }, (() => {
+    const ordreEquipe = {
+      be: 0,
+      atelier: 1,
+      chantier: 2
+    };
+    return [...sheet.rows].sort((a, b) => {
+      const ea = getEquipeMembre(a);
+      const eb = getEquipeMembre(b);
+      const oa = ea in ordreEquipe ? ordreEquipe[ea] : 99;
+      const ob = eb in ordreEquipe ? ordreEquipe[eb] : 99;
+      if (oa !== ob) return oa - ob;
+      return String(a.nom || "").localeCompare(String(b.nom || ""));
+    });
+  })().map((m, i) => {
+    const eqPrimaire = getEquipeMembre(m);
+    const tx = eqPrimaire ? getEquipeCouleur(eqPrimaire) : "#7A7A7A";
+    const bg = tx + "1A";
     const s = sb(m.statut, m);
     return React.createElement(Bd, {
       key: m.id,
@@ -21446,29 +21486,24 @@ function Equipes({
       }
     }, "✕"))), React.createElement("div", {
       style: {
-        fontSize: 12,
-        color: "#7A7A7A"
-      }
-    }, m.role), React.createElement("div", {
-      style: {
         marginTop: 4,
         display: "flex",
         gap: 6,
         flexWrap: "wrap",
         alignItems: "center"
       }
-    }, React.createElement(Badge, {
-      label: m.statut,
-      bg: s.bg,
-      color: s.tx
-    }), (() => {
-      const eq = getEquipeMembre(m);
-      return eq && React.createElement(Badge, {
-        label: getEquipeLabel(eq),
-        bg: `${getEquipeCouleur(eq)}0D`,
-        color: getEquipeCouleur(eq)
-      });
-    })(), m.loc && React.createElement("span", {
+    }, getEquipeMembres(m).length ? getEquipeMembres(m).map(k => React.createElement(Badge, {
+      key: k,
+      label: getEquipeLabel(k),
+      bg: getEquipeCouleur(k) + "0D",
+      color: getEquipeCouleur(k)
+    })) : React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: "#AAAAAA",
+        fontStyle: "italic"
+      }
+    }, "Aucun rôle"), m.loc && React.createElement("span", {
       style: {
         fontSize: 11,
         color: "#7A7A7A"
@@ -26098,6 +26133,36 @@ const USERS = [{
   nom: "Cyriac Chaigneau",
   role: "atelier",
   couleur: "#CC8800"
+}, {
+  pin: "17",
+  nom: "Léo Menard",
+  role: "chantier",
+  couleur: "#2A7A2A"
+}, {
+  pin: "99",
+  nom: "Ivonne Rodriguez",
+  role: "chantier",
+  couleur: "#2A7A2A"
+}, {
+  pin: "85",
+  nom: "Coline Marolleau",
+  role: "chantier",
+  couleur: "#2A7A2A"
+}, {
+  pin: "50",
+  nom: "Louise Gravestock",
+  role: "chantier",
+  couleur: "#2A7A2A"
+}, {
+  pin: "75",
+  nom: "Alexandre Marivint",
+  role: "chantier",
+  couleur: "#2A7A2A"
+}, {
+  pin: "16",
+  nom: "Cyriac Chaigneau",
+  role: "chantier",
+  couleur: "#2A7A2A"
 }];
 const ROLES = [{
   role: "admin",
@@ -26119,6 +26184,10 @@ const ROLES = [{
   role: "atelier",
   label: "🔨 Atelier",
   couleur: "#CC8800"
+}, {
+  role: "chantier",
+  label: "🏗 Chantier",
+  couleur: "#2A7A2A"
 }];
 const SESSION_KEY = "btp_session_v1";
 function LoginScreen({
@@ -26335,7 +26404,7 @@ const PANELS = [{
   label: "Équipe",
   shortLabel: "Équipe",
   icon: "👷",
-  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier"]
+  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier", "chantier"]
 }, {
   id: "be",
   label: "Bureau d'Études",
@@ -26347,13 +26416,13 @@ const PANELS = [{
   label: "Atelier",
   shortLabel: "Atelier",
   icon: "🔨",
-  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier"]
+  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier", "chantier"]
 }, {
   id: "chantier",
   label: "Chantier",
   shortLabel: "Chantier",
   icon: "🏗",
-  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier"]
+  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier", "chantier"]
 }, {
   id: "prestataires",
   label: "Prestataires",
@@ -26365,15 +26434,32 @@ const PANELS = [{
   label: "Stocks",
   shortLabel: "Stock",
   icon: "📦",
-  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier"]
+  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier", "chantier"]
 }, {
   id: "commandes",
   label: "Commandes",
   shortLabel: "Cdes",
   icon: "🛒",
-  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier"]
+  roles: ["admin", "ingenieur", "chef_projet", "chef_atelier", "atelier", "chantier"]
 }];
 const getPanelsForRole = role => PANELS.filter(p => p.roles.includes(role));
+const getPanelsForUser = (user, teamRows) => {
+  const base = PANELS.filter(p => p.roles.includes(user.role));
+  if (user.role !== "atelier" && user.role !== "chantier") return base;
+  // Équipe terrain : l'accès aux modules Atelier / Chantier suit les rôles
+  // renseignés sur la fiche Équipe de la personne (multi-tags).
+  const norm = s => String(s || "").trim().toLowerCase();
+  const membre = (teamRows || []).find(m => norm(m.nom) === norm(user.nom));
+  const tags = membre ? getEquipeMembres(membre) : [];
+  const ids = new Set(base.map(p => p.id));
+  ids.delete("atelier");
+  ids.delete("chantier");
+  if (tags.includes("atelier")) ids.add("atelier");
+  if (tags.includes("chantier")) ids.add("chantier");
+  // Repli : aucun rôle terrain trouvé dans l'Équipe -> on garde au moins le module du rôle de connexion.
+  if (!ids.has("atelier") && !ids.has("chantier")) ids.add(user.role);
+  return PANELS.filter(p => ids.has(p.id));
+};
 function App() {
   const [user, setUser] = useState(() => {
     const s = getSession();
@@ -26703,7 +26789,7 @@ function AppContent({
       background: "#DDDDDD",
       margin: "0 12px"
     }
-  }), getPanelsForRole(user.role).map(p => React.createElement("button", {
+  }), getPanelsForUser(user, team.rows).map(p => React.createElement("button", {
     key: p.id,
     onClick: () => setPanel(p.id),
     style: {
@@ -26941,7 +27027,7 @@ function AppContent({
       zIndex: 20,
       boxShadow: "0 -2px 8px rgba(0,0,0,0.08)"
     }
-  }, getPanelsForRole(user.role).map(p => React.createElement("button", {
+  }, getPanelsForUser(user, team.rows).map(p => React.createElement("button", {
     key: p.id,
     onClick: () => setPanel(p.id),
     style: {
