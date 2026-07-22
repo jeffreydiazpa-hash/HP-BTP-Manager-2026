@@ -1129,7 +1129,7 @@ penteDegInp.addEventListener('input', ()=>{
 });
 
 // ---------- Version de l'outil (visible à l'écran, indépendante du nom de fichier) ----------
-const TOOL_VERSION = "1.4";
+const TOOL_VERSION = "1.6";
 document.getElementById('toolVersionBadge').textContent = 'v' + TOOL_VERSION;
 
 // ---------- Contexte projet / intégration au site (onglet Outils, module BE) ----------
@@ -1153,11 +1153,15 @@ if (CTX.projet) {
 
 // ---------- Construction du PDF (partagée entre téléchargement et enregistrement Drive) ----------
 function pdfSafe(s){
-  // jsPDF's built-in fonts only support WinAnsi (Latin-1) glyphs — Greek letters like γ render as garbage.
+  // jsPDF's built-in fonts only support WinAnsi (Latin-1) glyphs. Greek letters (γ), math symbols (≈,≥,≤)
+  // and the narrow/no-break spaces used by Number.toLocaleString('fr-FR') as thousands separators all fall
+  // outside that range and render as garbage — everything going through doc.text() must pass through this.
   return String(s == null ? '' : s)
     .replace(/γ/g, 'gamma')
+    .replace(/≈/g, 'soit')
     .replace(/≥/g, '>=')
-    .replace(/≤/g, '<=');
+    .replace(/≤/g, '<=')
+    .replace(/[\u00A0\u202F\u2009\u200A\u2007\u2002\u2003]/g, ' ');
 }
 
 function buildPDF(){
@@ -1167,44 +1171,56 @@ function buildPDF(){
   }
   const { jsPDF } = jspdf;
   const doc = new jsPDF({unit:'mm', format:'a4'});
-  const red = [204,34,34], redDark=[168,28,28], dark=[28,28,28], mid=[122,122,122], light=[242,240,237], green=[42,122,42], greenBg=[234,244,234], redBg=[251,234,234];
-  const pageW = 210, marginX = 18, contentW = pageW - 2*marginX;
+  const red = [204,34,34], redDark=[168,28,28], dark=[28,28,28], mid=[122,122,122], light=[242,240,237],
+        green=[42,122,42], amber=[138,90,0], greenBg=[234,244,234], redBg=[251,234,234], amberBg=[255,246,233];
+  const pageW = 210, pageH = 297, marginX = 18, contentW = pageW - 2*marginX;
+  const pageBottom = 272, footerLine1 = 278, footerLine2 = 281.5, footerRule = 284, footerLine3 = 288;
   let y = 16;
+  let pageIndex = 1;
 
-  // ---- En-tête — logo réel High Point ----
-  doc.addImage(LOGO_B64, 'JPEG', marginX, y-6, 17.8, 8.8);
-  doc.setFontSize(8.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
-  doc.text('www.highpoint-structures.com', pageW-marginX, y-1, {align:'right'});
-  doc.text('info@highpoint-structures.com', pageW-marginX, y+3, {align:'right'});
-  y += 8;
-  doc.setDrawColor(...red); doc.setLineWidth(0.6);
-  doc.line(marginX, y, pageW-marginX, y);
-  y += 10;
-
-  // ---- Titre ----
-  doc.setTextColor(...dark); doc.setFontSize(17); doc.setFont('helvetica','bold');
-  doc.text('Dimensionnement de chéneau', marginX, y);
-  y += 6;
-  doc.setFontSize(9); doc.setTextColor(...red); doc.setFont('courier','normal');
   const today = new Date().toLocaleDateString('fr-FR');
   const nomCheneau = pdfSafe((document.getElementById('nomCheneau').value || '').trim());
-  const refBits = [`Réf. calcul — NF DTU 60.11 P3 / NF DTU 40.5 — ${today}`];
-  if (CTX.projet) refBits.push(`Projet : ${pdfSafe(CTX.projet)}`);
-  if (nomCheneau) refBits.push(nomCheneau);
-  doc.text(refBits.join(' — '), marginX, y);
-  y += 9;
+  const docTitleLine = pdfSafe('Dimensionnement de chéneau' + (CTX.projet ? ' — ' + CTX.projet : '') + (nomCheneau ? ' — ' + nomCheneau : ''));
+
+  function drawFooter(){
+    doc.setFontSize(7.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
+    doc.text('Document généré automatiquement — aide au pré-dimensionnement, ne remplace pas la justification contractuelle', marginX, footerLine1);
+    doc.text('par consultation directe des textes normatifs. Références : NF DTU 60.11 P3, NF DTU 40.5, NF EN 12056-3, NF DTU 43.1, NF DTU 43.4.', marginX, footerLine2, {maxWidth: contentW});
+    doc.setDrawColor(220,220,220); doc.setLineWidth(0.3); doc.line(marginX, footerRule, pageW-marginX, footerRule);
+    doc.setFontSize(7); doc.setTextColor(...mid);
+    doc.text('HIGH POINT — 17 rue Robert Geffré — 17000 La Rochelle — FRANCE — SARL au capital de 32 000€ — SIRET : 53454409300030', marginX, footerLine3);
+    doc.text('Page ' + pageIndex, pageW-marginX, footerLine3, {align:'right'});
+  }
+  function newPage(){
+    drawFooter();
+    doc.addPage();
+    pageIndex++;
+    y = 18;
+    doc.setFontSize(8.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
+    doc.text(docTitleLine, marginX, y, {maxWidth: contentW});
+    doc.setFontSize(8); doc.text(today, pageW-marginX, y, {align:'right'});
+    y += 3;
+    doc.setDrawColor(...red); doc.setLineWidth(0.4);
+    doc.line(marginX, y, pageW-marginX, y);
+    y += 9;
+  }
+  function ensureSpace(h){
+    if(y + h > pageBottom) newPage();
+  }
 
   // ---- Helpers de mise en page ----
-  function sectionTitle(t){
+  function sectionTitle(t, reserve=30){
+    ensureSpace(reserve);
     doc.setDrawColor(...red); doc.setLineWidth(1.2);
     doc.line(marginX, y-3.2, marginX, y+1.5);
     doc.setFontSize(11.5); doc.setTextColor(...dark); doc.setFont('helvetica','bold');
-    doc.text(t, marginX+3, y);
+    doc.text(pdfSafe(t), marginX+3, y);
     y += 7;
   }
   function paramBlock(rows){
     const rh = 5.6, pad = 3;
     const h = rows.length*rh + pad*2;
+    ensureSpace(h+6);
     doc.setFillColor(...light);
     doc.roundedRect(marginX, y-pad, contentW, h, 2.5, 2.5, 'F');
     y += 1.5;
@@ -1212,13 +1228,14 @@ function buildPDF(){
       doc.setFontSize(9); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
       doc.text(pdfSafe(label), marginX+5, y);
       doc.setTextColor(...dark); doc.setFont('helvetica','bold');
-      doc.text(pdfSafe(String(value)), marginX+88, y);
+      doc.text(pdfSafe(String(value)), marginX+88, y, {maxWidth: contentW-88-5});
       y += rh;
     });
     y += 5;
   }
   function kpiRow(items){
     const gap = 4, h = 19;
+    ensureSpace(h+7);
     const w = (contentW - gap*(items.length-1)) / items.length;
     items.forEach((it,i)=>{
       const x = marginX + i*(w+gap);
@@ -1234,27 +1251,63 @@ function buildPDF(){
     y += h + 6;
   }
   function verdictBanner(ok, mainTxt, subTxt){
-    const bg = ok ? greenBg : redBg, fg = ok ? green : redDark;
     doc.setFontSize(10.5); doc.setFont('helvetica','bold');
     const subLines = doc.splitTextToSize(pdfSafe(subTxt), contentW-10);
     const h = 9 + subLines.length*4.6 + 4;
+    ensureSpace(h+8);
+    const bg = ok ? greenBg : redBg, fg = ok ? green : redDark;
     doc.setFillColor(...bg);
     doc.roundedRect(marginX, y, contentW, h, 2.5, 2.5, 'F');
-    doc.setTextColor(...fg);
+    doc.setFontSize(10.5); doc.setFont('helvetica','bold'); doc.setTextColor(...fg);
     doc.text(pdfSafe(mainTxt), marginX+6, y+7);
     doc.setFontSize(8.5); doc.setFont('helvetica','normal'); doc.setTextColor(...dark);
     doc.text(subLines, marginX+6, y+12.5);
     y += h + 7;
   }
+  function noteBox(text, level){
+    if(!text) return;
+    doc.setFontSize(8.5); doc.setFont('helvetica','normal');
+    const lines = doc.splitTextToSize(pdfSafe(text), contentW-10);
+    const h = lines.length*4.3 + 5;
+    ensureSpace(h+5);
+    const palette = { ok:[greenBg,green], warn:[amberBg,amber], no:[redBg,redDark], info:[light,mid] };
+    const [bg,fg] = palette[level] || palette.info;
+    doc.setFillColor(...bg);
+    doc.roundedRect(marginX, y, contentW, h, 2.5, 2.5, 'F');
+    doc.setTextColor(...fg);
+    doc.text(lines, marginX+5, y+5.3);
+    y += h + 5;
+  }
+
+  // ---- En-tête (page 1) — logo réel High Point ----
+  doc.addImage(LOGO_B64, 'JPEG', marginX, y-6, 17.8, 8.8);
+  doc.setFontSize(8.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
+  doc.text('www.highpoint-structures.com', pageW-marginX, y-1, {align:'right'});
+  doc.text('info@highpoint-structures.com', pageW-marginX, y+3, {align:'right'});
+  y += 8;
+  doc.setDrawColor(...red); doc.setLineWidth(0.6);
+  doc.line(marginX, y, pageW-marginX, y);
+  y += 10;
+
+  doc.setTextColor(...dark); doc.setFontSize(17); doc.setFont('helvetica','bold');
+  doc.text('Dimensionnement de chéneau', marginX, y);
+  y += 6;
+  doc.setFontSize(9); doc.setTextColor(...red); doc.setFont('courier','normal');
+  const refBits = [`Réf. calcul — NF DTU 60.11 P3 / NF DTU 40.5 — ${today}`];
+  if (CTX.projet) refBits.push(`Projet : ${pdfSafe(CTX.projet)}`);
+  if (nomCheneau) refBits.push(nomCheneau);
+  const refLines = doc.splitTextToSize(refBits.join(' — '), contentW);
+  doc.text(refLines, marginX, y);
+  y += 5*refLines.length + 4;
 
   // ---- Lecture des valeurs calculées à l'écran ----
-  const surface = document.getElementById('surface').value;
+  const surface = fmt(parseFloat(document.getElementById('surface').value)||0, 0);
   const regionTxt = document.getElementById('region').selectedOptions[0].text;
   const nbDescentes = document.getElementById('nbDescentes').value;
   const qTotal = document.getElementById('qTotal').textContent;
   const qParTroncon = document.getElementById('qParTroncon').textContent;
-  const pente = document.getElementById('pente').value;
-  const penteDeg = document.getElementById('penteDeg').value;
+  const penteVal = fmt(parseFloat(document.getElementById('pente').value)||0, 2);
+  const penteDegVal = fmt(parseFloat(document.getElementById('penteDeg').value)||0, 2);
   const gammaTxt = document.getElementById('gammaSelect').selectedOptions[0].text;
   const shapeLabel = document.querySelector('#shapeTabs .tab-btn.active').textContent;
   const materiauTxt = document.getElementById('materiau').selectedOptions[0].text;
@@ -1267,6 +1320,7 @@ function buildPDF(){
   const mSurfDescente = document.getElementById('mSurfDescente').textContent;
   const mDiamDescente = document.getElementById('mDiamDescente').textContent;
   const supportTxt = document.getElementById('support').selectedOptions[0].text;
+  const altitudeVal = document.getElementById('altitude').value;
 
   const verdictDiv = document.getElementById('verdict');
   const verdictOk = verdictDiv.classList.contains('ok');
@@ -1276,8 +1330,23 @@ function buildPDF(){
     ? verdictDiv.textContent.replace(verdictSubEl.textContent, '').trim()
     : verdictDiv.textContent.trim();
 
+  function readNote(elId){
+    const el = document.getElementById(elId);
+    if(!el) return null;
+    const text = el.textContent.replace(/\s+/g,' ').trim();
+    if(!text) return null;
+    let level = 'info';
+    if(el.querySelector('.compat-ok')) level = 'ok';
+    else if(el.querySelector('.compat-cond')) level = 'warn';
+    else if(el.querySelector('.compat-no')) level = 'no';
+    else if(el.querySelector('.warn')){
+      level = text.includes('conformes') || text.includes('à jour') ? 'ok' : 'warn';
+    }
+    return { text, level };
+  }
+
   // ---- Section 1 ----
-  sectionTitle('1. Débit à évacuer');
+  sectionTitle('1. Débit à évacuer', 36);
   paramBlock([
     ['Surface de toiture desservie', surface+' m²'],
     ['Intensité pluviométrique', regionTxt],
@@ -1289,9 +1358,9 @@ function buildPDF(){
   ]);
 
   // ---- Section 2-3 ----
-  sectionTitle('2-3. Pente, géométrie et capacité (Bazin)');
+  sectionTitle('2-3. Pente, géométrie et capacité (Bazin)', 42);
   paramBlock([
-    ['Pente', pente+' mm/m  (≈ '+penteDeg+' °)'],
+    ['Pente', penteVal+' mm/m (soit '+penteDegVal+' °)'],
     ['Coefficient de frottement (Bazin)', gammaTxt],
     ['Matériau du chéneau', materiauTxt],
     ['Forme de section', shapeLabel]
@@ -1305,26 +1374,28 @@ function buildPDF(){
   verdictBanner(verdictOk, verdictMainTxt, verdictSubTxt);
 
   // ---- Section 5 ----
-  sectionTitle('5. Naissances et descentes');
+  sectionTitle('5. Naissances et descentes', 33);
   kpiRow([
     {label:'Surface desservie / descente', value: mSurfDescente},
     {label:'Diamètre de descente recommandé', value: mDiamDescente}
   ]);
 
   // ---- Section 6 ----
-  sectionTitle('6. Constructibilité');
+  sectionTitle('6. Constructibilité et compatibilité', 42);
   paramBlock([
     ['Développé approx.', mDeveloppe],
     ['Longueur max. entre points fixes', mDilatation],
-    ['Support / ossature', supportTxt]
+    ['Support / ossature', supportTxt],
+    ['Altitude du site', (parseFloat(altitudeVal)||0) + ' m']
   ]);
+  const compatNote = readNote('compatResult');
+  if(compatNote) noteBox(compatNote.text, compatNote.level);
+  const boisNote = readNote('boisWarnings');
+  if(boisNote) noteBox(boisNote.text, boisNote.level);
+  const altNote = readNote('altitudeWarning');
+  if(altNote) noteBox(altNote.text, 'no');
 
-  doc.setFontSize(7.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
-  doc.text('Document généré automatiquement — aide au pré-dimensionnement, ne remplace pas la justification', marginX, 280);
-  doc.text('contractuelle par consultation directe du NF DTU 60.11 P3 / NF DTU 40.5 / NF EN 12056-3.', marginX, 283.5);
-  doc.setDrawColor(220,220,220); doc.line(marginX, 286, pageW-marginX, 286);
-  doc.setFontSize(7); doc.text('HIGH POINT — 17 rue Robert Geffré — 17000 La Rochelle — FRANCE — SARL au capital de 32 000€ — SIRET : 53454409300030', pageW/2, 290, {align:'center'});
-
+  drawFooter();
   return doc;
 }
 
@@ -1345,6 +1416,29 @@ document.getElementById('pdfBtn').addEventListener('click', ()=>{
 });
 
 // ---------- Enregistrement dans le Drive du projet (via GAS, même mécanisme que les Formulaires du site) ----------
+// Le token passé dans l'URL à l'ouverture de l'outil n'est valide que ~5-10 minutes côté serveur — si le
+// calcul prend plus de temps que ça avant l'enregistrement, ce token est expiré. On en redemande donc un
+// tout frais juste avant chaque enregistrement, plutôt que de compter sur celui de l'URL.
+function jsonpFetch(gasUrl, params){
+  return new Promise((resolve, reject) => {
+    const cb = 'cb_' + Math.random().toString(36).slice(2);
+    const script = document.createElement('script');
+    script.async = true;
+    const url = gasUrl + '?' + new URLSearchParams({...params, callback: cb}).toString();
+    const cleanup = () => { if(window[cb]) delete window[cb]; if(script.parentNode) script.parentNode.removeChild(script); };
+    const timer = window.setTimeout(() => { cleanup(); reject(new Error('Délai d\u2019attente dépassé pour l\u2019authentification')); }, 15000);
+    window[cb] = (data) => { window.clearTimeout(timer); cleanup(); resolve(data); };
+    script.onerror = () => { window.clearTimeout(timer); cleanup(); reject(new Error('Erreur réseau lors de l\u2019authentification')); };
+    script.src = url;
+    document.head.appendChild(script);
+  });
+}
+async function getFreshToken(){
+  const r = await jsonpFetch(CTX.gas, { action: 'auth', email: CTX.email });
+  if (!r.ok) throw new Error(r.msg || 'Authentification refusée — reconnectez-vous sur le site.');
+  return r.token;
+}
+
 const driveBtn = document.getElementById('driveBtn');
 const driveStatus = document.getElementById('driveStatus');
 const hasProjectContext = !!(CTX.projet && CTX.gas && CTX.email && CTX.token);
@@ -1365,8 +1459,10 @@ driveBtn.addEventListener('click', async ()=>{
   const doc = buildPDF();
   if (!doc) return;
   driveBtn.disabled = true;
-  driveStatus.textContent = 'Enregistrement en cours…';
+  driveStatus.textContent = 'Authentification…';
   try {
+    const freshToken = await getFreshToken();
+    driveStatus.textContent = 'Enregistrement en cours…';
     const dataUri = doc.output('datauristring'); // "data:application/pdf;base64,...."
     const dataB64 = dataUri.split(',')[1];
     const res = await fetch(CTX.gas, {
@@ -1375,7 +1471,7 @@ driveBtn.addEventListener('click', async ()=>{
       body: JSON.stringify({
         action: 'uploadDocProjet',
         email: CTX.email,
-        token: CTX.token,
+        token: freshToken,
         projet: CTX.projet,
         subfolder: `Dimensionnement de chéneau — ${nomCheneau}`,
         filename: pdfFilename(),
