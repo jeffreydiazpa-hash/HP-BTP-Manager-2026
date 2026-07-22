@@ -25,7 +25,7 @@
     margin:0;
     font-family:'DM Sans', sans-serif;
     color:var(--hp-dark);
-    background:var(--hp-white);
+    background:var(--hp-light);
     line-height:1.6;
   }
   .mono{font-family:'DM Mono', monospace;}
@@ -38,6 +38,7 @@
     padding:28px 40px 16px;
     flex-wrap:wrap;
     gap:12px;
+    background:#fff;
   }
   .logo{display:flex; align-items:center; gap:10px;}
   .logo-mark{
@@ -52,9 +53,9 @@
   .logo-sub{font-size:10.5px;color:var(--hp-mid);letter-spacing:.02em;margin-top:1px;}
   .contact{text-align:right;font-size:12.5px;color:var(--hp-mid);}
   .contact a{color:var(--hp-mid);text-decoration:none;}
-  .sep{height:1.5px;background:var(--hp-red);margin:0 40px;}
+  .sep{height:1.5px;background:var(--hp-red);margin:0;}
 
-  main{max-width:900px;margin:0 auto;padding:36px 40px 80px;}
+  main{max-width:920px;margin:0 auto;padding:36px 40px 80px;}
 
   h1{font-size:26px;font-weight:700;letter-spacing:-0.015em;margin:0 0 4px;}
   .doc-ref{font-family:'DM Mono',monospace;color:var(--hp-red);font-size:12.5px;margin-bottom:18px;}
@@ -74,13 +75,14 @@
   .intro b{color:var(--hp-dark);}
 
   .scope-note{
-    background:var(--hp-light);
+    background:#fff;
     border-left:3px solid var(--hp-red);
-    padding:12px 16px;
+    padding:14px 18px;
     font-size:13px;
     color:var(--hp-gray);
     margin:18px 0 32px;
-    border-radius:0 6px 6px 0;
+    border-radius:0 8px 8px 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.05);
   }
   .scope-note b{color:var(--hp-dark);}
 
@@ -95,11 +97,12 @@
   .h2-sub{font-size:12.5px;color:var(--hp-mid);padding-left:13px;margin:0 0 18px;}
 
   .card{
-    background:var(--hp-white);
+    background:#fff;
     border:0.5px solid var(--hp-border);
-    border-radius:10px;
+    border-radius:12px;
     padding:22px 24px;
     margin-bottom:16px;
+    box-shadow:0 2px 8px rgba(28,28,28,.05);
   }
 
   .field-row{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:14px;}
@@ -108,36 +111,52 @@
     display:block;font-size:12.5px;font-weight:500;color:var(--hp-gray);margin-bottom:6px;
   }
   .field .hint{font-size:11px;color:var(--hp-mid);margin-top:4px;}
-  input[type=number], select{
+  input[type=number], input[type=text], select{
     width:100%;
     padding:9px 11px;
     font-family:'DM Sans',sans-serif;
     font-size:14px;
     border:1px solid var(--hp-border);
-    border-radius:6px;
+    border-radius:7px;
     color:var(--hp-dark);
     background:#fff;
+    transition:border-color .12s, box-shadow .12s;
   }
-  input[type=number]:focus, select:focus{
-    outline:2px solid var(--hp-red);
-    outline-offset:1px;
+  input[type=number]:focus, input[type=text]:focus, select:focus{
+    outline:none;
     border-color:var(--hp-red);
+    box-shadow:0 0 0 3px rgba(204,34,34,.12);
   }
   input[type=range]{width:100%;accent-color:var(--hp-red);}
+
+  .unit-pair{display:flex;align-items:center;gap:8px;}
+  .unit-pair input{flex:1;}
+  .unit-pair .eq{color:var(--hp-mid);font-size:12px;flex-shrink:0;}
 
   .tabbar{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;}
   .tab-btn{
     padding:8px 14px;
     border:1px solid var(--hp-border);
     background:#fff;
-    border-radius:6px;
+    border-radius:7px;
     font-size:13px;
     font-family:'DM Sans',sans-serif;
     color:var(--hp-gray);
     cursor:pointer;
+    transition:all .15s;
   }
-  .tab-btn.active{background:var(--hp-red);border-color:var(--hp-red);color:#fff;font-weight:500;}
+  .tab-btn.active{background:var(--hp-red);border-color:var(--hp-red);color:#fff;font-weight:500;box-shadow:0 2px 6px rgba(204,34,34,.25);}
+  .tab-btn:hover:not(.active){border-color:var(--hp-red);color:var(--hp-red);}
   .tab-btn:focus-visible{outline:2px solid var(--hp-red);outline-offset:2px;}
+
+  .shape-diagram{
+    background:var(--hp-light);
+    border-radius:10px;
+    padding:14px;
+    margin-bottom:16px;
+    display:flex;
+    justify-content:center;
+  }
 
   .result-strip{
     display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;
@@ -145,8 +164,9 @@
   .metric{
     flex:1;min-width:130px;
     background:var(--hp-light);
-    border-radius:8px;
+    border-radius:9px;
     padding:12px 14px;
+    border-left:3px solid var(--hp-red);
   }
   .metric .label{font-size:11px;color:var(--hp-mid);text-transform:uppercase;letter-spacing:.03em;}
   .metric .value{font-size:20px;font-weight:700;color:var(--hp-dark);font-family:'DM Mono',monospace;margin-top:2px;}
@@ -155,7 +175,7 @@
   .verdict{
     margin-top:16px;
     padding:16px 18px;
-    border-radius:8px;
+    border-radius:9px;
     font-weight:700;
     font-size:15px;
     display:flex;
@@ -173,7 +193,7 @@
     color:#8a5a00;
     font-size:12.5px;
     padding:10px 14px;
-    border-radius:6px;
+    border-radius:7px;
   }
 
   button.action{
@@ -181,19 +201,23 @@
     border:1px solid var(--hp-red);
     color:var(--hp-red);
     padding:8px 14px;
-    border-radius:6px;
+    border-radius:7px;
     font-size:13px;
     font-family:'DM Sans',sans-serif;
     cursor:pointer;
     margin-top:6px;
+    transition:all .15s;
   }
   button.action:hover{background:var(--hp-red);color:#fff;}
+  button.action:disabled{opacity:.5;cursor:default;}
 
   details{
     border:0.5px solid var(--hp-border);
-    border-radius:10px;
+    background:#fff;
+    border-radius:12px;
     padding:16px 20px;
     margin-top:8px;
+    box-shadow:0 2px 8px rgba(28,28,28,.05);
   }
   details summary{
     font-weight:700;font-size:14.5px;cursor:pointer;color:var(--hp-dark);
@@ -207,6 +231,11 @@
   table.fl{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px;}
   table.fl th,table.fl td{border:0.5px solid var(--hp-border);padding:5px 7px;text-align:center;}
   table.fl th{background:var(--hp-light);font-weight:700;color:var(--hp-dark);}
+
+  table.descentes{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px;}
+  table.descentes th,table.descentes td{border:0.5px solid var(--hp-border);padding:6px 9px;text-align:center;}
+  table.descentes th{background:var(--hp-light);font-weight:700;color:var(--hp-dark);}
+  table.descentes tr.hit td{background:#EAF4EA;color:var(--hp-green);font-weight:700;}
 
   .sources{
     margin-top:44px;
@@ -226,14 +255,16 @@
     color:#fff;
     border:none;
     padding:10px 18px;
-    border-radius:6px;
+    border-radius:7px;
     font-size:13.5px;
     font-family:'DM Sans',sans-serif;
     font-weight:500;
     cursor:pointer;
+    box-shadow:0 2px 6px rgba(204,34,34,.25);
+    transition:all .15s;
   }
-  .btn-primary:hover{background:var(--hp-red-dark);}
-  .btn-primary:disabled{opacity:.6;cursor:default;}
+  .btn-primary:hover{background:var(--hp-red-dark);box-shadow:0 3px 10px rgba(204,34,34,.35);}
+  .btn-primary:disabled{opacity:.6;cursor:default;box-shadow:none;}
 
   table.compat{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px;}
   table.compat th,table.compat td{border:0.5px solid var(--hp-border);padding:6px 8px;text-align:left;vertical-align:top;}
@@ -249,11 +280,11 @@
     padding:24px 0 30px;
     border-top:0.5px solid var(--hp-border);
     margin-top:20px;
+    background:#fff;
   }
 
   @media (max-width:640px){
     header,main{padding-left:20px;padding-right:20px;}
-    .sep{margin:0 20px;}
   }
 </style>
 </head>
@@ -351,8 +382,14 @@
   <div class="card">
     <div class="field-row">
       <div class="field">
-        <label for="pente">Pente du chéneau (mm/m)</label>
+        <label for="pente">Pente (mm/m)</label>
         <input type="number" id="pente" value="10" min="0" step="0.5">
+        <div class="hint">Pente minimale 5 mm/m (NF DTU 40.5)</div>
+      </div>
+      <div class="field">
+        <label for="penteDeg">ou inclinaison (°)</label>
+        <input type="number" id="penteDeg" value="0.57" min="0" step="0.01">
+        <div class="hint">Les deux champs se recalculent automatiquement l'un l'autre</div>
       </div>
       <div class="field">
         <label for="gammaSelect">Coefficient de frottement de Bazin γ</label>
@@ -400,6 +437,7 @@
       <button class="tab-btn" data-shape="tri">Triangulaire</button>
     </div>
 
+    <div class="shape-diagram" id="shapeDiagram"></div>
     <div id="shapeFields"></div>
 
     <button class="action" id="solveBtn">Trouver la dimension minimale pour atteindre Q nécessaire</button>
@@ -478,13 +516,29 @@
   </details>
 
   <h2 style="margin-top:32px;">5. Naissances et descentes</h2>
-  <p class="h2-sub">Hors périmètre de cet outil</p>
-  <div class="scope-note" style="margin-top:12px;">
-    Le dimensionnement des naissances (moignons) et des tuyaux de descente (diamètre minimal 60 mm, taux de
-    remplissage 0,20) suit d'autres tableaux du NF DTU 60.11 P3 dont les correspondances chiffrées n'ont pas été
-    vérifiées avec une confiance suffisante pour être intégrées ici sans risque d'erreur. Dites-moi si vous voulez
-    un outil dédié pour cette étape — je le construirai sur le même principe une fois les valeurs de référence
-    confirmées.
+  <p class="h2-sub">Diamètre du tuyau de descente selon la surface desservie — NF DTU 60.11 P3, tableaux 2 et 3 (couvertures sans étanchéité, débit 3 l/min/m²)</p>
+
+  <div class="card">
+    <div class="result-strip" style="margin-bottom:14px;">
+      <div class="metric">
+        <div class="label">Surface desservie par descente</div>
+        <div class="value" id="mSurfDescente">–</div>
+      </div>
+      <div class="metric">
+        <div class="label">Diamètre de descente recommandé</div>
+        <div class="value" id="mDiamDescente">–</div>
+      </div>
+    </div>
+    <table class="descentes" id="tableDescentes">
+      <tr><th>Diamètre intérieur</th><th>Surface en plan maximale desservie</th></tr>
+    </table>
+    <p style="font-size:11.5px;color:var(--hp-mid);margin-top:12px;">
+      Diamètre minimal réglementaire : <b>60 mm</b>, quelle que soit la surface (risque d'obstruction). Pour une
+      descente de section rectangulaire (a×b), la section équivalente est <span class="mono">d = 2ab/(a+b)</span>
+      (ex. 80×60 ≈ ø70, 110×80 ≈ ø90). La surface ci-dessus est celle desservie par <b>une seule</b> descente
+      (surface totale ÷ nombre de descentes saisi en section 1) — au-delà de 287 m², prévoyez plusieurs descentes
+      ou une étude spécifique (regroupement de descentes, formule de Bazin).
+    </p>
   </div>
 
   <h2 style="margin-top:32px;">6. Constructibilité et compatibilité</h2>
@@ -502,6 +556,7 @@
           <option value="bois">Bois</option>
           <option value="platre">Plâtre</option>
           <option value="mineral">Béton, mortier ou pierre</option>
+          <option value="autoportant">Chéneau autoportant (sans support en contact)</option>
         </select>
       </div>
     </div>
@@ -536,6 +591,7 @@
       <li>NF DTU 40.5 — Travaux d'évacuation des eaux pluviales : pente minimale 5 mm/m, tableau 2 (longueurs de dilatation) et tableau 3 (compatibilité chéneau/support)</li>
       <li>NF EN 12056-3 (Annexe A) — Coefficient F<sub>L</sub> pour chéneaux intérieurs sans pente</li>
       <li>NF DTU 43.1 — Étanchéité des chéneaux (revêtement, joints), altitude &gt; 900 m</li>
+      <li>NF DTU 60.11 (règles P40-202, 1988, reconduites en Partie 3) — Tableaux 2 et 3 : diamètre des tuyaux de descente selon la surface en plan desservie, couvertures sans revêtement d'étanchéité, débit 3 l/min/m² ; diamètre intérieur minimal 60 mm</li>
       <li>NF DTU 43.4 — Contraintes géométriques des chéneaux en bois massif ou lamellé-collé</li>
       <li>Formule de Bazin : C = 87 / (1 + γ/√R), V = C·√(R·i), Q = V·S — méthode historique du DTU 60.11 (1988), maintenue dans la version P3 pour les gouttières, chéneaux, naissances et descentes des toitures avec revêtement d'étanchéité</li>
       <li>Éditions Ginger, collection Essentiel — <i>Eaux pluviales dans le bâtiment</i> (2022), chapitre « Éléments constitutifs d'un réseau » : synthèse des tableaux DTU 40.5/43.4 ci-dessus reprise en paraphrase, à recouper avec les textes officiels pour tout usage contractuel</li>
@@ -591,6 +647,36 @@ const SUPPORT_COMPAT = {
           mineral:['no','Cas non prévu par le DTU']}
 };
 
+// Diamètre de descente (mm) → surface en plan maximale desservie (m²), NF DTU 60.11 (tableaux 2 et 3),
+// couvertures sans revêtement d'étanchéité, débit 3 l/min/m². Diamètre minimal réglementaire : 60 mm.
+const DOWNPIPE_TABLE = [
+  {d:70,  s:55},
+  {d:80,  s:70},
+  {d:90,  s:91},
+  {d:100, s:113},
+  {d:110, s:136},
+  {d:120, s:161},
+  {d:130, s:190},
+  {d:140, s:220},
+  {d:150, s:253},
+  {d:160, s:287}
+];
+function updateDescentes(surfaceParDescente){
+  const tbl = document.getElementById('tableDescentes');
+  const recommended = DOWNPIPE_TABLE.find(row => surfaceParDescente <= row.s);
+  let rows = '<tr><th>Diamètre intérieur</th><th>Surface en plan maximale desservie</th></tr>';
+  DOWNPIPE_TABLE.forEach(row => {
+    const isHit = recommended && row.d === recommended.d;
+    rows += `<tr${isHit ? ' class="hit"' : ''}><td>ø ${row.d} mm</td><td>${row.s} m²</td></tr>`;
+  });
+  tbl.innerHTML = rows;
+  document.getElementById('mSurfDescente').innerHTML = surfaceParDescente > 0 ? fmt(surfaceParDescente,1)+' <small>m²</small>' : '–';
+  document.getElementById('mDiamDescente').innerHTML = surfaceParDescente <= 0
+    ? '–'
+    : (recommended ? 'ø ' + recommended.d + ' <small>mm</small>' : '&gt; ø160 <small>— étude spécifique</small>');
+}
+
+
 function getIntensity(){
   const sel = document.getElementById('region').value;
   if(sel === 'custom') return parseFloat(document.getElementById('customIntensity').value) || 0;
@@ -642,8 +728,64 @@ function geometry(shape, d){
 }
 
 // ---------- Shape fields rendering ----------
+const SHAPE_SVG = {
+  demi: `<svg viewBox="0 0 240 130" width="240" height="130">
+    <path d="M 60 30 A 60 60 0 0 0 180 30" fill="#F2F0ED" stroke="#3A3A3A" stroke-width="2"/>
+    <line x1="60" y1="30" x2="180" y2="30" stroke="#3A3A3A" stroke-width="2"/>
+    <line x1="120" y1="30" x2="120" y2="90" stroke="#CC2222" stroke-width="1.3" stroke-dasharray="3,2"/>
+    <circle cx="120" cy="30" r="2" fill="#CC2222"/>
+    <line x1="114" y1="30" x2="126" y2="30" stroke="#CC2222" stroke-width="1.3"/>
+    <text x="128" y="64" font-family="DM Mono, monospace" font-size="13" font-weight="700" fill="#CC2222">r</text>
+    <text x="120" y="112" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10.5" fill="#7A7A7A">rayon intérieur — champ « r »</text>
+  </svg>`,
+  rect: `<svg viewBox="0 0 240 130" width="240" height="130">
+    <path d="M 60 20 V 90 H 180 V 20" fill="none" stroke="#3A3A3A" stroke-width="2"/>
+    <rect x="60" y="20" width="120" height="70" fill="#F2F0ED" opacity="0.6"/>
+    <line x1="60" y1="20" x2="180" y2="20" stroke="#3A3A3A" stroke-width="2"/>
+    <line x1="60" y1="104" x2="180" y2="104" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="60" y1="98" x2="60" y2="110" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="180" y1="98" x2="180" y2="110" stroke="#CC2222" stroke-width="1.3"/>
+    <text x="120" y="120" text-anchor="middle" font-family="DM Mono, monospace" font-size="13" font-weight="700" fill="#CC2222">b</text>
+    <line x1="44" y1="20" x2="44" y2="90" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="38" y1="20" x2="50" y2="20" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="38" y1="90" x2="50" y2="90" stroke="#CC2222" stroke-width="1.3"/>
+    <text x="18" y="59" font-family="DM Mono, monospace" font-size="13" font-weight="700" fill="#CC2222">h</text>
+    <text x="120" y="14" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10" fill="#7A7A7A">ouvert (surface libre)</text>
+  </svg>`,
+  trap: `<svg viewBox="0 0 240 130" width="240" height="130">
+    <path d="M 90 90 L 40 20 L 200 20 L 150 90 Z" fill="#F2F0ED" opacity="0.6" stroke="#3A3A3A" stroke-width="2"/>
+    <line x1="90" y1="104" x2="150" y2="104" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="90" y1="98" x2="90" y2="110" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="150" y1="98" x2="150" y2="110" stroke="#CC2222" stroke-width="1.3"/>
+    <text x="120" y="120" text-anchor="middle" font-family="DM Mono, monospace" font-size="13" font-weight="700" fill="#CC2222">b</text>
+    <line x1="24" y1="20" x2="24" y2="90" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="18" y1="20" x2="30" y2="20" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="18" y1="90" x2="30" y2="90" stroke="#CC2222" stroke-width="1.3"/>
+    <text x="2" y="59" font-family="DM Mono, monospace" font-size="13" font-weight="700" fill="#CC2222">h</text>
+    <line x1="90" y1="90" x2="90" y2="20" stroke="#CC2222" stroke-width="1" stroke-dasharray="3,2"/>
+    <line x1="90" y1="20" x2="40" y2="20" stroke="#CC2222" stroke-width="1" stroke-dasharray="3,2"/>
+    <text x="63" y="15" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="9.5" fill="#7A7A7A">fruit × h</text>
+    <text x="163" y="15" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="9.5" fill="#7A7A7A">côté court en bas</text>
+  </svg>`,
+  tri: `<svg viewBox="0 0 240 130" width="240" height="130">
+    <path d="M 60 20 L 120 90 L 180 20" fill="none" stroke="#3A3A3A" stroke-width="2"/>
+    <path d="M 60 20 L 120 90 L 180 20 Z" fill="#F2F0ED" opacity="0.6"/>
+    <line x1="60" y1="20" x2="180" y2="20" stroke="#3A3A3A" stroke-width="2"/>
+    <line x1="60" y1="6" x2="180" y2="6" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="60" y1="0" x2="60" y2="12" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="180" y1="0" x2="180" y2="12" stroke="#CC2222" stroke-width="1.3"/>
+    <text x="120" y="4" text-anchor="middle" font-family="DM Mono, monospace" font-size="13" font-weight="700" fill="#CC2222">w (au miroir)</text>
+    <line x1="200" y1="20" x2="200" y2="90" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="194" y1="20" x2="206" y2="20" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="194" y1="90" x2="206" y2="90" stroke="#CC2222" stroke-width="1.3"/>
+    <text x="212" y="59" font-family="DM Mono, monospace" font-size="13" font-weight="700" fill="#CC2222">h</text>
+    <text x="120" y="115" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10.5" fill="#7A7A7A">section en V — pointe basse</text>
+  </svg>`
+};
+const shapeDiagramDiv = document.getElementById('shapeDiagram');
 const shapeFieldsDiv = document.getElementById('shapeFields');
 function renderShapeFields(shape){
+  shapeDiagramDiv.innerHTML = SHAPE_SVG[shape] || '';
   let html = '<div class="field-row">';
   if(shape==='demi'){
     html += field('r','Rayon intérieur r (m)', 0.10, 0.005);
@@ -695,6 +837,7 @@ function recompute(){
 
   document.getElementById('qTotal').innerHTML = fmt(qTotal)+' <small>l/s</small>';
   document.getElementById('qParTroncon').innerHTML = fmt(qParTroncon)+' <small>l/s</small>';
+  updateDescentes(surface/nbDescentes);
 
   const pente = parseFloat(document.getElementById('pente').value)||0;
   const gamma = getGamma();
@@ -798,7 +941,9 @@ function updateConstructibilite(S, P, dims){
 
   const compat = SUPPORT_COMPAT[materiau];
   const compatDiv = document.getElementById('compatResult');
-  if(compat && compat[support]){
+  if (support === 'autoportant') {
+    compatDiv.innerHTML = `<p style="font-size:12.5px;color:var(--hp-mid);">Chéneau autoportant : pas de support en contact au sens du tableau 3 du NF DTU 40.5 — la compatibilité chéneau/support ne s'applique pas ici. Vérifiez séparément le dimensionnement structurel du chéneau lui-même (profilés, entretoises, appuis) selon la descente de charges (poids propre, eau, neige, vent).</p>`;
+  } else if(compat && compat[support]){
     const [level, text] = compat[support];
     const cls = level==='ok' ? 'compat-ok' : (level==='cond' ? 'compat-cond' : 'compat-no');
     compatDiv.innerHTML = `<table class="compat"><tr><th>Compatibilité ${MATERIAU_LABELS[materiau]} / support ${document.getElementById('support').selectedOptions[0].text}</th></tr>
@@ -864,6 +1009,20 @@ document.getElementById('gammaSelect').addEventListener('change', (e)=>{
 ['surface','customIntensity','nbDescentes','pente','customGamma'].forEach(id=>{
   document.getElementById(id).addEventListener('input', recompute);
 });
+// ---------- Pente : synchronisation mm/m <-> degrés ----------
+const penteInp = document.getElementById('pente');
+const penteDegInp = document.getElementById('penteDeg');
+penteInp.addEventListener('input', ()=>{
+  const mm = parseFloat(penteInp.value);
+  if(isFinite(mm)) penteDegInp.value = (Math.atan(mm/1000)*180/Math.PI).toFixed(3);
+});
+penteDegInp.addEventListener('input', ()=>{
+  const deg = parseFloat(penteDegInp.value);
+  if(isFinite(deg)){
+    penteInp.value = (Math.tan(deg*Math.PI/180)*1000).toFixed(2);
+    recompute();
+  }
+});
 ['lwRatio','penteFL'].forEach(id=>{
   document.getElementById(id).addEventListener('input', computeFL);
   document.getElementById(id).addEventListener('change', computeFL);
@@ -874,7 +1033,7 @@ document.getElementById('gammaSelect').addEventListener('change', (e)=>{
 });
 
 // ---------- Version de l'outil (visible à l'écran, indépendante du nom de fichier) ----------
-const TOOL_VERSION = "1.1";
+const TOOL_VERSION = "1.3";
 document.getElementById('toolVersionBadge').textContent = 'v' + TOOL_VERSION;
 
 // ---------- Contexte projet / intégration au site (onglet Outils, module BE) ----------
@@ -897,6 +1056,14 @@ if (CTX.projet) {
 }
 
 // ---------- Construction du PDF (partagée entre téléchargement et enregistrement Drive) ----------
+function pdfSafe(s){
+  // jsPDF's built-in fonts only support WinAnsi (Latin-1) glyphs — Greek letters like γ render as garbage.
+  return String(s == null ? '' : s)
+    .replace(/γ/g, 'gamma')
+    .replace(/≥/g, '>=')
+    .replace(/≤/g, '<=');
+}
+
 function buildPDF(){
   if(typeof jspdf === 'undefined'){
     alert('La librairie de génération PDF n\u2019a pas pu se charger (connexion internet requise). Réessayez une fois en ligne.');
@@ -904,13 +1071,13 @@ function buildPDF(){
   }
   const { jsPDF } = jspdf;
   const doc = new jsPDF({unit:'mm', format:'a4'});
-  const red = [204,34,34], dark=[28,28,28], mid=[122,122,122], light=[242,240,237];
-  const pageW = 210, marginX = 18;
+  const red = [204,34,34], redDark=[168,28,28], dark=[28,28,28], mid=[122,122,122], light=[242,240,237], green=[42,122,42], greenBg=[234,244,234], redBg=[251,234,234];
+  const pageW = 210, marginX = 18, contentW = pageW - 2*marginX;
   let y = 16;
 
-  // En-tête — logo réel High Point
+  // ---- En-tête — logo réel High Point ----
   doc.addImage(LOGO_B64, 'JPEG', marginX, y-6, 17.8, 8.8);
-  doc.setFontSize(8.5); doc.setTextColor(...mid);
+  doc.setFontSize(8.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
   doc.text('www.highpoint-structures.com', pageW-marginX, y-1, {align:'right'});
   doc.text('info@highpoint-structures.com', pageW-marginX, y+3, {align:'right'});
   y += 8;
@@ -918,19 +1085,20 @@ function buildPDF(){
   doc.line(marginX, y, pageW-marginX, y);
   y += 10;
 
-  // Titre
+  // ---- Titre ----
   doc.setTextColor(...dark); doc.setFontSize(17); doc.setFont('helvetica','bold');
   doc.text('Dimensionnement de chéneau', marginX, y);
   y += 6;
   doc.setFontSize(9); doc.setTextColor(...red); doc.setFont('courier','normal');
   const today = new Date().toLocaleDateString('fr-FR');
-  const nomCheneau = (document.getElementById('nomCheneau').value || '').trim();
+  const nomCheneau = pdfSafe((document.getElementById('nomCheneau').value || '').trim());
   const refBits = [`Réf. calcul — NF DTU 60.11 P3 / NF DTU 40.5 — ${today}`];
-  if (CTX.projet) refBits.push(`Projet : ${CTX.projet}`);
+  if (CTX.projet) refBits.push(`Projet : ${pdfSafe(CTX.projet)}`);
   if (nomCheneau) refBits.push(nomCheneau);
   doc.text(refBits.join(' — '), marginX, y);
-  y += 10;
+  y += 9;
 
+  // ---- Helpers de mise en page ----
   function sectionTitle(t){
     doc.setDrawColor(...red); doc.setLineWidth(1.2);
     doc.line(marginX, y-3.2, marginX, y+1.5);
@@ -938,21 +1106,59 @@ function buildPDF(){
     doc.text(t, marginX+3, y);
     y += 7;
   }
-  function row(label, value){
-    doc.setFontSize(9.5); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
-    doc.text(label, marginX, y);
-    doc.setTextColor(...dark); doc.setFont('helvetica','bold');
-    doc.text(String(value), marginX+85, y);
-    y += 5.5;
+  function paramBlock(rows){
+    const rh = 5.6, pad = 3;
+    const h = rows.length*rh + pad*2;
+    doc.setFillColor(...light);
+    doc.roundedRect(marginX, y-pad, contentW, h, 2.5, 2.5, 'F');
+    y += 1.5;
+    rows.forEach(([label,value])=>{
+      doc.setFontSize(9); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
+      doc.text(pdfSafe(label), marginX+5, y);
+      doc.setTextColor(...dark); doc.setFont('helvetica','bold');
+      doc.text(pdfSafe(String(value)), marginX+88, y);
+      y += rh;
+    });
+    y += 5;
+  }
+  function kpiRow(items){
+    const gap = 4, h = 19;
+    const w = (contentW - gap*(items.length-1)) / items.length;
+    items.forEach((it,i)=>{
+      const x = marginX + i*(w+gap);
+      doc.setFillColor(...light);
+      doc.roundedRect(x, y, w, h, 2.2, 2.2, 'F');
+      doc.setFillColor(...red);
+      doc.roundedRect(x, y, 1.4, h, 0.7, 0.7, 'F');
+      doc.setFontSize(6.8); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
+      doc.text(pdfSafe(it.label.toUpperCase()), x+5, y+6.5, {maxWidth: w-8});
+      doc.setFontSize(12.5); doc.setFont('courier','bold'); doc.setTextColor(...dark);
+      doc.text(pdfSafe(it.value), x+5, y+14.5, {maxWidth: w-8});
+    });
+    y += h + 6;
+  }
+  function verdictBanner(ok, mainTxt, subTxt){
+    const bg = ok ? greenBg : redBg, fg = ok ? green : redDark;
+    doc.setFontSize(10.5); doc.setFont('helvetica','bold');
+    const subLines = doc.splitTextToSize(pdfSafe(subTxt), contentW-10);
+    const h = 9 + subLines.length*4.6 + 4;
+    doc.setFillColor(...bg);
+    doc.roundedRect(marginX, y, contentW, h, 2.5, 2.5, 'F');
+    doc.setTextColor(...fg);
+    doc.text(pdfSafe(mainTxt), marginX+6, y+7);
+    doc.setFontSize(8.5); doc.setFont('helvetica','normal'); doc.setTextColor(...dark);
+    doc.text(subLines, marginX+6, y+12.5);
+    y += h + 7;
   }
 
+  // ---- Lecture des valeurs calculées à l'écran ----
   const surface = document.getElementById('surface').value;
-  const regionSel = document.getElementById('region');
-  const regionTxt = regionSel.selectedOptions[0].text;
+  const regionTxt = document.getElementById('region').selectedOptions[0].text;
   const nbDescentes = document.getElementById('nbDescentes').value;
   const qTotal = document.getElementById('qTotal').textContent;
   const qParTroncon = document.getElementById('qParTroncon').textContent;
   const pente = document.getElementById('pente').value;
+  const penteDeg = document.getElementById('penteDeg').value;
   const gammaTxt = document.getElementById('gammaSelect').selectedOptions[0].text;
   const shapeLabel = document.querySelector('#shapeTabs .tab-btn.active').textContent;
   const materiauTxt = document.getElementById('materiau').selectedOptions[0].text;
@@ -960,38 +1166,62 @@ function buildPDF(){
   const mR = document.getElementById('mR').textContent;
   const mV = document.getElementById('mV').textContent;
   const mQ = document.getElementById('mQ').textContent;
-  const verdictTxt = document.getElementById('verdict').textContent.trim();
   const mDeveloppe = document.getElementById('mDeveloppe').textContent;
   const mDilatation = document.getElementById('mDilatation').textContent;
+  const mSurfDescente = document.getElementById('mSurfDescente').textContent;
+  const mDiamDescente = document.getElementById('mDiamDescente').textContent;
+  const supportTxt = document.getElementById('support').selectedOptions[0].text;
 
+  const verdictDiv = document.getElementById('verdict');
+  const verdictOk = verdictDiv.classList.contains('ok');
+  const verdictSubEl = verdictDiv.querySelector('.sub');
+  const verdictSubTxt = verdictSubEl ? verdictSubEl.textContent.trim() : '';
+  const verdictMainTxt = verdictSubEl
+    ? verdictDiv.textContent.replace(verdictSubEl.textContent, '').trim()
+    : verdictDiv.textContent.trim();
+
+  // ---- Section 1 ----
   sectionTitle('1. Débit à évacuer');
-  row('Surface de toiture desservie', surface+' m²');
-  row('Intensité pluviométrique', regionTxt);
-  row('Nombre de descentes / tronçons', nbDescentes);
-  row('Débit total requis', qTotal);
-  row('Débit par tronçon (Q nécessaire)', qParTroncon);
-  y += 3;
+  paramBlock([
+    ['Surface de toiture desservie', surface+' m²'],
+    ['Intensité pluviométrique', regionTxt],
+    ['Nombre de descentes / tronçons', nbDescentes]
+  ]);
+  kpiRow([
+    {label:'Débit total requis', value: qTotal},
+    {label:'Débit par tronçon (Q nécessaire)', value: qParTroncon}
+  ]);
 
+  // ---- Section 2-3 ----
   sectionTitle('2-3. Pente, géométrie et capacité (Bazin)');
-  row('Pente', pente+' mm/m');
-  row('Coefficient de frottement γ', gammaTxt);
-  row('Matériau du chéneau', materiauTxt);
-  row('Forme de section', shapeLabel);
-  row('Section mouillée S', mS);
-  row('Rayon hydraulique R', mR);
-  row('Vitesse d\u2019écoulement V', mV);
-  row('Débit capable (Bazin)', mQ);
-  y += 2;
-  doc.setFillColor(...light);
-  doc.roundedRect(marginX, y-4.5, pageW-2*marginX, 8, 1.5, 1.5, 'F');
-  doc.setFontSize(9.5); doc.setFont('helvetica','bold'); doc.setTextColor(...dark);
-  doc.text(verdictTxt.split('\n')[0], marginX+3, y+1);
-  y += 10;
+  paramBlock([
+    ['Pente', pente+' mm/m  (≈ '+penteDeg+' °)'],
+    ['Coefficient de frottement (Bazin)', gammaTxt],
+    ['Matériau du chéneau', materiauTxt],
+    ['Forme de section', shapeLabel]
+  ]);
+  kpiRow([
+    {label:'Section mouillée S', value: mS},
+    {label:'Rayon hydraulique R', value: mR},
+    {label:'Vitesse V', value: mV},
+    {label:'Débit capable', value: mQ}
+  ]);
+  verdictBanner(verdictOk, verdictMainTxt, verdictSubTxt);
 
+  // ---- Section 5 ----
+  sectionTitle('5. Naissances et descentes');
+  kpiRow([
+    {label:'Surface desservie / descente', value: mSurfDescente},
+    {label:'Diamètre de descente recommandé', value: mDiamDescente}
+  ]);
+
+  // ---- Section 6 ----
   sectionTitle('6. Constructibilité');
-  row('Développé approx.', mDeveloppe);
-  row('Longueur max. entre points fixes', mDilatation);
-  y += 6;
+  paramBlock([
+    ['Développé approx.', mDeveloppe],
+    ['Longueur max. entre points fixes', mDilatation],
+    ['Support / ossature', supportTxt]
+  ]);
 
   doc.setFontSize(7.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
   doc.text('Document généré automatiquement — aide au pré-dimensionnement, ne remplace pas la justification', marginX, 280);
