@@ -539,7 +539,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.34";
+const VERSION = "v4.6.35";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -18570,6 +18570,63 @@ function PlanningProjet({
     }
   }, "✕"))))))));
 }
+// ═══ Module Outils (Bureau d'Études) — v4.6.35 : outils de calcul indépendants, intégrés par iframe et liés à un projet pour l'enregistrement Drive ═══
+const BE_OUTILS = [
+  { key: "cheneau", label: "Dimensionnement de chéneau", desc: "Débit d'eaux pluviales, formule de Bazin — NF DTU 60.11 P3 / NF DTU 40.5", file: "outils/dimensionnement-cheneau.html" }
+];
+function OutilsBE({ projects, user, isMobile = false }) {
+  const [projetSelId, setProjetSelId] = useState("");
+  const [outilKey, setOutilKey] = useState(BE_OUTILS[0].key);
+  const [iframeSrc, setIframeSrc] = useState("");
+  const projetSel = projetSelId ? (projects?.rows || []).find(p => String(p.id) === projetSelId) : null;
+  const outil = BE_OUTILS.find(o => o.key === outilKey) || BE_OUTILS[0];
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!projetSel) { setIframeSrc(""); return; }
+      try {
+        const auth = await ensureAuth();
+        if (!alive) return;
+        const params = new URLSearchParams({ projet: projetSel.name || "", email: auth.email, token: auth.token, gas: GAS_URL });
+        setIframeSrc(outil.file + "?" + params.toString());
+      } catch (e) {
+        if (alive) setIframeSrc("");
+      }
+    })();
+    return () => { alive = false; };
+  }, [projetSelId, outilKey]);
+
+  return React.createElement("div", null,
+    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 } },
+      React.createElement("div", { style: { borderLeft: "3px solid #CC2222", paddingLeft: 10 } },
+        React.createElement("div", { style: { fontSize: 15, fontWeight: 700 } }, "Outils"),
+        React.createElement("div", { style: { fontSize: 11, color: "#7A7A7A" } }, "Outils de calcul du BE — les documents générés s'enregistrent dans le Drive du projet sélectionné")
+      )
+    ),
+    React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 } },
+      React.createElement(FG, { label: "Outil" },
+        React.createElement(Sel, { value: outilKey, onChange: e => setOutilKey(e.target.value) },
+          BE_OUTILS.map(o => React.createElement("option", { key: o.key, value: o.key }, o.label))
+        )
+      ),
+      React.createElement(FG, { label: "Projet lié" },
+        React.createElement(Sel, { value: projetSelId, onChange: e => setProjetSelId(e.target.value) },
+          React.createElement("option", { value: "" }, "— Sélectionner un projet —"),
+          (projects?.rows || []).map(p => React.createElement("option", { key: p.id, value: String(p.id) }, p.name))
+        )
+      )
+    ),
+    !projetSelId
+      ? React.createElement("div", { style: { padding: 28, textAlign: "center", color: "#7A7A7A", fontSize: 13, background: "#FAFAFA", borderRadius: 8 } },
+          "Sélectionnez un projet pour ouvrir l'outil — les PDF générés pourront alors être enregistrés directement dans le dossier Drive de ce projet."
+        )
+      : (iframeSrc
+          ? React.createElement("iframe", { key: outilKey + projetSelId, src: iframeSrc, style: { width: "100%", height: isMobile ? "80vh" : "82vh", border: "1px solid #EEE", borderRadius: 8, background: "#fff" }, title: outil.label })
+          : React.createElement("div", { style: { padding: 28, textAlign: "center", color: "#7A7A7A", fontSize: 13 } }, "Chargement…")
+        )
+  );
+}
 function BureauEtudes({
   projects,
   tasks,
@@ -18611,6 +18668,9 @@ function BureauEtudes({
   }, {
     id: "bilanC",
     label: "♻️ Bilan Carbone"
+  }, {
+    id: "outils",
+    label: "🛠 Outils"
   }];
   return React.createElement("div", null, React.createElement("div", {
     style: {
@@ -18703,6 +18763,10 @@ function BureauEtudes({
   }), onglet === "bilanC" && React.createElement(BilanCarbone, {
     projects: projects,
     user: user
+  }), onglet === "outils" && React.createElement(OutilsBE, {
+    projects: projects,
+    user: user,
+    isMobile: isMobile
   }));
 }
 // ═══ Module Formulaires sur mesure (Chantier) — v4.6.30 : installation site + cotes photo + PDF brouillon ═══
