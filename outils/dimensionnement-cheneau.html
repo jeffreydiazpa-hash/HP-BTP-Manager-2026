@@ -56,6 +56,7 @@
   .sep{height:1.5px;background:var(--hp-red);margin:0;}
 
   main{max-width:920px;margin:0 auto;padding:36px 40px 80px;}
+  html.is-embedded main{padding-top:14px; max-width:none;}
 
   h1{font-size:26px;font-weight:700;letter-spacing:-0.015em;margin:0 0 4px;}
   .doc-ref{font-family:'DM Mono',monospace;color:var(--hp-red);font-size:12.5px;margin-bottom:18px;}
@@ -1129,7 +1130,7 @@ penteDegInp.addEventListener('input', ()=>{
 });
 
 // ---------- Version de l'outil (visible à l'écran, indépendante du nom de fichier) ----------
-const TOOL_VERSION = "1.6";
+const TOOL_VERSION = "1.7";
 document.getElementById('toolVersionBadge').textContent = 'v' + TOOL_VERSION;
 
 // ---------- Contexte projet / intégration au site (onglet Outils, module BE) ----------
@@ -1143,10 +1144,38 @@ const CTX = (() => {
   };
 })();
 document.getElementById('hpLogoImg').src = LOGO_B64;
-if (window.self !== window.top) {
-  const bl = document.getElementById('backlink');
-  if (bl) bl.style.display = 'none';
+
+// ── Mode "intégré" (chargé dans un <iframe> par HP Projet Manager) ────────────────────────────
+// Convention réutilisable pour tout futur outil/formulaire indépendant du site :
+//  1. Si embarqué, on masque le propre en-tête HP de l'outil (logo/contact) — le site parent
+//     affiche déjà cette identité, la répéter donne l'impression de deux documents distincts.
+//  2. On mesure la hauteur réelle du contenu et on la transmet au parent via postMessage à
+//     chaque changement (ResizeObserver + au chargement) — le parent ajuste alors la hauteur de
+//     l'iframe pour qu'elle n'ait jamais sa propre barre de défilement ; seule la page du site
+//     défile, exactement comme si ce bloc faisait partie du même document.
+const isEmbedded = window.self !== window.top;
+if (isEmbedded) {
+  document.documentElement.classList.add('is-embedded');
+  const headerEl = document.querySelector('header');
+  const sepEl = document.querySelector('.sep');
+  if (headerEl) headerEl.style.display = 'none';
+  if (sepEl) sepEl.style.display = 'none';
+
+  const reportHeight = () => {
+    const h = document.documentElement.scrollHeight;
+    window.parent.postMessage({ type: 'hp-tool-resize', height: h }, '*');
+  };
+  reportHeight();
+  window.addEventListener('load', reportHeight);
+  window.addEventListener('resize', reportHeight);
+  if (window.ResizeObserver) {
+    new ResizeObserver(reportHeight).observe(document.body);
+  } else {
+    window.setInterval(reportHeight, 500); // repli si ResizeObserver indisponible
+  }
 }
+// En usage autonome (hors iframe), le header et son lien "← HP Projet Manager" restent visibles tels quels.
+
 if (CTX.projet) {
   document.getElementById('projetLine').innerHTML = `Projet : <b>${CTX.projet}</b><br>`;
 }
@@ -1209,6 +1238,8 @@ function buildPDF(){
   }
 
   // ---- Helpers de mise en page ----
+  // Une seule famille de police (Helvetica, plusieurs graisses/tailles/couleurs) sur tout le document —
+  // mélanger Helvetica et Courier donnait un rendu incohérent.
   function sectionTitle(t, reserve=30){
     ensureSpace(reserve);
     doc.setDrawColor(...red); doc.setLineWidth(1.2);
@@ -1217,19 +1248,28 @@ function buildPDF(){
     doc.text(pdfSafe(t), marginX+3, y);
     y += 7;
   }
+  // paramBlock : hauteur de chaque ligne calculée dynamiquement selon le nombre de lignes que prend sa
+  // valeur une fois retournée à la ligne — évite tout chevauchement quand une valeur est longue.
   function paramBlock(rows){
-    const rh = 5.6, pad = 3;
-    const h = rows.length*rh + pad*2;
-    ensureSpace(h+6);
+    const pad = 3, lineH = 4.6;
+    const valX = marginX+90, valW = contentW-90-5;
+    doc.setFontSize(9);
+    const wrapped = rows.map(([label,value]) => ({
+      label,
+      lines: doc.splitTextToSize(pdfSafe(String(value)), valW)
+    }));
+    const rowHeights = wrapped.map(r => Math.max(1, r.lines.length) * lineH);
+    const totalH = rowHeights.reduce((a,b)=>a+b, 0) + pad*2;
+    ensureSpace(totalH+6);
     doc.setFillColor(...light);
-    doc.roundedRect(marginX, y-pad, contentW, h, 2.5, 2.5, 'F');
+    doc.roundedRect(marginX, y-pad, contentW, totalH, 2.5, 2.5, 'F');
     y += 1.5;
-    rows.forEach(([label,value])=>{
+    wrapped.forEach((r, i) => {
       doc.setFontSize(9); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
-      doc.text(pdfSafe(label), marginX+5, y);
+      doc.text(pdfSafe(r.label), marginX+5, y);
       doc.setTextColor(...dark); doc.setFont('helvetica','bold');
-      doc.text(pdfSafe(String(value)), marginX+88, y, {maxWidth: contentW-88-5});
-      y += rh;
+      doc.text(r.lines, valX, y);
+      y += rowHeights[i];
     });
     y += 5;
   }
@@ -1245,7 +1285,7 @@ function buildPDF(){
       doc.roundedRect(x, y, 1.4, h, 0.7, 0.7, 'F');
       doc.setFontSize(6.8); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
       doc.text(pdfSafe(it.label.toUpperCase()), x+5, y+6.5, {maxWidth: w-8});
-      doc.setFontSize(12.5); doc.setFont('courier','bold'); doc.setTextColor(...dark);
+      doc.setFontSize(13); doc.setFont('helvetica','bold'); doc.setTextColor(...dark);
       doc.text(pdfSafe(it.value), x+5, y+14.5, {maxWidth: w-8});
     });
     y += h + 6;
@@ -1278,6 +1318,102 @@ function buildPDF(){
     doc.text(lines, marginX+5, y+5.3);
     y += h + 5;
   }
+  // Diagramme de section — dessiné en vectoriel (jsPDF n'importe pas les <svg> directement), même
+  // logique que les schémas affichés à l'écran : contour en gris foncé, cotes en rouge.
+  function shapeDiagram(shape){
+    const h = 44, pad = 6;
+    ensureSpace(h+6);
+    doc.setFillColor(...light);
+    doc.roundedRect(marginX, y, contentW, h, 3, 3, 'F');
+    const bx = marginX+pad, by = y+pad, bw = contentW-2*pad, bh = h-2*pad;
+    const sx = bw/240, sy = bh/130;
+    const px = xv => bx + xv*sx, py = yv => by + yv*sy;
+    doc.setLineWidth(0.4); doc.setDrawColor(70,70,70);
+    doc.setFontSize(8); doc.setFont('helvetica','bold');
+
+    if(shape==='demi'){
+      doc.line(px(60),py(30),px(180),py(30));
+      const cxp=px(120), cyp=py(30), rr=px(180)-px(120);
+      let prev=null;
+      for(let i=0;i<=28;i++){
+        const t = Math.PI*i/28;
+        const pt=[cxp-rr*Math.cos(t), cyp+rr*Math.sin(t)];
+        if(prev) doc.line(prev[0],prev[1],pt[0],pt[1]);
+        prev=pt;
+      }
+      doc.setDrawColor(...red); doc.setLineWidth(0.3); doc.setLineDashPattern([1,1],0);
+      doc.line(px(120),py(30),px(120),py(90));
+      doc.setLineDashPattern([],0);
+      doc.setTextColor(...red);
+      doc.text('r', px(125), py(64));
+    } else if(shape==='rect'){
+      doc.line(px(60),py(20),px(60),py(90));
+      doc.line(px(60),py(90),px(180),py(90));
+      doc.line(px(180),py(90),px(180),py(20));
+      doc.line(px(60),py(20),px(180),py(20));
+      doc.setDrawColor(...red); doc.setTextColor(...red);
+      doc.line(px(60),py(104),px(180),py(104));
+      doc.text('b', px(118),py(112));
+      doc.line(px(44),py(20),px(44),py(90));
+      doc.text('h', px(35),py(58));
+    } else if(shape==='trap'){
+      doc.line(px(90),py(90),px(40),py(20));
+      doc.line(px(40),py(20),px(200),py(20));
+      doc.line(px(200),py(20),px(150),py(90));
+      doc.line(px(150),py(90),px(90),py(90));
+      doc.setDrawColor(...red); doc.setTextColor(...red);
+      doc.line(px(90),py(104),px(150),py(104));
+      doc.text('b', px(118),py(112));
+      doc.line(px(24),py(20),px(24),py(90));
+      doc.text('h', px(15),py(58));
+    } else if(shape==='tri'){
+      doc.line(px(60),py(20),px(120),py(90));
+      doc.line(px(120),py(90),px(180),py(20));
+      doc.line(px(60),py(20),px(180),py(20));
+      doc.setDrawColor(...red); doc.setTextColor(...red);
+      doc.line(px(200),py(20),px(200),py(90));
+      doc.text('h', px(203),py(58));
+      doc.text('w', px(118),py(14));
+    } else if(shape==='custom'){
+      const pts = parseCustomPoints();
+      if(pts.length>=2){
+        const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+        const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+        const spanX=Math.max(maxX-minX,0.001), spanY=Math.max(maxY-minY,0.001);
+        const cpad=6;
+        const scale = Math.min((bw-2*cpad)/spanX, (bh-2*cpad)/spanY);
+        const toXY = ([xv,yv]) => [bx+cpad+(xv-minX)*scale, by+cpad+(maxY-yv)*scale];
+        for(let i=0;i<pts.length-1;i++){
+          const [x1,y1s]=toXY(pts[i]), [x2,y2s]=toXY(pts[i+1]);
+          doc.line(x1,y1s,x2,y2s);
+        }
+        doc.setDrawColor(...red); doc.setLineWidth(0.3); doc.setLineDashPattern([1,1],0);
+        const [xl,yl]=toXY(pts[pts.length-1]), [x0,y0]=toXY(pts[0]);
+        doc.line(xl,yl,x0,y0);
+        doc.setLineDashPattern([],0);
+      }
+    }
+    y += h + 5;
+  }
+
+  // ---- Valeurs des cotes propres à la forme sélectionnée ----
+  function shapeDimRows(){
+    const shape = currentShape;
+    const val = id => fmt(parseFloat(document.getElementById(id)?.value)||0, 3);
+    if(shape==='demi') return [['Rayon intérieur r', val('dim_r')+' m']];
+    if(shape==='rect') return [['Largeur utile b', val('dim_b')+' m'], ['Hauteur d\u2019eau h', val('dim_h')+' m']];
+    if(shape==='trap') return [
+      ['Largeur au fond b', val('dim_b')+' m'],
+      ['Hauteur d\u2019eau h', val('dim_h')+' m'],
+      ['Fruit des parois', fmt(parseFloat(document.getElementById('dim_fruit')?.value)||0, 2)]
+    ];
+    if(shape==='tri') return [['Largeur au miroir w', val('dim_w')+' m'], ['Hauteur d\u2019eau h', val('dim_h')+' m']];
+    if(shape==='custom'){
+      const pts = parseCustomPoints();
+      return [['Points du contour (X,Y en m)', pts.map(p=>`(${fmt(p[0],2)}, ${fmt(p[1],2)})`).join('  ·  ') || '—']];
+    }
+    return [];
+  }
 
   // ---- En-tête (page 1) — logo réel High Point ----
   doc.addImage(LOGO_B64, 'JPEG', marginX, y-6, 17.8, 8.8);
@@ -1292,7 +1428,7 @@ function buildPDF(){
   doc.setTextColor(...dark); doc.setFontSize(17); doc.setFont('helvetica','bold');
   doc.text('Dimensionnement de chéneau', marginX, y);
   y += 6;
-  doc.setFontSize(9); doc.setTextColor(...red); doc.setFont('courier','normal');
+  doc.setFontSize(9); doc.setTextColor(...red); doc.setFont('helvetica','normal');
   const refBits = [`Réf. calcul — NF DTU 60.11 P3 / NF DTU 40.5 — ${today}`];
   if (CTX.projet) refBits.push(`Projet : ${pdfSafe(CTX.projet)}`);
   if (nomCheneau) refBits.push(nomCheneau);
@@ -1306,9 +1442,10 @@ function buildPDF(){
   const nbDescentes = document.getElementById('nbDescentes').value;
   const qTotal = document.getElementById('qTotal').textContent;
   const qParTroncon = document.getElementById('qParTroncon').textContent;
-  const penteVal = fmt(parseFloat(document.getElementById('pente').value)||0, 2);
+  const penteFloat = parseFloat(document.getElementById('pente').value)||0;
+  const penteVal = fmt(penteFloat, 2);
   const penteDegVal = fmt(parseFloat(document.getElementById('penteDeg').value)||0, 2);
-  const gammaTxt = document.getElementById('gammaSelect').selectedOptions[0].text;
+  const gammaTxt = pdfSafe(document.getElementById('gammaSelect').selectedOptions[0].text);
   const shapeLabel = document.querySelector('#shapeTabs .tab-btn.active').textContent;
   const materiauTxt = document.getElementById('materiau').selectedOptions[0].text;
   const mS = document.getElementById('mS').textContent;
@@ -1363,8 +1500,10 @@ function buildPDF(){
     ['Pente', penteVal+' mm/m (soit '+penteDegVal+' °)'],
     ['Coefficient de frottement (Bazin)', gammaTxt],
     ['Matériau du chéneau', materiauTxt],
-    ['Forme de section', shapeLabel]
+    ['Forme de section', shapeLabel],
+    ...shapeDimRows()
   ]);
+  shapeDiagram(currentShape);
   kpiRow([
     {label:'Section mouillée S', value: mS},
     {label:'Rayon hydraulique R', value: mR},
@@ -1372,6 +1511,19 @@ function buildPDF(){
     {label:'Débit capable', value: mQ}
   ]);
   verdictBanner(verdictOk, verdictMainTxt, verdictSubTxt);
+
+  // ---- Section 4 (uniquement si la pente est faible — c'est là que la méthode FL devient pertinente) ----
+  if (penteFloat <= 5) {
+    const lwRatio = fmt(parseFloat(document.getElementById('lwRatio').value)||0, 0);
+    const penteFLTxt = document.getElementById('penteFL').selectedOptions[0].text;
+    const flResult = fmt(parseFloat(document.getElementById('flResult').value)||0, 2);
+    sectionTitle('4. Chéneau sans pente ou à pente réduite — méthode FL', 36);
+    paramBlock([
+      ['Rapport L/W', lwRatio],
+      ['Pente pour la lecture FL', penteFLTxt],
+      ['Coefficient FL interpolé', flResult]
+    ]);
+  }
 
   // ---- Section 5 ----
   sectionTitle('5. Naissances et descentes', 33);
@@ -1386,7 +1538,7 @@ function buildPDF(){
     ['Développé approx.', mDeveloppe],
     ['Longueur max. entre points fixes', mDilatation],
     ['Support / ossature', supportTxt],
-    ['Altitude du site', (parseFloat(altitudeVal)||0) + ' m']
+    ['Altitude du site', fmt(parseFloat(altitudeVal)||0, 0) + ' m']
   ]);
   const compatNote = readNote('compatResult');
   if(compatNote) noteBox(compatNote.text, compatNote.level);
@@ -1473,6 +1625,8 @@ driveBtn.addEventListener('click', async ()=>{
         email: CTX.email,
         token: freshToken,
         projet: CTX.projet,
+        outil: 'Dimensionnement de chéneau',
+        nom: nomCheneau,
         subfolder: `Dimensionnement de chéneau — ${nomCheneau}`,
         filename: pdfFilename(),
         mimeType: 'application/pdf',
