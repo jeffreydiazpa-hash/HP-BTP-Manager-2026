@@ -539,7 +539,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.35";
+const VERSION = "v4.6.38";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -18578,6 +18578,8 @@ function OutilsBE({ projects, user, isMobile = false }) {
   const [projetSelId, setProjetSelId] = useState("");
   const [outilKey, setOutilKey] = useState(BE_OUTILS[0].key);
   const [iframeSrc, setIframeSrc] = useState("");
+  const [iframeHeight, setIframeHeight] = useState(500);
+  const iframeRef = useRef(null);
   const projetSel = projetSelId ? (projects?.rows || []).find(p => String(p.id) === projetSelId) : null;
   const outil = BE_OUTILS.find(o => o.key === outilKey) || BE_OUTILS[0];
 
@@ -18589,6 +18591,7 @@ function OutilsBE({ projects, user, isMobile = false }) {
         const auth = await ensureAuth();
         if (!alive) return;
         const params = new URLSearchParams({ projet: projetSel.name || "", email: auth.email, token: auth.token, gas: GAS_URL });
+        setIframeHeight(500); // repli le temps que le nouvel outil signale sa vraie hauteur
         setIframeSrc(outil.file + "?" + params.toString());
       } catch (e) {
         if (alive) setIframeSrc("");
@@ -18596,6 +18599,19 @@ function OutilsBE({ projects, user, isMobile = false }) {
     })();
     return () => { alive = false; };
   }, [projetSelId, outilKey]);
+
+  // Reçoit la hauteur réelle du contenu depuis l'outil embarqué (cf. convention "hp-tool-resize" dans
+  // le fichier de l'outil) — évite que l'iframe ait sa propre barre de défilement : seule la page du
+  // site défile, comme si l'outil faisait partie du même document.
+  useEffect(() => {
+    const onMsg = e => {
+      if (!e.data || e.data.type !== "hp-tool-resize") return;
+      if (iframeRef.current && e.source !== iframeRef.current.contentWindow) return;
+      setIframeHeight(Math.max(300, Math.ceil(e.data.height) + 4));
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
 
   return React.createElement("div", null,
     React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 } },
@@ -18622,7 +18638,14 @@ function OutilsBE({ projects, user, isMobile = false }) {
           "Sélectionnez un projet pour ouvrir l'outil — les PDF générés pourront alors être enregistrés directement dans le dossier Drive de ce projet."
         )
       : (iframeSrc
-          ? React.createElement("iframe", { key: outilKey + projetSelId, src: iframeSrc, style: { width: "100%", height: isMobile ? "80vh" : "82vh", border: "1px solid #EEE", borderRadius: 8, background: "#fff" }, title: outil.label })
+          ? React.createElement("iframe", {
+              key: outilKey + projetSelId,
+              ref: iframeRef,
+              src: iframeSrc,
+              scrolling: "no",
+              style: { width: "100%", height: iframeHeight + "px", border: "none", display: "block", overflow: "hidden" },
+              title: outil.label
+            })
           : React.createElement("div", { style: { padding: 28, textAlign: "center", color: "#7A7A7A", fontSize: 13 } }, "Chargement…")
         )
   );
@@ -25337,11 +25360,24 @@ function Commandes({
       recue: !wasRecue
     };
     if (!wasRecue) {
-      next.dateLivraison = TODAY;
+      // Si une date de livraison prévue existe déjà et diffère d'aujourd'hui, on demande :
+      // réception à la date du jour (reçu en avance / à l'instant) ou à la date prévue
+      // (saisie rétroactive, la commande a en réalité été reçue à cette date-là).
+      let dateEffective = TODAY;
+      if (o.dateLivraison && o.dateLivraison !== TODAY) {
+        const fmt = d => { const [y, m, j] = String(d).split("-"); return j && m && y ? `${j}/${m}/${y}` : d; };
+        const useToday = confirm(
+          `Date de réception de "${o.article || o.fourn || "cette commande"}" :\n\n` +
+          `OK = aujourd'hui (${fmt(TODAY)})\n` +
+          `Annuler = date prévue (${fmt(o.dateLivraison)})`
+        );
+        dateEffective = useToday ? TODAY : o.dateLivraison;
+      }
+      next.dateLivraison = dateEffective;
       await syncEvenementLivraison({
         ...o,
-        dateLivraison: TODAY
-      }, TODAY);
+        dateLivraison: dateEffective
+      }, dateEffective);
       await addToStock(o);
     } else {
       if (!isBool(o.factureCompta)) {
