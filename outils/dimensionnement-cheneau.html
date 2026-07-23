@@ -465,6 +465,7 @@
     </div>
 
     <div class="verdict" id="verdict">–</div>
+    <div id="dtuCrossCheck"></div>
   </div>
 
   <!-- ===================== SECTION 4 : CHENEAUX SANS PENTE ===================== -->
@@ -536,12 +537,19 @@
       <tr><th>Diamètre intérieur</th><th>Surface en plan maximale desservie</th></tr>
     </table>
     <p style="font-size:11.5px;color:var(--hp-mid);margin-top:12px;">
-      Diamètre minimal réglementaire : <b>60 mm</b>, quelle que soit la surface (risque d'obstruction). Pour une
+      Diamètre minimal réglementaire : <b>60 mm</b> (jamais en dessous, risque d'obstruction). Pour une
       descente de section rectangulaire (a×b), la section équivalente est <span class="mono">d = 2ab/(a+b)</span>
       (ex. 80×60 ≈ ø70, 110×80 ≈ ø90). La surface ci-dessus est celle desservie par <b>une seule</b> descente
       (surface totale ÷ nombre de descentes saisi en section 1) — au-delà de 287 m², prévoyez plusieurs descentes
       ou une étude spécifique (regroupement de descentes, formule de Bazin).
     </p>
+    <div class="scope-note" style="margin-top:14px;">
+      <b>Trop-plein obligatoire</b> — le NF DTU 40.5 impose que tout chéneau comporte un orifice de trop-plein
+      (gueulard ou gargouille), pour éviter que l'eau ne s'introduise dans le bâtiment en cas d'obstruction
+      partielle ou totale d'une descente. Sa section doit être au moins égale à celle de l'entrée d'eaux
+      pluviales qu'il protège, et il doit être desservi par une descente complémentaire et indépendante.
+      Cette exigence s'applique quel que soit le matériau du chéneau — elle n'est pas dimensionnée par cet outil.
+    </div>
   </div>
 
   <h2 style="margin-top:32px;">6. Constructibilité et compatibilité</h2>
@@ -595,6 +603,8 @@
       <li>NF EN 12056-3 (Annexe A) — Coefficient F<sub>L</sub> pour chéneaux intérieurs sans pente</li>
       <li>NF DTU 43.1 — Étanchéité des chéneaux (revêtement, joints), altitude &gt; 900 m</li>
       <li>NF DTU 60.11 (règles P40-202, 1988, reconduites en Partie 3) — Tableaux 2 et 3 : diamètre des tuyaux de descente selon la surface en plan desservie, couvertures sans revêtement d'étanchéité, débit 3 l/min/m² ; diamètre intérieur minimal 60 mm</li>
+      <li>NF DTU 60.11 — Tableau de section minimale (surface en plan x pente) pour conduits demi-circulaires, débit 3 l/min/m², majoré de 10 % (rectangulaire/trapézoïdale) ou 20 % (triangulaire) — utilisé ici en vérification croisée indépendante du calcul de Bazin ; valeurs recoupées avec le guide technique VMZINC « Collecte des eaux pluviales »</li>
+      <li>NF DTU 40.5 — Obligation d'un orifice de trop-plein sur tout chéneau, de section au moins égale à l'entrée d'eaux pluviales protégée</li>
       <li>NF DTU 43.4 — Contraintes géométriques des chéneaux en bois massif ou lamellé-collé</li>
       <li>Formule de Bazin : C = 87 / (1 + γ/√R), V = C·√(R·i), Q = V·S — méthode historique du DTU 60.11 (1988), maintenue dans la version P3 pour les gouttières, chéneaux, naissances et descentes des toitures avec revêtement d'étanchéité</li>
       <li>Éditions Ginger, collection Essentiel — <i>Eaux pluviales dans le bâtiment</i> (2022), chapitre « Éléments constitutifs d'un réseau » : synthèse des tableaux DTU 40.5/43.4 ci-dessus reprise en paraphrase, à recouper avec les textes officiels pour tout usage contractuel</li>
@@ -652,7 +662,55 @@ const SUPPORT_COMPAT = {
 
 // Diamètre de descente (mm) → surface en plan maximale desservie (m²), NF DTU 60.11 (tableaux 2 et 3),
 // couvertures sans revêtement d'étanchéité, débit 3 l/min/m². Diamètre minimal réglementaire : 60 mm.
+// ---------- Vérification croisée — méthode tabulée NF DTU 60.11 (indépendante du matériau) ----------
+// Table "surface en plan x pente -> section (cm²)" pour conduits demi-circulaires, débit 3 l/min/m² —
+// NF DTU 60.11, reproduite à l'identique dans le guide technique VMZINC "Collecte des eaux pluviales".
+// Majorations DTU 60.11 : +10 % pour section rectangulaire/trapézoïdale, +20 % pour section triangulaire.
+const DTU_PENTES = [5, 7, 10, 15, 20];
+const DTU_SURFACES = [20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,200,250,300,350,400,450,500,600,700,800,900,1000];
+const DTU_SECTIONS = [
+  [35,35,30,25,20], [50,45,40,35,30], [60,55,50,40,35], [70,65,55,50,45],
+  [80,70,60,55,50], [90,80,70,60,55], [95,85,75,65,60], [100,95,85,70,65],
+  [115,100,90,80,70], [120,110,95,85,75], [130,115,100,90,80], [135,120,105,95,85],
+  [145,130,115,100,90], [150,135,120,105,95], [160,140,125,110,100], [165,145,130,115,100],
+  [170,150,135,120,105], [185,165,145,125,115], [215,190,170,145,135], [245,220,195,165,150],
+  [275,245,215,185,170], [305,270,235,205,185], [330,290,255,225,200], [355,315,275,240,215],
+  [405,360,315,275,245], [450,400,350,305,275], [495,440,385,335,305], [540,480,420,365,330],
+  [585,515,455,395,355]
+];
+const DTU_SHAPE_MULT = { demi: 1, rect: 1.10, trap: 1.10, tri: 1.20 }; // 'custom' volontairement absent : non couvert
+
+function dtuCrossCheck(surface, penteMM, shape){
+  const mult = DTU_SHAPE_MULT[shape];
+  if(mult == null || !isFinite(surface) || surface <= 0) return null;
+  let pIdx = -1;
+  for(let i = DTU_PENTES.length-1; i >= 0; i--){ if(penteMM >= DTU_PENTES[i]){ pIdx = i; break; } }
+  if(pIdx === -1) pIdx = 0; // pente < 5 mm/m (déjà hors DTU 40.5 par ailleurs) : colonne la plus sévère par défaut
+  const sIdx = DTU_SURFACES.findIndex(s => s >= surface);
+  if(sIdx === -1) return null; // surface hors plage du tableau (> 1000 m²)
+  const base = DTU_SECTIONS[sIdx][pIdx];
+  return { surfaceRef: DTU_SURFACES[sIdx], penteRef: DTU_PENTES[pIdx], baseSection: base, multiplier: mult, requiredSection: base*mult };
+}
+function updateDtuCrossCheck(surface, penteMM, shape, S_m2){
+  const div = document.getElementById('dtuCrossCheck');
+  const cc = dtuCrossCheck(surface, penteMM, shape);
+  if(!cc){
+    div.innerHTML = `<p style="font-size:11px;color:var(--hp-mid);margin-top:10px;">Vérification croisée par tableau (NF DTU 60.11) non applicable ici — hors plage du tableau (surface &gt; 1000 m²) ou forme personnalisée non couverte par les majorations forfaitaires.</p>`;
+    return;
+  }
+  const S_cm2 = S_m2*10000;
+  const ok = S_cm2 >= cc.requiredSection;
+  div.innerHTML = `<div class="scope-note" style="margin-top:10px;border-left-color:${ok ? 'var(--hp-green)' : 'var(--hp-red)'};">
+    <b>Vérification croisée — méthode tabulée (NF DTU 60.11)</b><br>
+    Pour ${cc.surfaceRef} m² à ${cc.penteRef} mm/m (valeurs tabulées les plus proches, par excès) : section de base ${cc.baseSection} cm²
+    ${cc.multiplier>1 ? '× '+cc.multiplier.toFixed(2)+' (majoration forme) = ' : ''}<b>${fmt(cc.requiredSection,0)} cm² requis</b> —
+    section retenue ici : <b>${fmt(S_cm2,0)} cm²</b>.
+    ${ok ? 'Les deux méthodes convergent.' : 'La méthode tabulée demande davantage que le calcul de Bazin ci-dessus — à examiner.'}
+  </div>`;
+}
+
 const DOWNPIPE_TABLE = [
+  {d:60,  s:40},
   {d:70,  s:55},
   {d:80,  s:70},
   {d:90,  s:91},
@@ -716,8 +774,9 @@ function geometry(shape, d){
     return {S,P};
   }
   if(shape==='trap'){
-    const {b,h,fruit} = d;
-    const S = (b+fruit*h)*h;
+    const {B,b,h} = d;
+    const fruit = h>0 ? (B-b)/(2*h) : 0;
+    const S = (b+fruit*h)*h; // équivalent à (b+B)/2 * h
     const P = b+2*h*Math.sqrt(1+fruit*fruit);
     return {S,P};
   }
@@ -812,6 +871,10 @@ const SHAPE_SVG = {
   </svg>`,
   trap: `<svg viewBox="0 0 240 130" width="240" height="130">
     <path d="M 90 90 L 40 20 L 200 20 L 150 90 Z" fill="#F2F0ED" opacity="0.6" stroke="#3A3A3A" stroke-width="2"/>
+    <line x1="40" y1="14" x2="200" y2="14" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="40" y1="8" x2="40" y2="20" stroke="#CC2222" stroke-width="1.3"/>
+    <line x1="200" y1="8" x2="200" y2="20" stroke="#CC2222" stroke-width="1.3"/>
+    <text x="120" y="9" text-anchor="middle" font-family="DM Mono, monospace" font-size="13" font-weight="700" fill="#CC2222">B</text>
     <line x1="90" y1="104" x2="150" y2="104" stroke="#CC2222" stroke-width="1.3"/>
     <line x1="90" y1="98" x2="90" y2="110" stroke="#CC2222" stroke-width="1.3"/>
     <line x1="150" y1="98" x2="150" y2="110" stroke="#CC2222" stroke-width="1.3"/>
@@ -820,10 +883,6 @@ const SHAPE_SVG = {
     <line x1="18" y1="20" x2="30" y2="20" stroke="#CC2222" stroke-width="1.3"/>
     <line x1="18" y1="90" x2="30" y2="90" stroke="#CC2222" stroke-width="1.3"/>
     <text x="2" y="59" font-family="DM Mono, monospace" font-size="13" font-weight="700" fill="#CC2222">h</text>
-    <line x1="90" y1="90" x2="90" y2="20" stroke="#CC2222" stroke-width="1" stroke-dasharray="3,2"/>
-    <line x1="90" y1="20" x2="40" y2="20" stroke="#CC2222" stroke-width="1" stroke-dasharray="3,2"/>
-    <text x="63" y="15" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="9.5" fill="#7A7A7A">fruit × h</text>
-    <text x="163" y="15" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="9.5" fill="#7A7A7A">côté court en bas</text>
   </svg>`,
   tri: `<svg viewBox="0 0 240 130" width="240" height="130">
     <path d="M 60 20 L 120 90 L 180 20" fill="none" stroke="#3A3A3A" stroke-width="2"/>
@@ -857,10 +916,11 @@ function renderShapeFields(shape){
   } else if(shape==='trap'){
     shapeDiagramDiv.innerHTML = SHAPE_SVG[shape] || '';
     html += '<div class="field-row">'
+      + field('B','Largeur en haut B (m)', 0.35, 0.005)
       + field('b','Largeur au fond b (m)', 0.15, 0.005)
       + field('h','Hauteur d\'eau h (m)', 0.10, 0.005)
-      + field('fruit','Fruit des parois (horiz./vert.)', 0.5, 0.05)
-      + '</div>';
+      + '</div>'
+      + '<div class="hint" id="fruitCalc" style="margin:-8px 0 10px;"></div>';
   } else if(shape==='tri'){
     shapeDiagramDiv.innerHTML = SHAPE_SVG[shape] || '';
     html += '<div class="field-row">'
@@ -952,6 +1012,13 @@ function recompute(){
   }
 
   const dims = currentShape==='custom' ? {} : getDims(currentShape);
+  if(currentShape==='trap'){
+    const fc = document.getElementById('fruitCalc');
+    if(fc){
+      const fruitVal = dims.h>0 ? (dims.B-dims.b)/(2*dims.h) : 0;
+      fc.innerHTML = `Fruit calculé : <b>${fmt(fruitVal,2)}</b> (décalage horizontal / hauteur, par paroi) — pour rappel : fruit = (B − b) / (2 × h)`;
+    }
+  }
   const {S,P} = currentShape==='custom' ? customGeometry(parseCustomPoints()) : geometry(currentShape, dims);
   const res = bazin(S,P,pente,gamma);
 
@@ -979,6 +1046,7 @@ function recompute(){
   }
 
   computeFL();
+  updateDtuCrossCheck(surface, pente, currentShape, res.S);
 }
 
 // ---------- Solve minimal dimension ----------
@@ -1130,7 +1198,7 @@ penteDegInp.addEventListener('input', ()=>{
 });
 
 // ---------- Version de l'outil (visible à l'écran, indépendante du nom de fichier) ----------
-const TOOL_VERSION = "1.7";
+const TOOL_VERSION = "2.1";
 document.getElementById('toolVersionBadge').textContent = 'v' + TOOL_VERSION;
 
 // ---------- Contexte projet / intégration au site (onglet Outils, module BE) ----------
@@ -1326,54 +1394,78 @@ function buildPDF(){
     doc.setFillColor(...light);
     doc.roundedRect(marginX, y, contentW, h, 3, 3, 'F');
     const bx = marginX+pad, by = y+pad, bw = contentW-2*pad, bh = h-2*pad;
-    const sx = bw/240, sy = bh/130;
-    const px = xv => bx + xv*sx, py = yv => by + yv*sy;
     doc.setLineWidth(0.4); doc.setDrawColor(70,70,70);
     doc.setFontSize(8); doc.setFont('helvetica','bold');
+    const val = id => parseFloat(document.getElementById(id)?.value)||0;
+
+    // Marges réservées aux lignes de cote autour de la forme (constantes, quelle que soit la taille de
+    // la forme) — garantit qu'aucune cote ne chevauche jamais le dessin, même très large ou très plat.
+    const LM = 14, RM = 8, TM = 10, BM = 10;
+    const areaX = bx+LM, areaY = by+TM, areaW = bw-LM-RM, areaH = bh-TM-BM;
+    const cxShape = areaX + areaW/2;
 
     if(shape==='demi'){
-      doc.line(px(60),py(30),px(180),py(30));
-      const cxp=px(120), cyp=py(30), rr=px(180)-px(120);
+      const r = val('dim_r') || 0.1;
+      const scale = Math.min(areaW/(2*r), areaH/r);
+      const rr = r*scale;
+      const topY = areaY;
+      doc.line(cxShape-rr, topY, cxShape+rr, topY);
       let prev=null;
       for(let i=0;i<=28;i++){
         const t = Math.PI*i/28;
-        const pt=[cxp-rr*Math.cos(t), cyp+rr*Math.sin(t)];
+        const pt=[cxShape-rr*Math.cos(t), topY+rr*Math.sin(t)];
         if(prev) doc.line(prev[0],prev[1],pt[0],pt[1]);
         prev=pt;
       }
       doc.setDrawColor(...red); doc.setLineWidth(0.3); doc.setLineDashPattern([1,1],0);
-      doc.line(px(120),py(30),px(120),py(90));
+      doc.line(cxShape, topY, cxShape, topY+rr);
       doc.setLineDashPattern([],0);
       doc.setTextColor(...red);
-      doc.text('r', px(125), py(64));
+      doc.text('r', cxShape+3, topY+rr*0.55);
     } else if(shape==='rect'){
-      doc.line(px(60),py(20),px(60),py(90));
-      doc.line(px(60),py(90),px(180),py(90));
-      doc.line(px(180),py(90),px(180),py(20));
-      doc.line(px(60),py(20),px(180),py(20));
+      const b = val('dim_b') || 0.2, hh = val('dim_h') || 0.1;
+      const scale = Math.min(areaW/b, areaH/hh);
+      const w2 = b*scale, h2 = hh*scale;
+      const x0 = cxShape-w2/2, y0 = areaY;
+      doc.line(x0,y0,x0,y0+h2);
+      doc.line(x0,y0+h2,x0+w2,y0+h2);
+      doc.line(x0+w2,y0+h2,x0+w2,y0);
+      doc.line(x0,y0,x0+w2,y0);
       doc.setDrawColor(...red); doc.setTextColor(...red);
-      doc.line(px(60),py(104),px(180),py(104));
-      doc.text('b', px(118),py(112));
-      doc.line(px(44),py(20),px(44),py(90));
-      doc.text('h', px(35),py(58));
+      doc.line(x0,y0+h2+5,x0+w2,y0+h2+5);
+      doc.text('b', x0+w2/2-1, y0+h2+10);
+      doc.line(bx+6,y0,bx+6,y0+h2);
+      doc.text('h', bx+1, y0+h2/2+1);
     } else if(shape==='trap'){
-      doc.line(px(90),py(90),px(40),py(20));
-      doc.line(px(40),py(20),px(200),py(20));
-      doc.line(px(200),py(20),px(150),py(90));
-      doc.line(px(150),py(90),px(90),py(90));
+      const B = val('dim_B') || 0.3, b = val('dim_b') || 0.15, hh = val('dim_h') || 0.1;
+      const scale = Math.min(areaW/Math.max(B,b), areaH/hh);
+      const Bw = B*scale, bw2 = b*scale, h2 = hh*scale;
+      const y0 = areaY, y1 = y0+h2;
+      const xB0 = cxShape-Bw/2, xB1 = cxShape+Bw/2, xb0 = cxShape-bw2/2, xb1 = cxShape+bw2/2;
+      doc.line(xb0,y1,xB0,y0);
+      doc.line(xB0,y0,xB1,y0);
+      doc.line(xB1,y0,xb1,y1);
+      doc.line(xb1,y1,xb0,y1);
       doc.setDrawColor(...red); doc.setTextColor(...red);
-      doc.line(px(90),py(104),px(150),py(104));
-      doc.text('b', px(118),py(112));
-      doc.line(px(24),py(20),px(24),py(90));
-      doc.text('h', px(15),py(58));
+      doc.line(xB0,y0-5,xB1,y0-5);
+      doc.text('B', cxShape-1, y0-8);
+      doc.line(xb0,y1+5,xb1,y1+5);
+      doc.text('b', cxShape-1, y1+10);
+      doc.line(bx+6,y0,bx+6,y1);
+      doc.text('h', bx+1, (y0+y1)/2+1);
     } else if(shape==='tri'){
-      doc.line(px(60),py(20),px(120),py(90));
-      doc.line(px(120),py(90),px(180),py(20));
-      doc.line(px(60),py(20),px(180),py(20));
+      const w = val('dim_w') || 0.3, hh = val('dim_h') || 0.15;
+      const scale = Math.min(areaW/w, areaH/hh);
+      const w2 = w*scale, h2 = hh*scale;
+      const y0 = areaY, y1 = y0+h2;
+      doc.line(cxShape-w2/2,y0,cxShape,y1);
+      doc.line(cxShape,y1,cxShape+w2/2,y0);
+      doc.line(cxShape-w2/2,y0,cxShape+w2/2,y0);
       doc.setDrawColor(...red); doc.setTextColor(...red);
-      doc.line(px(200),py(20),px(200),py(90));
-      doc.text('h', px(203),py(58));
-      doc.text('w', px(118),py(14));
+      doc.line(cxShape-w2/2,y0-5,cxShape+w2/2,y0-5);
+      doc.text('w', cxShape-1, y0-8);
+      doc.line(bx+6,y0,bx+6,y1);
+      doc.text('h', bx+1, (y0+y1)/2+1);
     } else if(shape==='custom'){
       const pts = parseCustomPoints();
       if(pts.length>=2){
@@ -1402,11 +1494,18 @@ function buildPDF(){
     const val = id => fmt(parseFloat(document.getElementById(id)?.value)||0, 3);
     if(shape==='demi') return [['Rayon intérieur r', val('dim_r')+' m']];
     if(shape==='rect') return [['Largeur utile b', val('dim_b')+' m'], ['Hauteur d\u2019eau h', val('dim_h')+' m']];
-    if(shape==='trap') return [
-      ['Largeur au fond b', val('dim_b')+' m'],
-      ['Hauteur d\u2019eau h', val('dim_h')+' m'],
-      ['Fruit des parois', fmt(parseFloat(document.getElementById('dim_fruit')?.value)||0, 2)]
-    ];
+    if(shape==='trap'){
+      const B = parseFloat(document.getElementById('dim_B')?.value)||0;
+      const b = parseFloat(document.getElementById('dim_b')?.value)||0;
+      const h = parseFloat(document.getElementById('dim_h')?.value)||0;
+      const fruitCalc = h>0 ? (B-b)/(2*h) : 0;
+      return [
+        ['Largeur en haut B', fmt(B,3)+' m'],
+        ['Largeur au fond b', fmt(b,3)+' m'],
+        ['Hauteur d\u2019eau h', fmt(h,3)+' m'],
+        ['Fruit des parois (calculé)', fmt(fruitCalc,2)+' = (B-b)/(2h)']
+      ];
+    }
     if(shape==='tri') return [['Largeur au miroir w', val('dim_w')+' m'], ['Hauteur d\u2019eau h', val('dim_h')+' m']];
     if(shape==='custom'){
       const pts = parseCustomPoints();
@@ -1415,12 +1514,13 @@ function buildPDF(){
     return [];
   }
 
-  // ---- En-tête (page 1) — logo réel High Point ----
-  doc.addImage(LOGO_B64, 'JPEG', marginX, y-6, 17.8, 8.8);
-  doc.setFontSize(8.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
-  doc.text('www.highpoint-structures.com', pageW-marginX, y-1, {align:'right'});
-  doc.text('info@highpoint-structures.com', pageW-marginX, y+3, {align:'right'});
-  y += 8;
+  // ---- En-tête (page 1) — logo réel High Point (2x plus grand) + nom de l'outil ----
+  doc.addImage(LOGO_B64, 'JPEG', marginX, 8, 35.6, 17.6);
+  doc.setFontSize(8.5); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
+  doc.text('Outil — Dimensionnement de chéneau', marginX, 30);
+  doc.text('www.highpoint-structures.com', pageW-marginX, 13, {align:'right'});
+  doc.text('info@highpoint-structures.com', pageW-marginX, 17, {align:'right'});
+  y = 34;
   doc.setDrawColor(...red); doc.setLineWidth(0.6);
   doc.line(marginX, y, pageW-marginX, y);
   y += 10;
@@ -1511,6 +1611,16 @@ function buildPDF(){
     {label:'Débit capable', value: mQ}
   ]);
   verdictBanner(verdictOk, verdictMainTxt, verdictSubTxt);
+  const surfaceNum = parseFloat(document.getElementById('surface').value)||0;
+  const dimsForCC = currentShape==='custom' ? {} : getDims(currentShape);
+  const { S: S_cc } = currentShape==='custom' ? customGeometry(parseCustomPoints()) : geometry(currentShape, dimsForCC);
+  const cc = dtuCrossCheck(surfaceNum, penteFloat, currentShape);
+  if (cc) {
+    const S_cc_cm2 = S_cc*10000;
+    const ccOk = S_cc_cm2 >= cc.requiredSection;
+    const ccText = `Vérification croisée (NF DTU 60.11, méthode tabulée) : pour ${cc.surfaceRef} m² à ${cc.penteRef} mm/m, section requise ${fmt(cc.requiredSection,0)} cm² (base ${cc.baseSection} cm²${cc.multiplier>1 ? ' x '+cc.multiplier.toFixed(2)+' majoration forme' : ''}) — section retenue ${fmt(S_cc_cm2,0)} cm². ${ccOk ? 'Les deux méthodes convergent.' : 'La méthode tabulée demande davantage que le calcul de Bazin — à examiner.'}`;
+    noteBox(ccText, ccOk ? 'ok' : 'no');
+  }
 
   // ---- Section 4 (uniquement si la pente est faible — c'est là que la méthode FL devient pertinente) ----
   if (penteFloat <= 5) {
@@ -1531,6 +1641,7 @@ function buildPDF(){
     {label:'Surface desservie / descente', value: mSurfDescente},
     {label:'Diamètre de descente recommandé', value: mDiamDescente}
   ]);
+  noteBox('Trop-plein obligatoire (NF DTU 40.5) : tout chéneau doit comporter un orifice de trop-plein (gueulard ou gargouille), de section au moins égale à celle de l\u2019entrée d\u2019eaux pluviales qu\u2019il protège, desservi par une descente complémentaire et indépendante. Exigence indépendante du matériau — non dimensionnée par cet outil.', 'info');
 
   // ---- Section 6 ----
   sectionTitle('6. Constructibilité et compatibilité', 42);
@@ -1627,7 +1738,7 @@ driveBtn.addEventListener('click', async ()=>{
         projet: CTX.projet,
         outil: 'Dimensionnement de chéneau',
         nom: nomCheneau,
-        subfolder: `Dimensionnement de chéneau — ${nomCheneau}`,
+        subfolder: `Dimensionnement de chéneau`,
         filename: pdfFilename(),
         mimeType: 'application/pdf',
         dataB64
