@@ -539,7 +539,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.6.39";
+const VERSION = "v4.7.0";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -5477,7 +5477,8 @@ function Projets({
   suiviFab,
   fournisseurs,
   devis,
-  metre
+  metre,
+  onProjetTermine = null
 }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EP);
@@ -5485,6 +5486,7 @@ function Projets({
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [detail, setDetail] = useState(null);
+  const [justFinished, setJustFinished] = useState(null);
   const [noteForm, setNoteForm] = useState({
     titre: "",
     contenu: ""
@@ -5560,10 +5562,14 @@ function Projets({
         budget: +form.budget || 0,
         depense: +form.depense || 0
       };
+      const wasTermine = editing ? (sheet.rows.find(r => String(r.id) === String(editing))?.statut === "terminé") : false;
       if (editing) {
         await sheet.update(editing, item);
       } else {
         await sheet.add(item);
+      }
+      if (item.statut === "terminé" && !wasTermine) {
+        setJustFinished({ ...item, id: editing || item.id });
       }
       setOpen(false);
       setEditing(null);
@@ -5591,11 +5597,13 @@ function Projets({
   }
   async function finaliser(p) {
     if (!confirm(`Finaliser et archiver le projet "${p.name}" ?`)) return;
+    const wasTermine = p.statut === "terminé";
     await sheet.update(p.id, {
       ...p,
       statut: "terminé",
       avancement: 100
     });
+    if (!wasTermine) setJustFinished({ ...p, statut: "terminé", avancement: 100 });
     setDetail(null);
   }
   async function saveOrder() {
@@ -7316,7 +7324,37 @@ ${sections}
   }
   return React.createElement(WithPanel, {
     panel: panel
+  }, justFinished && React.createElement("div", {
+    style: {
+      background: "#EAF4EA",
+      border: "1px solid #cfe6cf",
+      borderRadius: 8,
+      padding: "12px 16px",
+      marginBottom: 14,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      flexWrap: "wrap"
+    }
   }, React.createElement("div", {
+    style: { fontSize: 13, color: "#2A7A2A" }
+  }, React.createElement("b", null, `Projet "${justFinished.name}" marqué terminé.`), " Générer la fiche de fin de projet pour ce dossier ?"), React.createElement("div", {
+    style: { display: "flex", gap: 8, flexShrink: 0 }
+  }, React.createElement("button", {
+    onClick: () => { onProjetTermine && onProjetTermine(justFinished); setJustFinished(null); },
+    style: {
+      background: "#2A7A2A", color: "#fff", border: "none", borderRadius: 6,
+      padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+      fontFamily: "'DM Sans',sans-serif"
+    }
+  }, "Générer maintenant"), React.createElement("button", {
+    onClick: () => setJustFinished(null),
+    style: {
+      background: "none", border: "1px solid #cfe6cf", color: "#2A7A2A", borderRadius: 6,
+      padding: "7px 10px", fontSize: 12, cursor: "pointer", fontFamily: "'DM Sans',sans-serif"
+    }
+  }, "Plus tard"))), React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
@@ -18032,9 +18070,10 @@ function PlanningProjet({
 // ═══ Module Outils (Bureau d'Études) — v4.6.35 : outils de calcul indépendants, intégrés par iframe et liés à un projet pour l'enregistrement Drive ═══
 const BE_OUTILS = [
   { key: "cheneau", label: "Dimensionnement de chéneau", desc: "Débit d'eaux pluviales, formule de Bazin — NF DTU 60.11 P3 / NF DTU 40.5", file: "outils/dimensionnement-cheneau.html" },
-  { key: "bilanC", label: "Bilan Carbone ETFE", desc: "Analyse cycle de vie A1-A5 — membranes ETFE, ossature aluminium, transport, chantier", file: "outils/bilan-carbone.html" }
+  { key: "bilanC", label: "Bilan Carbone ETFE", desc: "Analyse cycle de vie A1-A5 — membranes ETFE, ossature aluminium, transport, chantier", file: "outils/bilan-carbone.html" },
+  { key: "finProjet", label: "Fiche de fin de projet", desc: "Compile toutes les données du projet et produit un bilan analysé par IA", file: "outils/fin-projet.html" }
 ];
-function OutilsBE({ projects, user, isMobile = false }) {
+function OutilsBE({ projects, user, isMobile = false, preselect = null, onPreselectConsumed = null }) {
   const [projetSelId, setProjetSelId] = useState("");
   const [outilKey, setOutilKey] = useState(BE_OUTILS[0].key);
   const [iframeSrc, setIframeSrc] = useState("");
@@ -18043,6 +18082,15 @@ function OutilsBE({ projects, user, isMobile = false }) {
   const projetSel = projetSelId ? (projects?.rows || []).find(p => String(p.id) === projetSelId) : null;
   const outil = BE_OUTILS.find(o => o.key === outilKey) || BE_OUTILS[0];
 
+  // Arrivée depuis le panneau "projet terminé" (cf. Projets > onProjetTermine) : présélectionne le
+  // projet et l'outil visés, puis prévient le parent que c'est consommé pour ne pas re-déclencher.
+  useEffect(() => {
+    if (!preselect) return;
+    if (preselect.projetId) setProjetSelId(String(preselect.projetId));
+    if (preselect.outilKey) setOutilKey(preselect.outilKey);
+    if (onPreselectConsumed) onPreselectConsumed();
+  }, [preselect]);
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -18050,7 +18098,7 @@ function OutilsBE({ projects, user, isMobile = false }) {
       try {
         const auth = await ensureAuth();
         if (!alive) return;
-        const params = new URLSearchParams({ projet: projetSel.name || "", email: auth.email, token: auth.token, gas: GAS_URL });
+        const params = new URLSearchParams({ projet: projetSel.name || "", projetId: String(projetSel.id||""), email: auth.email, token: auth.token, gas: GAS_URL });
         setIframeHeight(500); // repli le temps que le nouvel outil signale sa vraie hauteur
         setIframeSrc(outil.file + "?" + params.toString());
       } catch (e) {
@@ -18136,6 +18184,7 @@ function BureauEtudes({
   conges = null
 }) {
   const [onglet, setOnglet] = useState("projets");
+  const [preselectOutil, setPreselectOutil] = useState(null);
   const ONGLETS = [{
     id: "projets",
     label: "📁 Projets"
@@ -18195,7 +18244,11 @@ function BureauEtudes({
     suiviFab: suiviFab,
     fournisseurs: fournisseurs,
     devis: devis,
-    metre: metre
+    metre: metre,
+    onProjetTermine: (p) => {
+      setPreselectOutil({ projetId: p.id, projetNom: p.name, outilKey: "finProjet" });
+      setOnglet("outils");
+    }
   }), onglet === "taches" && React.createElement(Taches, {
     sheet: tasks,
     projects: projects,
@@ -18243,7 +18296,9 @@ function BureauEtudes({
   }), onglet === "outils" && React.createElement(OutilsBE, {
     projects: projects,
     user: user,
-    isMobile: isMobile
+    isMobile: isMobile,
+    preselect: preselectOutil,
+    onPreselectConsumed: () => setPreselectOutil(null)
   }));
 }
 // ═══ Module Formulaires sur mesure (Chantier) — v4.6.30 : installation site + cotes photo + PDF brouillon ═══
