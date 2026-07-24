@@ -168,8 +168,17 @@
     <h2>Comptes-rendus <span class="count" id="crCount"></span></h2>
     <div class="card"><table class="fl" id="crTable"></table></div>
 
+    <h2>Notes libres <span class="count" id="notesCount"></span></h2>
+    <div class="card"><table class="fl" id="notesTable"></table></div>
+
     <h2>Commandes <span class="count" id="ordersCount"></span></h2>
     <div class="card"><table class="fl" id="ordersTable"></table></div>
+
+    <h2>Prestations externes <span class="count" id="prestCount"></span></h2>
+    <div class="card"><table class="fl" id="prestTable"></table></div>
+
+    <h2>Stocks consommés / réservés <span class="count" id="stocksCount"></span></h2>
+    <div class="card"><table class="fl" id="stocksTable"></table></div>
 
     <h2>Documents générés (Outils) <span class="count" id="docsCount"></span></h2>
     <div class="card"><table class="fl" id="docsTable"></table></div>
@@ -204,7 +213,7 @@
 </footer>
 
 <script>
-const TOOL_VERSION = "1.1";
+const TOOL_VERSION = "1.2";
 document.getElementById('versionBadge').textContent = 'v' + TOOL_VERSION;
 document.getElementById('refDate').textContent = new Date().toLocaleDateString('fr-FR');
 
@@ -279,6 +288,13 @@ async function getFreshToken(){
 // ---------- Chargement du dossier projet ----------
 let DOSSIER = null;
 let ANALYSE_TEXTE = '';
+let ANALYSE_RESUME = '';
+let ANALYSE_DETAIL = '';
+function splitAnalyse(txt){
+  const idx = txt.indexOf('###DETAIL###');
+  if (idx === -1) return { resume: txt.trim(), detail: '' };
+  return { resume: txt.slice(0, idx).trim(), detail: txt.slice(idx + '###DETAIL###'.length).trim() };
+}
 
 async function chargerDossier(){
   const hasCtx = CTX.projet && CTX.gas && CTX.email && CTX.token;
@@ -311,6 +327,7 @@ function isTruthy(v){ return v === true || v === 'TRUE' || v === 'true' || v ===
 
 function afficherDossier(d){
   const p = d.projet || {};
+  const dc = d.depensesCalc || { engagees:0, recues:0, prest:0, prestTerminees:0, total:0 };
   document.getElementById('projetCard').innerHTML = `
     <div class="field-row">
       <div class="field"><label>Nom</label><div>${esc(p.name)||'—'}</div></div>
@@ -323,8 +340,11 @@ function afficherDossier(d){
       <div class="field"><label>Avancement</label><div>${p.avancement!=null?p.avancement+' %':'—'}</div></div>
     </div>`;
 
-  const budget = parseFloat(p.budget)||0, depense = parseFloat(p.depense)||0;
-  const ecartBudget = budget - depense;
+  // Dépense réelle = calculée depuis les commandes (multi-lignes) + prestations, comme sur le site
+  // (module Projets > calcDepensesProjet) — le champ "dépense" saisi à la main n'est pas fiable.
+  const budget = parseFloat(p.budget)||0;
+  const depenseCalculee = dc.total||0;
+  const ecartBudget = budget - depenseCalculee;
   const budgetHeuresTotal = (d.budgetHeures||[]).reduce((s,r)=>s+(parseFloat(r.heures)||0),0);
   const heuresReelles = (d.timesheets||[]).reduce((s,r)=>s+(parseFloat(r.heures)||0),0);
   const ecartHeures = budgetHeuresTotal - heuresReelles;
@@ -336,7 +356,7 @@ function afficherDossier(d){
     `${(d.taches||[]).length + (d.atelierChantier||[]).length + (d.missionsBE||[]).length} activités au total`;
 
   document.getElementById('kpiGrid').innerHTML = `
-    <div class="kpi ${ecartBudget>=0?'ok':'warn'}"><div class="label">Budget vs dépense</div><div class="value">${fmt(ecartBudget,0)} €</div></div>
+    <div class="kpi ${ecartBudget>=0?'ok':'warn'}"><div class="label">Budget vs dépense calculée</div><div class="value">${fmt(ecartBudget,0)} €</div></div>
     <div class="kpi ${ecartHeures>=0?'ok':'warn'}"><div class="label">Heures budget vs réel</div><div class="value">${fmt(ecartHeures,0)} h</div></div>
     <div class="kpi">${'<div class="label">Tâches terminées</div><div class="value">'+tachesTerminees+' / '+(d.taches||[]).length+'</div>'}</div>
     <div class="kpi ${tachesRetard>0?'warn':'ok'}"><div class="label">Tâches en retard</div><div class="value">${tachesRetard}</div></div>
@@ -347,7 +367,10 @@ function afficherDossier(d){
   fillTable('tachesTable', d.taches, ['text','responsable','due','done'], ['Tâche','Responsable','Échéance','Fait'], 'tachesCount');
   fillTable('missionsTable', [].concat(d.atelierChantier||[], d.missionsBE||[]), ['type','description','statut','dateDebut','dateFin'], ['Type','Description','Statut','Début','Fin'], 'missionsCount');
   fillTable('crTable', d.cr, ['date','type','titre','participants'], ['Date','Type','Titre','Participants'], 'crCount');
+  fillTable('notesTable', d.notes, ['date','titre','contenu'], ['Date','Titre','Contenu'], 'notesCount');
   fillTable('ordersTable', d.orders, ['fourn','article','qty','prix','dateLivraison'], ['Fournisseur','Article','Qté','Prix (€)','Livraison'], 'ordersCount');
+  fillTable('prestTable', d.prestMissions, ['prestataire','description','statut','prix','dateDebut','dateFin'], ['Prestataire','Description','Statut','Prix (€)','Début','Fin'], 'prestCount');
+  fillTable('stocksTable', d.stocks, ['ref','cat','qty','unit','prixRevient'], ['Référence','Catégorie','Qté','Unité','Prix de revient (€)'], 'stocksCount');
   fillTable('docsTable', d.outilsDocs, ['outil','nom','date','auteur'], ['Outil','Repère','Date','Auteur'], 'docsCount');
 }
 
@@ -392,9 +415,14 @@ document.getElementById('btn-analyze').addEventListener('click', async () => {
     const r = await res.json();
     if (!r.ok) throw new Error(r.msg || 'Échec de l\u2019analyse');
     ANALYSE_TEXTE = r.analyse || '';
+    const split = splitAnalyse(ANALYSE_TEXTE);
+    ANALYSE_RESUME = split.resume;
+    ANALYSE_DETAIL = split.detail;
     const box = document.getElementById('analyseResult');
     box.style.display = '';
-    box.innerHTML = formatAnalyse(ANALYSE_TEXTE);
+    box.innerHTML = '<h3 style="margin-top:0;">Résumé exécutif</h3>' + formatAnalyse(ANALYSE_RESUME)
+      + (ANALYSE_DETAIL ? '<hr style="margin:18px 0;border:none;border-top:1px solid var(--hp-border);">'
+         + '<h3>Analyse détaillée</h3>' + formatAnalyse(ANALYSE_DETAIL) : '');
     status.textContent = 'Analyse générée ✓';
   } catch(e) {
     status.textContent = 'Erreur : ' + (e.message || 'analyse impossible');
@@ -418,15 +446,28 @@ function pdfFilename(){
   return `HP-fiche-fin-projet-${slug(CTX.projet)||'projet'}-${new Date().toISOString().slice(0,10)}.pdf`;
 }
 
+function pdfSafe(s){
+  // jsPDF's built-in fonts only support WinAnsi (Latin-1). Le texte de l'analyse vient de l'IA — son
+  // contenu exact n'est pas garanti à l'avance (flèches, symboles, espaces spéciales) contrairement au
+  // reste du document rédigé en dur. On neutralise les cas connus plutôt que de risquer un rendu cassé.
+  return String(s == null ? '' : s)
+    .replace(/[\u2192\u21D2]/g, '->')
+    .replace(/[\u2190\u21D0]/g, '<-')
+    .replace(/≥/g, '>=')
+    .replace(/≤/g, '<=')
+    .replace(/[\u00A0\u202F\u2009\u200A\u2007\u2002\u2003]/g, ' ');
+}
+
 function buildPDF(){
   if (!DOSSIER) return null;
   const { jsPDF } = jspdf;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-  const red=[204,34,34], dark=[28,28,28], mid=[122,122,122], light=[242,240,237], green=[42,122,42], greenBg=[234,244,234], amberBg=[255,246,233], amber=[138,90,0];
+  const red=[204,34,34], dark=[28,28,28], mid=[122,122,122], light=[242,240,237], green=[42,122,42], greenBg=[234,244,234], redBg=[251,234,234];
   const pageW=210, marginX=18, contentW=pageW-2*marginX;
   const pageBottom=266, footerLine1=278, footerLine2=281.5, footerRule=284, footerLine3=288;
   let y=16, pageIndex=1;
   const p = DOSSIER.projet || {};
+  const dc = DOSSIER.depensesCalc || { engagees:0, recues:0, prest:0, prestTerminees:0, total:0 };
   const today = new Date().toLocaleDateString('fr-FR');
   const docTitleLine = `Fiche de fin de projet — ${p.name||CTX.projet||''}`;
 
@@ -476,11 +517,13 @@ function buildPDF(){
     const w=(contentW-gap*(items.length-1))/items.length;
     items.forEach((it,i)=>{
       const x=marginX+i*(w+gap);
-      doc.setFillColor(...light); doc.roundedRect(x,y,w,h,2.2,2.2,'F');
+      const bg = it.tone==='ok'?greenBg : it.tone==='warn'?redBg : light;
+      const fg = it.tone==='ok'?green : it.tone==='warn'?red : dark;
+      doc.setFillColor(...bg); doc.roundedRect(x,y,w,h,2.2,2.2,'F');
       doc.setFillColor(...red); doc.roundedRect(x,y,1.4,h,0.7,0.7,'F');
       doc.setFontSize(6.8); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
       doc.text(it.label.toUpperCase(), x+5, y+6.5, {maxWidth:w-8});
-      doc.setFontSize(12.5); doc.setFont('helvetica','bold'); doc.setTextColor(...dark);
+      doc.setFontSize(12.5); doc.setFont('helvetica','bold'); doc.setTextColor(...fg);
       doc.text(String(it.value), x+5, y+14.5, {maxWidth:w-8});
     });
     y+=h+6;
@@ -501,7 +544,7 @@ function buildPDF(){
       doc.setFontSize(7.5); doc.setFont('helvetica','normal'); doc.setTextColor(60,60,60);
       let x2=marginX+2;
       r.forEach((val,i)=>{
-        const txt = doc.splitTextToSize(String(val!=null&&val!==''?val:'—'), widths[i]-2)[0]||'';
+        const txt = doc.splitTextToSize(pdfSafe(val!=null&&val!==''?val:'—'), widths[i]-2)[0]||'';
         doc.text(txt, x2, y); x2+=widths[i];
       });
       y+=rowH;
@@ -509,8 +552,22 @@ function buildPDF(){
     if (rows.length>25){ doc.setFontSize(7.5); doc.setTextColor(...mid); doc.text('… '+(rows.length-25)+' ligne(s) supplémentaire(s) non affichée(s)', marginX+2, y); y+=rowH; }
     y+=4;
   }
+  function flowingText(txt, opts){
+    opts = opts || {};
+    doc.setFontSize(opts.size||8.5); doc.setFont('helvetica','normal'); doc.setTextColor(60,60,60);
+    const lines = doc.splitTextToSize(pdfSafe(txt), contentW);
+    lines.forEach(line=>{
+      ensureSpace(4.6);
+      const isTitle = /^\d+\.\s/.test(line) && line.length < 60;
+      const isBullet = /^\s*[-•]/.test(line);
+      if (isTitle) { doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(...dark); }
+      else { doc.setFont('helvetica','normal'); doc.setFontSize(opts.size||8.5); doc.setTextColor(60,60,60); }
+      doc.text(line, marginX + (isBullet && !isTitle ? 2 : 0), y);
+      y += isTitle ? 5.6 : 4.6;
+    });
+  }
 
-  // ---- En-tête ----
+  // ── En-tête (identique sur toutes les pages, seule la page 1 porte le logo pleine taille) ──
   doc.addImage(LOGO_B64, 'JPEG', marginX, y-6, 17.8, 8.8);
   doc.setFontSize(8.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
   doc.text('www.highpoint-structures.com', pageW-marginX, y-1, {align:'right'});
@@ -522,73 +579,115 @@ function buildPDF(){
   doc.setFontSize(9); doc.setTextColor(...red); doc.setFont('helvetica','normal');
   doc.text(`Réf. — Projet : ${p.name||CTX.projet||'—'} — ${today}`, marginX, y); y+=9;
 
-  const budget=parseFloat(p.budget)||0, depense=parseFloat(p.depense)||0;
+  const budget=parseFloat(p.budget)||0;
   const budgetHeuresTotal=(DOSSIER.budgetHeures||[]).reduce((s,r)=>s+(parseFloat(r.heures)||0),0);
   const heuresReelles=(DOSSIER.timesheets||[]).reduce((s,r)=>s+(parseFloat(r.heures)||0),0);
-  const tachesTerminees=(DOSSIER.taches||[]).filter(t=>isTruthy(t.done)).length;
-  const today2=new Date().toISOString().slice(0,10);
-  const tachesRetard=(DOSSIER.taches||[]).filter(t=>!isTruthy(t.done)&&t.due&&String(t.due)<today2).length;
+  const ecartBudget = budget - dc.total;
+  const ecartHeures = budgetHeuresTotal - heuresReelles;
+  const pctBudget = budget>0 ? (ecartBudget/budget*100) : null;
+  const pctHeures = budgetHeuresTotal>0 ? (ecartHeures/budgetHeuresTotal*100) : null;
 
+  // ══════════════════════════════════════════════════════════
+  // BLOC 1 — BILAN FINANCIER COMPLET (page dédiée)
+  // ══════════════════════════════════════════════════════════
   sectionTitle('1. Identification du projet', 40);
   paramBlock([
     ['Nom du projet', p.name],
     ['Client', p.client],
     ['Lieu', p.lieu],
     ['Famille', p.famille],
-    ['Statut', p.statut]
+    ['Statut', p.statut],
+    ['Avancement', p.avancement!=null ? p.avancement+' %' : '—']
   ]);
 
-  sectionTitle('2. Vue d\u2019ensemble', 32);
+  sectionTitle('2. Bilan budgétaire', 40);
   kpiRow([
-    {label:'Budget vs dépense', value: fmt(budget-depense,0)+' EUR'},
-    {label:'Heures budget vs réel', value: fmt(budgetHeuresTotal-heuresReelles,0)+' h'},
-    {label:'Tâches terminées', value: tachesTerminees+' / '+(DOSSIER.taches||[]).length},
-    {label:'Tâches en retard', value: String(tachesRetard)}
+    {label:'Budget prévu', value: fmt(budget,0)+' EUR'},
+    {label:'Dépense réelle calculée', value: fmt(dc.total,0)+' EUR'},
+    {label:'Écart budget', value: fmt(ecartBudget,0)+' EUR'+(pctBudget!=null?' ('+fmt(pctBudget,1)+'%)':''), tone: ecartBudget>=0?'ok':'warn'}
+  ]);
+  paramBlock([
+    ['Commandes engagées (toutes)', fmt(dc.engagees,0)+' EUR'],
+    ['… dont commandes reçues', fmt(dc.recues,0)+' EUR'],
+    ['Prestations externes (toutes)', fmt(dc.prest,0)+' EUR'],
+    ['… dont prestations terminées', fmt(dc.prestTerminees,0)+' EUR'],
+    ['Champ "dépense" saisi manuellement (pour info, peut être obsolète)', p.depense ? fmt(parseFloat(p.depense),0)+' EUR' : 'non renseigné']
   ]);
 
-  sectionTitle('3. Tâches', 40);
+  sectionTitle('3. Bilan des heures', 40);
+  kpiRow([
+    {label:'Heures budgétées', value: fmt(budgetHeuresTotal,0)+' h'},
+    {label:'Heures réellement pointées', value: fmt(heuresReelles,0)+' h'},
+    {label:'Écart heures', value: fmt(ecartHeures,0)+' h'+(pctHeures!=null?' ('+fmt(pctHeures,1)+'%)':''), tone: ecartHeures>=0?'ok':'warn'}
+  ]);
+
+  const tachesTermineesF=(DOSSIER.taches||[]).filter(t=>isTruthy(t.done)).length;
+  const today2=new Date().toISOString().slice(0,10);
+  const tachesRetardF=(DOSSIER.taches||[]).filter(t=>!isTruthy(t.done)&&t.due&&String(t.due)<today2).length;
+  sectionTitle('4. Avancement synthétique', 40);
+  kpiRow([
+    {label:'Tâches terminées', value: tachesTermineesF+' / '+(DOSSIER.taches||[]).length},
+    {label:'Tâches en retard', value: String(tachesRetardF), tone: tachesRetardF>0?'warn':'ok'},
+    {label:'Commandes', value: String((DOSSIER.orders||[]).length)},
+    {label:'Comptes-rendus', value: String((DOSSIER.cr||[]).length)}
+  ]);
+
+  // ══════════════════════════════════════════════════════════
+  // BLOC 2 — RÉSUMÉ DE L'ANALYSE IA (page dédiée, condensé)
+  // ══════════════════════════════════════════════════════════
+  newPage();
+  sectionTitle('5. Résumé de l\u2019analyse IA', 40);
+  if (ANALYSE_RESUME) {
+    flowingText(ANALYSE_RESUME, { size: 9 });
+  } else {
+    doc.setFontSize(9); doc.setTextColor(...mid); doc.setFont('helvetica','italic');
+    ensureSpace(6);
+    doc.text('Analyse non générée avant l\u2019export — utilisez le bouton "Analyser avec l\u2019IA" pour l\u2019inclure.', marginX, y);
+    y+=8;
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // BLOC 3 — RAPPORT COMPLET (toutes les données recueillies)
+  // ══════════════════════════════════════════════════════════
+  newPage();
+  sectionTitle('6. Tâches', 40);
   miniTable((DOSSIER.taches||[]).map(t=>[t.text,t.responsable,t.due,isTruthy(t.done)?'Fait':'—']),
     ['Tâche','Responsable','Échéance','Statut'], [70,40,30,30]);
 
-  sectionTitle('4. Missions atelier / chantier / BE', 40);
+  sectionTitle('7. Missions atelier / chantier / BE', 40);
   miniTable([].concat(DOSSIER.atelierChantier||[],DOSSIER.missionsBE||[]).map(m=>[m.type,m.description,m.statut,m.dateFin]),
     ['Type','Description','Statut','Fin'], [30,80,30,30]);
 
-  sectionTitle('5. Comptes-rendus', 40);
+  sectionTitle('8. Comptes-rendus', 40);
   miniTable((DOSSIER.cr||[]).map(c=>[c.date,c.type,c.titre,c.participants]),
     ['Date','Type','Titre','Participants'], [25,25,60,60]);
 
-  sectionTitle('6. Commandes', 40);
+  sectionTitle('9. Notes libres', 40);
+  miniTable((DOSSIER.notes||[]).map(n=>[n.date,n.titre,n.contenu]),
+    ['Date','Titre','Contenu'], [25,40,109]);
+
+  sectionTitle('10. Commandes', 40);
   miniTable((DOSSIER.orders||[]).map(o=>[o.fourn,o.article,o.qty,o.prix,o.dateLivraison]),
     ['Fournisseur','Article','Qté','Prix','Livraison'], [40,50,20,30,30]);
 
-function pdfSafe(s){
-  // jsPDF's built-in fonts only support WinAnsi (Latin-1). Le texte de l'analyse vient de l'IA — son
-  // contenu exact n'est pas garanti à l'avance (flèches, symboles, espaces spéciales) contrairement au
-  // reste du document rédigé en dur. On neutralise les cas connus plutôt que de risquer un rendu cassé.
-  return String(s == null ? '' : s)
-    .replace(/[\u2192\u21D2]/g, '->')
-    .replace(/[\u2190\u21D0]/g, '<-')
-    .replace(/≥/g, '>=')
-    .replace(/≤/g, '<=')
-    .replace(/[\u00A0\u202F\u2009\u200A\u2007\u2002\u2003]/g, ' ');
-}
+  sectionTitle('11. Prestations externes', 40);
+  miniTable((DOSSIER.prestMissions||[]).map(m=>[m.prestataire,m.description,m.statut,m.prix]),
+    ['Prestataire','Description','Statut','Prix'], [35,80,25,30]);
 
-  if (ANALYSE_TEXTE) {
-    sectionTitle('7. Analyse IA — bilan complet', 40);
-    doc.setFontSize(8.5); doc.setFont('helvetica','normal'); doc.setTextColor(60,60,60);
-    const lines = doc.splitTextToSize(pdfSafe(ANALYSE_TEXTE), contentW);
-    lines.forEach(line=>{
-      ensureSpace(4.6);
-      const isTitle = /^\d+\.\s/.test(line) && line.length < 60;
-      if (isTitle) { doc.setFont('helvetica','bold'); doc.setTextColor(...dark); }
-      else { doc.setFont('helvetica','normal'); doc.setTextColor(60,60,60); }
-      doc.text(line, marginX, y);
-      y+=4.6;
-    });
-    y+=4;
+  sectionTitle('12. Stocks consommés / réservés', 40);
+  miniTable((DOSSIER.stocks||[]).map(s=>[s.ref,s.cat,s.qty,s.unit,s.prixRevient]),
+    ['Référence','Catégorie','Qté','Unité','Prix revient'], [45,35,20,20,50]);
+
+  sectionTitle('13. Documents Outils générés', 40);
+  miniTable((DOSSIER.outilsDocs||[]).map(o=>[o.outil,o.nom,o.date,o.auteur]),
+    ['Outil','Repère','Date','Auteur'], [50,40,25,55]);
+
+  sectionTitle('14. Analyse IA — détail complet', 40);
+  if (ANALYSE_DETAIL) {
+    flowingText(ANALYSE_DETAIL);
+  } else if (ANALYSE_TEXTE) {
+    flowingText(ANALYSE_TEXTE);
   } else {
-    sectionTitle('7. Analyse IA', 30);
     doc.setFontSize(9); doc.setTextColor(...mid); doc.setFont('helvetica','italic');
     ensureSpace(6);
     doc.text('Analyse non générée avant l\u2019export — utilisez le bouton "Analyser avec l\u2019IA" pour l\u2019inclure.', marginX, y);
