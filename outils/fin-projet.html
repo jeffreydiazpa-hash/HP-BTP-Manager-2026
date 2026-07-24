@@ -177,7 +177,7 @@
     <h2>Prestations externes <span class="count" id="prestCount"></span></h2>
     <div class="card"><table class="fl" id="prestTable"></table></div>
 
-    <h2>Stocks consommés / réservés <span class="count" id="stocksCount"></span></h2>
+    <h2>Mouvements de stock liés au projet <span class="count" id="stocksCount"></span></h2>
     <div class="card"><table class="fl" id="stocksTable"></table></div>
 
     <h2>Documents générés (Outils) <span class="count" id="docsCount"></span></h2>
@@ -213,7 +213,7 @@
 </footer>
 
 <script>
-const TOOL_VERSION = "1.2";
+const TOOL_VERSION = "1.3";
 document.getElementById('versionBadge').textContent = 'v' + TOOL_VERSION;
 document.getElementById('refDate').textContent = new Date().toLocaleDateString('fr-FR');
 
@@ -370,7 +370,7 @@ function afficherDossier(d){
   fillTable('notesTable', d.notes, ['date','titre','contenu'], ['Date','Titre','Contenu'], 'notesCount');
   fillTable('ordersTable', d.orders, ['fourn','article','qty','prix','dateLivraison'], ['Fournisseur','Article','Qté','Prix (€)','Livraison'], 'ordersCount');
   fillTable('prestTable', d.prestMissions, ['prestataire','description','statut','prix','dateDebut','dateFin'], ['Prestataire','Description','Statut','Prix (€)','Début','Fin'], 'prestCount');
-  fillTable('stocksTable', d.stocks, ['ref','cat','qty','unit','prixRevient'], ['Référence','Catégorie','Qté','Unité','Prix de revient (€)'], 'stocksCount');
+  fillTable('stocksTable', d.stocks, ['ref','cat','date','type','qty','prixAchat'], ['Référence','Catégorie','Date','Type','Qté','Prix d\u2019achat (€)'], 'stocksCount');
   fillTable('docsTable', d.outilsDocs, ['outil','nom','date','auteur'], ['Outil','Repère','Date','Auteur'], 'docsCount');
 }
 
@@ -552,6 +552,38 @@ function buildPDF(){
     if (rows.length>25){ doc.setFontSize(7.5); doc.setTextColor(...mid); doc.text('… '+(rows.length-25)+' ligne(s) supplémentaire(s) non affichée(s)', marginX+2, y); y+=rowH; }
     y+=4;
   }
+  function wrappingTable(rows, cols, widths, wrapColIdx){
+    if (!rows.length) { doc.setFontSize(9); doc.setTextColor(...mid); doc.setFont('helvetica','normal'); ensureSpace(6); doc.text('Aucune donnée.', marginX, y); y+=8; return; }
+    const lineH=4.2;
+    ensureSpace(8);
+    doc.setFillColor(...light); doc.rect(marginX,y-4,contentW,5.5,'F');
+    doc.setDrawColor(...red); doc.setLineWidth(0.4); doc.line(marginX,y+1.5,pageW-marginX,y+1.5);
+    doc.setFontSize(7.5); doc.setFont('helvetica','bold'); doc.setTextColor(...dark);
+    let x=marginX+2;
+    cols.forEach((c,i)=>{ doc.text(c, x, y); x+=widths[i]; });
+    y+=5.5;
+    rows.slice(0,25).forEach((r,ri)=>{
+      doc.setFontSize(7.5); doc.setFont('helvetica','normal');
+      const wrapText = pdfSafe(r[wrapColIdx]!=null && r[wrapColIdx]!=='' ? String(r[wrapColIdx]) : '—');
+      const wrapLines = doc.splitTextToSize(wrapText, widths[wrapColIdx]-2);
+      const rowH = Math.max(5.5, wrapLines.length*lineH+1.5);
+      ensureSpace(rowH+2);
+      if (ri%2===0){ doc.setFillColor(250,250,250); doc.rect(marginX,y-4,contentW,rowH,'F'); }
+      doc.setTextColor(60,60,60);
+      let x2=marginX+2;
+      r.forEach((val,i)=>{
+        if (i===wrapColIdx){ doc.text(wrapLines, x2, y); }
+        else {
+          const txt = doc.splitTextToSize(pdfSafe(val!=null&&val!==''?val:'—'), widths[i]-2)[0]||'';
+          doc.text(txt, x2, y);
+        }
+        x2+=widths[i];
+      });
+      y+=rowH;
+    });
+    if (rows.length>25){ doc.setFontSize(7.5); doc.setTextColor(...mid); ensureSpace(6); doc.text('… '+(rows.length-25)+' ligne(s) supplémentaire(s) non affichée(s)', marginX+2, y); y+=5.5; }
+    y+=4;
+  }
   function flowingText(txt, opts){
     opts = opts || {};
     doc.setFontSize(opts.size||8.5); doc.setFont('helvetica','normal'); doc.setTextColor(60,60,60);
@@ -567,12 +599,12 @@ function buildPDF(){
     });
   }
 
-  // ── En-tête (identique sur toutes les pages, seule la page 1 porte le logo pleine taille) ──
-  doc.addImage(LOGO_B64, 'JPEG', marginX, y-6, 17.8, 8.8);
+  // ── En-tête (logo 2,5× plus grand pour plus de présence) ──
+  doc.addImage(LOGO_B64, 'JPEG', marginX, 8, 44.5, 22);
   doc.setFontSize(8.5); doc.setTextColor(...mid); doc.setFont('helvetica','normal');
-  doc.text('www.highpoint-structures.com', pageW-marginX, y-1, {align:'right'});
-  doc.text('info@highpoint-structures.com', pageW-marginX, y+3, {align:'right'});
-  y+=8; doc.setDrawColor(...red); doc.setLineWidth(0.6); doc.line(marginX,y,pageW-marginX,y); y+=10;
+  doc.text('www.highpoint-structures.com', pageW-marginX, 13, {align:'right'});
+  doc.text('info@highpoint-structures.com', pageW-marginX, 17, {align:'right'});
+  y=34; doc.setDrawColor(...red); doc.setLineWidth(0.6); doc.line(marginX,y,pageW-marginX,y); y+=10;
 
   doc.setTextColor(...dark); doc.setFontSize(17); doc.setFont('helvetica','bold');
   doc.text('Fiche de fin de projet', marginX, y); y+=6;
@@ -600,31 +632,89 @@ function buildPDF(){
     ['Avancement', p.avancement!=null ? p.avancement+' %' : '—']
   ]);
 
-  sectionTitle('2. Bilan budgétaire', 40);
-  kpiRow([
-    {label:'Budget prévu', value: fmt(budget,0)+' EUR'},
-    {label:'Dépense réelle calculée', value: fmt(dc.total,0)+' EUR'},
-    {label:'Écart budget', value: fmt(ecartBudget,0)+' EUR'+(pctBudget!=null?' ('+fmt(pctBudget,1)+'%)':''), tone: ecartBudget>=0?'ok':'warn'}
-  ]);
-  paramBlock([
-    ['Commandes engagées (toutes)', fmt(dc.engagees,0)+' EUR'],
-    ['… dont commandes reçues', fmt(dc.recues,0)+' EUR'],
-    ['Prestations externes (toutes)', fmt(dc.prest,0)+' EUR'],
-    ['… dont prestations terminées', fmt(dc.prestTerminees,0)+' EUR'],
-    ['Champ "dépense" saisi manuellement (pour info, peut être obsolète)', p.depense ? fmt(parseFloat(p.depense),0)+' EUR' : 'non renseigné']
-  ]);
+  function drawArc(cx, cy, r, startDeg, endDeg, color, lw){
+    if (endDeg <= startDeg) return;
+    doc.setDrawColor(...color); doc.setLineWidth(lw);
+    const steps = Math.max(2, Math.ceil((endDeg-startDeg)/3));
+    let prev=null;
+    for(let i=0;i<=steps;i++){
+      const a = (startDeg + (endDeg-startDeg)*i/steps) * Math.PI/180;
+      const pt = [cx + r*Math.cos(a), cy + r*Math.sin(a)];
+      if (prev) doc.line(prev[0],prev[1],pt[0],pt[1]);
+      prev = pt;
+    }
+  }
+  // Donut — même langage visuel que le graphique "consommé" du tableau de bord (rouge commandes,
+  // orange prestations), avec un libellé central.
+  function donutChart(cx, cy, r, lw, segments, centerLabel, centerSub){
+    doc.setDrawColor(230,230,230); doc.setLineWidth(lw);
+    drawArc(cx, cy, r, -90, 270, [230,230,230], lw);
+    const total = segments.reduce((s,seg)=>s+seg.value,0) || 1;
+    let start = -90;
+    segments.forEach(seg=>{
+      const sweep = seg.value/total*360;
+      drawArc(cx, cy, r, start, start+sweep, seg.color, lw);
+      start += sweep;
+    });
+    doc.setFontSize(13); doc.setFont('helvetica','bold'); doc.setTextColor(...dark);
+    doc.text(centerLabel, cx, cy+1, {align:'center'});
+    doc.setFontSize(7); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
+    doc.text(centerSub, cx, cy+6, {align:'center'});
+  }
+  // Jauge horizontale — piste claire = échelle complète, remplissage = valeur réelle, repère = cible.
+  function gaugeBar(x, y0, w, h, valeur, cible, colorFill){
+    const scaleMax = Math.max(valeur, cible, 1) * 1.08;
+    doc.setFillColor(...light); doc.roundedRect(x, y0, w, h, h/2, h/2, 'F');
+    const fillW = Math.max(0, Math.min(w, valeur/scaleMax*w));
+    if (fillW > h) { doc.setFillColor(...colorFill); doc.roundedRect(x, y0, fillW, h, h/2, h/2, 'F'); }
+    const markX = x + Math.min(w, cible/scaleMax*w);
+    doc.setDrawColor(...dark); doc.setLineWidth(0.6);
+    doc.line(markX, y0-1.5, markX, y0+h+1.5);
+  }
 
-  sectionTitle('3. Bilan des heures', 40);
-  kpiRow([
-    {label:'Heures budgétées', value: fmt(budgetHeuresTotal,0)+' h'},
-    {label:'Heures réellement pointées', value: fmt(heuresReelles,0)+' h'},
-    {label:'Écart heures', value: fmt(ecartHeures,0)+' h'+(pctHeures!=null?' ('+fmt(pctHeures,1)+'%)':''), tone: ecartHeures>=0?'ok':'warn'}
+  sectionTitle('2. Bilan financier', 90);
+  const chartY = y;
+  const donutR = 15, donutCx = marginX + 28, donutCy = chartY + donutR + 2;
+  const pctConsomme = budget>0 ? Math.round(dc.total/budget*100) : 0;
+  donutChart(donutCx, donutCy, donutR, 6.5,
+    [{value: dc.engagees||0.0001, color: red}, {value: dc.prest||0.0001, color:[204,136,0]}],
+    pctConsomme+'%', 'du budget');
+  doc.setFontSize(7.5); doc.setFont('helvetica','normal');
+  [{lbl:'Commandes', val:dc.engagees, color:red},{lbl:'Prestations', val:dc.prest, color:[204,136,0]}].forEach((it,i)=>{
+    const ly = donutCy + donutR + 10 + i*6;
+    doc.setFillColor(...it.color); doc.circle(marginX+8, ly-1.2, 1.4, 'F');
+    doc.setTextColor(...dark); doc.text(it.lbl, marginX+13, ly);
+    doc.setTextColor(...mid); doc.text(fmt(it.val,0)+' EUR', marginX+55, ly, {align:'right'});
+  });
+
+  const gaugeX = marginX + 66, gaugeW = contentW - 66 - 4;
+  let gy = chartY + 4;
+  doc.setFontSize(8); doc.setFont('helvetica','bold'); doc.setTextColor(...dark);
+  doc.text('Budget prévu vs dépense réelle', gaugeX, gy); gy += 5;
+  gaugeBar(gaugeX, gy, gaugeW, 6, dc.total, budget, ecartBudget>=0?green:red); gy += 11;
+  doc.setFontSize(7.5); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
+  doc.text(fmt(dc.total,0)+' EUR dépensés  ·  repère = budget '+fmt(budget,0)+' EUR', gaugeX, gy); gy += 10;
+
+  doc.setFontSize(8); doc.setFont('helvetica','bold'); doc.setTextColor(...dark);
+  doc.text('Heures budgétées vs heures pointées', gaugeX, gy); gy += 5;
+  gaugeBar(gaugeX, gy, gaugeW, 6, heuresReelles, budgetHeuresTotal, ecartHeures>=0?green:red); gy += 11;
+  doc.setFontSize(7.5); doc.setFont('helvetica','normal'); doc.setTextColor(...mid);
+  doc.text(fmt(heuresReelles,0)+' h pointées  ·  repère = budget '+fmt(budgetHeuresTotal,0)+' h', gaugeX, gy);
+
+  y = Math.max(donutCy + donutR + 10 + 2*6 + 4, gy + 8);
+
+  paramBlock([
+    ['Budget prévu', fmt(budget,0)+' EUR'],
+    ['Dépense réelle calculée', fmt(dc.total,0)+' EUR  (écart '+fmt(ecartBudget,0)+' EUR'+(pctBudget!=null?', '+fmt(pctBudget,1)+'%':'')+')'],
+    ['Commandes engagées / reçues', fmt(dc.engagees,0)+' EUR / '+fmt(dc.recues,0)+' EUR'],
+    ['Prestations totales / terminées', fmt(dc.prest,0)+' EUR / '+fmt(dc.prestTerminees,0)+' EUR'],
+    ['Heures budgétées / pointées', fmt(budgetHeuresTotal,0)+' h / '+fmt(heuresReelles,0)+' h  (écart '+fmt(ecartHeures,0)+' h'+(pctHeures!=null?', '+fmt(pctHeures,1)+'%':'')+')']
   ]);
 
   const tachesTermineesF=(DOSSIER.taches||[]).filter(t=>isTruthy(t.done)).length;
   const today2=new Date().toISOString().slice(0,10);
   const tachesRetardF=(DOSSIER.taches||[]).filter(t=>!isTruthy(t.done)&&t.due&&String(t.due)<today2).length;
-  sectionTitle('4. Avancement synthétique', 40);
+  sectionTitle('3. Avancement synthétique', 40);
   kpiRow([
     {label:'Tâches terminées', value: tachesTermineesF+' / '+(DOSSIER.taches||[]).length},
     {label:'Tâches en retard', value: String(tachesRetardF), tone: tachesRetardF>0?'warn':'ok'},
@@ -636,7 +726,7 @@ function buildPDF(){
   // BLOC 2 — RÉSUMÉ DE L'ANALYSE IA (page dédiée, condensé)
   // ══════════════════════════════════════════════════════════
   newPage();
-  sectionTitle('5. Résumé de l\u2019analyse IA', 40);
+  sectionTitle('4. Résumé de l\u2019analyse IA', 40);
   if (ANALYSE_RESUME) {
     flowingText(ANALYSE_RESUME, { size: 9 });
   } else {
@@ -650,39 +740,39 @@ function buildPDF(){
   // BLOC 3 — RAPPORT COMPLET (toutes les données recueillies)
   // ══════════════════════════════════════════════════════════
   newPage();
-  sectionTitle('6. Tâches', 40);
+  sectionTitle('5. Tâches', 40);
   miniTable((DOSSIER.taches||[]).map(t=>[t.text,t.responsable,t.due,isTruthy(t.done)?'Fait':'—']),
     ['Tâche','Responsable','Échéance','Statut'], [70,40,30,30]);
 
-  sectionTitle('7. Missions atelier / chantier / BE', 40);
+  sectionTitle('6. Missions atelier / chantier / BE', 40);
   miniTable([].concat(DOSSIER.atelierChantier||[],DOSSIER.missionsBE||[]).map(m=>[m.type,m.description,m.statut,m.dateFin]),
     ['Type','Description','Statut','Fin'], [30,80,30,30]);
 
-  sectionTitle('8. Comptes-rendus', 40);
+  sectionTitle('7. Comptes-rendus', 40);
   miniTable((DOSSIER.cr||[]).map(c=>[c.date,c.type,c.titre,c.participants]),
     ['Date','Type','Titre','Participants'], [25,25,60,60]);
 
-  sectionTitle('9. Notes libres', 40);
-  miniTable((DOSSIER.notes||[]).map(n=>[n.date,n.titre,n.contenu]),
-    ['Date','Titre','Contenu'], [25,40,109]);
+  sectionTitle('8. Notes libres', 40);
+  wrappingTable((DOSSIER.notes||[]).map(n=>[n.date,n.titre,n.contenu]),
+    ['Date','Titre','Contenu'], [25,40,109], 2);
 
-  sectionTitle('10. Commandes', 40);
+  sectionTitle('9. Commandes', 40);
   miniTable((DOSSIER.orders||[]).map(o=>[o.fourn,o.article,o.qty,o.prix,o.dateLivraison]),
     ['Fournisseur','Article','Qté','Prix','Livraison'], [40,50,20,30,30]);
 
-  sectionTitle('11. Prestations externes', 40);
+  sectionTitle('10. Prestations externes', 40);
   miniTable((DOSSIER.prestMissions||[]).map(m=>[m.prestataire,m.description,m.statut,m.prix]),
     ['Prestataire','Description','Statut','Prix'], [35,80,25,30]);
 
-  sectionTitle('12. Stocks consommés / réservés', 40);
-  miniTable((DOSSIER.stocks||[]).map(s=>[s.ref,s.cat,s.qty,s.unit,s.prixRevient]),
-    ['Référence','Catégorie','Qté','Unité','Prix revient'], [45,35,20,20,50]);
+  sectionTitle('11. Mouvements de stock liés au projet', 40);
+  miniTable((DOSSIER.stocks||[]).map(s=>[s.ref, s.cat, s.date, s.type, s.qty, s.prixAchat ? fmt(parseFloat(s.prixAchat),2)+' EUR' : 'non renseigné']),
+    ['Référence','Catégorie','Date','Type','Qté','Prix d\u2019achat'], [40,25,22,25,18,50]);
 
-  sectionTitle('13. Documents Outils générés', 40);
+  sectionTitle('12. Documents Outils générés', 40);
   miniTable((DOSSIER.outilsDocs||[]).map(o=>[o.outil,o.nom,o.date,o.auteur]),
     ['Outil','Repère','Date','Auteur'], [50,40,25,55]);
 
-  sectionTitle('14. Analyse IA — détail complet', 40);
+  sectionTitle('13. Analyse IA — détail complet', 40);
   if (ANALYSE_DETAIL) {
     flowingText(ANALYSE_DETAIL);
   } else if (ANALYSE_TEXTE) {
