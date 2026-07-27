@@ -163,6 +163,12 @@
           <select id="f-releveLie"><option value="">— Aucun —</option></select>
           <div class="hint" id="releveHint"></div>
         </div>
+        <div class="field"><label>Lier à un article Métré — membrane (optionnel)</label>
+          <select id="f-metreLie"><option value="">— Aucun —</option></select>
+          <div class="hint">Reprend les couches/épaisseurs/teintes déjà saisies au métré du projet.</div>
+        </div>
+      </div>
+      <div class="field-row">
         <div class="field"><label>Lier à une mission atelier (optionnel)</label>
           <select id="f-missionLie"><option value="">— Aucune —</option></select>
         </div>
@@ -226,7 +232,7 @@
 </footer>
 
 <script>
-const TOOL_VERSION = "1.1";
+const TOOL_VERSION = "1.2";
 document.getElementById('versionBadge').textContent = 'v' + TOOL_VERSION;
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -306,6 +312,7 @@ async function gasPost(body){
 // ---------- État ----------
 let ALL_FORMULAIRES = [];
 let ALL_MISSIONS = [];
+let ALL_METRE = [];
 let FICHE = null; // fiche actuellement ouverte en édition/consultation
 
 function isTruthy(v){ return v === true || v === 'TRUE' || v === 'true' || v === 1; }
@@ -322,11 +329,12 @@ async function chargerTout(){
     const token = await getFreshToken();
     const r = await jsonpFetch(CTX.gas, {
       action: 'getbatch', email: CTX.email, token,
-      keys: JSON.stringify(['formulaires', 'atelierChantier'])
+      keys: JSON.stringify(['formulaires', 'atelierChantier', 'metre'])
     });
     if (!r.ok) throw new Error(r.msg || 'Échec du chargement');
     ALL_FORMULAIRES = r.data.formulaires || [];
     ALL_MISSIONS = r.data.atelierChantier || [];
+    ALL_METRE = r.data.metre || [];
     document.getElementById('loadingNote').style.display = 'none';
     afficherListe();
   } catch(e) {
@@ -448,7 +456,7 @@ function nouvelleFicheVierge(){
     auteur: CTX.email || '',
     photos: { vue3d: [], eclate: [] },
     coussinNom: '', typeProd: 'ETFE', statut: 'Brouillon',
-    releveLie: '', missionLie: '',
+    releveLie: '', missionLie: '', metreLie: '',
     dimensions: '', tolerances: '', lot: '', railsJoncsValves: '',
     couches: [], pieces: [],
     notes: '', cheminReseau: ''
@@ -462,7 +470,7 @@ function ouvrirFiche(row){
       id: row.id, ref: row.ref, type: 'fiche_production', projet: row.projet, date: row.date, auteur: row.auteur,
       photos: { vue3d: [], eclate: [], ...photos },
       coussinNom: d.coussinNom || '', typeProd: d.typeProd || 'ETFE', statut: d.statut || 'Brouillon',
-      releveLie: d.releveLie || '', missionLie: d.missionLie || '',
+      releveLie: d.releveLie || '', missionLie: d.missionLie || '', metreLie: d.metreLie || '',
       dimensions: d.dimensions || '', tolerances: d.tolerances || '', lot: d.lot || '', railsJoncsValves: d.railsJoncsValves || '',
       couches: d.couches || [], pieces: d.pieces || [],
       notes: d.notes || '', cheminReseau: d.cheminReseau || ''
@@ -507,6 +515,12 @@ function afficherDetail(){
   selMis.innerHTML = '<option value="">— Aucune —</option>' + missions.map(m => `<option value="${m.id}" ${String(m.id)===String(FICHE.missionLie)?'selected':''}>${esc(m.description||m.type)} (${esc(m.statut)})</option>`).join('');
   selMis.disabled = dis;
 
+  // articles Métré catégorisés "Membranes" pour ce projet
+  const articlesMembrane = ALL_METRE.filter(m => m.cat === 'Membranes (ETFE, PVC, etc)' && normP(m.projet_id) === normP(FICHE.projet) && m.specs);
+  const selMetre = document.getElementById('f-metreLie');
+  selMetre.innerHTML = '<option value="">— Aucun —</option>' + articlesMembrane.map(m => `<option value="${m.id}" ${String(m.id)===String(FICHE.metreLie)?'selected':''}>${esc(m.article)}</option>`).join('');
+  selMetre.disabled = dis;
+
   creerZoneUpload('upzone-vue3d', 'vue3d', () => FICHE);
   creerZoneUpload('upzone-eclate', 'eclate', () => FICHE);
   renderCouches();
@@ -536,6 +550,25 @@ document.getElementById('f-releveLie').addEventListener('change', (e) => {
 const TYPO_COUCHES_LOCAL = { "Simple peau":1, "Coussin 2 couches":2, "Coussin 3 couches":3, "Coussin 4 couches":4, "Coussin 5 couches":5 };
 
 document.getElementById('f-missionLie').addEventListener('change', e => FICHE.missionLie = e.target.value);
+document.getElementById('f-metreLie').addEventListener('change', (e) => {
+  FICHE.metreLie = e.target.value;
+  if (!FICHE.metreLie) return;
+  const art = ALL_METRE.find(m => String(m.id) === FICHE.metreLie);
+  if (!art) return;
+  let specs = {}; try { specs = JSON.parse(art.specs || '{}'); } catch(err) {}
+  if (!confirm('Pré-remplir les couches et les caractéristiques depuis cet article du métré ? Les couches déjà saisies ici seront remplacées.')) return;
+  const nbC = TYPO_COUCHES_LOCAL[specs.typologie] || (specs.couches || []).length || 0;
+  const nouvellesCouches = [];
+  for (let i = 0; i < nbC; i++) {
+    const src = (specs.couches || [])[i] || {};
+    nouvellesCouches.push({ id: uid(), grammage: src.epaisseur || '', orientation: '', serigraphie: src.teinte || '', typeAssemblage: '', typeAssemblageAutre: '', zonage: '', photos: [] });
+  }
+  FICHE.couches = nouvellesCouches;
+  if (specs.dimensionsFinies) { FICHE.dimensions = specs.dimensionsFinies; document.getElementById('f-dimensions').value = FICHE.dimensions; }
+  if (specs.tolerances) { FICHE.tolerances = specs.tolerances; document.getElementById('f-tolerances').value = FICHE.tolerances; }
+  if (specs.lot) { FICHE.lot = specs.lot; document.getElementById('f-lot').value = FICHE.lot; }
+  renderCouches();
+});
 document.getElementById('f-typeProd').addEventListener('change', e => FICHE.typeProd = e.target.value);
 document.getElementById('f-statut').addEventListener('change', async e => {
   FICHE.statut = e.target.value;
@@ -649,7 +682,7 @@ async function sauvegarderFiche(silencieux){
       date: FICHE.date, auteur: FICHE.auteur || CTX.email,
       data: JSON.stringify({
         coussinNom: FICHE.coussinNom, typeProd: FICHE.typeProd, statut: FICHE.statut,
-        releveLie: FICHE.releveLie, missionLie: FICHE.missionLie,
+        releveLie: FICHE.releveLie, missionLie: FICHE.missionLie, metreLie: FICHE.metreLie,
         dimensions: FICHE.dimensions, tolerances: FICHE.tolerances, lot: FICHE.lot,
         railsJoncsValves: FICHE.railsJoncsValves, couches: FICHE.couches, pieces: FICHE.pieces,
         notes: FICHE.notes, cheminReseau: FICHE.cheminReseau
