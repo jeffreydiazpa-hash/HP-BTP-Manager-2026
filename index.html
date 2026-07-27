@@ -539,7 +539,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.0";
+const VERSION = "v4.7.4";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -8455,7 +8455,7 @@ function Prestataires({
         justifyContent: "center"
       },
       onClick: e => {
-        if (e.target === e.currentTarget) {
+        if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */) {
           setPartageId(null);
           setCopied(false);
         }
@@ -11903,7 +11903,7 @@ function GanttView({
       justifyContent: "center"
     },
     onClick: e => {
-      if (e.target === e.currentTarget) setPrintModal(false);
+      if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */) setPrintModal(false);
     }
   }, React.createElement("div", {
     style: {
@@ -15153,7 +15153,7 @@ function MetreProjet({
       justifyContent: "center"
     },
     onClick: e => {
-      if (e.target === e.currentTarget) setOpen(false);
+      if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */) setOpen(false);
     }
   }, React.createElement("div", {
     style: {
@@ -15268,7 +15268,7 @@ function MetreProjet({
       justifyContent: "center"
     },
     onClick: e => {
-      if (e.target === e.currentTarget && !linkBusy) setLinking(null);
+      if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */ && !linkBusy) setLinking(null);
     }
   }, React.createElement("div", {
     style: {
@@ -15352,7 +15352,7 @@ function MetreProjet({
       justifyContent: "center"
     },
     onClick: e => {
-      if (e.target === e.currentTarget && !reserveBusy) setReserving(null);
+      if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */ && !reserveBusy) setReserving(null);
     }
   }, React.createElement("div", {
     style: {
@@ -19302,6 +19302,12 @@ function Calendrier({
   const [year, setYear] = useState(() => new Date().getFullYear());
   const [month, setMonth] = useState(() => new Date().getMonth());
   const [view, setView] = useState("mois");
+  const [typesVisibles, setTypesVisibles] = useState(() => new Set(Object.keys(EV_LABELS)));
+  const toggleTypeVisible = (t) => setTypesVisibles(prev => {
+    const next = new Set(prev);
+    if (next.has(t)) next.delete(t); else next.add(t);
+    return next;
+  });
   const [selectedDay, setSelectedDay] = useState(TODAY);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
@@ -19719,12 +19725,23 @@ function Calendrier({
       gap: 8,
       alignItems: "center"
     }
-  }, Object.entries(EV_LABELS).map(([k, lbl]) => React.createElement("div", {
+  }, Object.entries(EV_LABELS).map(([k, lbl]) => {
+    const actif = typesVisibles.has(k);
+    return React.createElement("button", {
     key: k,
+    onClick: () => toggleTypeVisible(k),
+    title: actif ? "Cliquer pour masquer ce type d'événement" : "Cliquer pour afficher ce type d'événement",
     style: {
       display: "flex",
       alignItems: "center",
-      gap: 4
+      gap: 4,
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      padding: "2px 4px",
+      borderRadius: 4,
+      opacity: actif ? 1 : 0.4,
+      fontFamily: "'DM Sans',sans-serif"
     }
   }, React.createElement("span", {
     style: {
@@ -19738,9 +19755,11 @@ function Calendrier({
   }), React.createElement("span", {
     style: {
       fontSize: 11,
-      color: "#7A7A7A"
+      color: actif ? "#7A7A7A" : "#AAAAAA",
+      textDecoration: actif ? "none" : "line-through"
     }
-  }, lbl))), React.createElement("div", {
+  }, lbl));
+  }), React.createElement("div", {
     style: {
       marginLeft: 8,
       display: "flex",
@@ -19850,7 +19869,7 @@ function Calendrier({
       justifyContent: "center"
     },
     onClick: e => {
-      if (e.target === e.currentTarget) setCrModal(null);
+      if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */) setCrModal(null);
     }
   }, React.createElement("div", {
     style: {
@@ -20148,6 +20167,7 @@ function Calendrier({
         const isFerie = dStr && !isWeekend && joursFeries(year).has(dStr);
         const evs = !dStr || isWeekend || isFerie ? [] : sheet.rows.filter(e => {
           if (!e.date || !toISO(e.date)) return false;
+          if (!typesVisibles.has(e.type || "rdv")) return false;
           const start = toISO(e.date);
           const end = e.dateFin ? toISO(e.dateFin) : start;
           return dStr >= start && dStr <= end;
@@ -20170,7 +20190,8 @@ function Calendrier({
             }
           },
           style: {
-            minHeight: 100,
+            height: 132,
+            overflow: "hidden",
             borderRadius: 6,
             padding: "4px 5px",
             fontSize: 12,
@@ -20282,6 +20303,7 @@ function Calendrier({
   }, weekDays.map((day, i) => {
     const evs = sheet.rows.filter(e => {
       if (!e.date || !toISO(e.date)) return false;
+      if (!typesVisibles.has(e.type || "rdv")) return false;
       const start = toISO(e.date);
       const end = e.dateFin ? toISO(e.dateFin) : start;
       return day >= start && day <= end;
@@ -20300,7 +20322,8 @@ function Calendrier({
     return React.createElement("div", {
       key: i,
       style: {
-        minHeight: 120,
+        height: 220,
+        overflowY: "auto",
         borderRadius: 6,
         border: isT ? "1px solid #CC2222" : "1px solid #EEEEEE",
         background: isT ? "#FFF0F0" : "#fff",
@@ -20425,6 +20448,7 @@ function Calendrier({
     }, fmt(c.dateDebut), " → ", fmt(c.dateFin), c.motif ? ` · ${c.motif}` : "")));
   }), sheet.rows.filter(e => {
     if (!e.date || !toISO(e.date)) return false;
+    if (!typesVisibles.has(e.type || "rdv")) return false;
     const start = toISO(e.date);
     const end = e.dateFin ? toISO(e.dateFin) : start;
     return selectedDay >= start && selectedDay <= end;
@@ -20436,6 +20460,7 @@ function Calendrier({
     }
   }, "Aucun événement ce jour."), sheet.rows.filter(e => {
     if (!e.date || !toISO(e.date)) return false;
+    if (!typesVisibles.has(e.type || "rdv")) return false;
     const start = toISO(e.date);
     const end = e.dateFin ? toISO(e.dateFin) : start;
     return selectedDay >= start && selectedDay <= end;
@@ -22166,7 +22191,7 @@ function Fournisseurs({
       justifyContent: "center"
     },
     onClick: e => {
-      if (e.target === e.currentTarget) {
+      if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */) {
         setPartageId(null);
         setCopied(false);
       }
@@ -22826,7 +22851,7 @@ function Stocks({
         justifyContent: "center"
       },
       onClick: e => {
-        if (e.target === e.currentTarget) setDetailStock(null);
+        if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */) setDetailStock(null);
       }
     }, React.createElement("div", {
       style: {
@@ -24592,7 +24617,7 @@ function ModuleDevis({
       justifyContent: "center"
     },
     onClick: e => {
-      if (e.target === e.currentTarget) setFormOpen(false);
+      if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */) setFormOpen(false);
     }
   }, React.createElement("div", {
     style: {
@@ -24862,6 +24887,33 @@ function Commandes({
   }]);
   const removeLigne = i => setLignesForm(ls => ls.length > 1 ? ls.filter((_, j) => j !== i) : ls);
   const isBool = v => v === true || String(v).toUpperCase() === "TRUE";
+  // Compose un mail de relance fournisseur (mailto: — l'utilisateur relit et envoie lui-même depuis
+  // son propre client mail, rien n'est envoyé automatiquement) et note la date de relance sur la
+  // commande. type: "confirmation" (date pas encore fixée) ou "retard" (date dépassée, non reçue).
+  function composerRelance(o, type) {
+    const fourn = (fournisseurs?.rows || []).find(f => f.nom === o.fourn);
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const contactBrut = String(fourn?.contact || "").trim();
+    const to = emailRegex.test(contactBrut) ? contactBrut : "";
+    const lignes = getLignes(o);
+    const articleDesc = lignes.length > 1
+      ? `${lignes.length} articles (${lignes.map(l => l.article).filter(Boolean).join(", ")})`
+      : (o.article || lignes[0]?.article || "cette commande");
+    let subject, body;
+    if (type === "confirmation") {
+      subject = `Confirmation de date de livraison — ${o.ref || articleDesc}`;
+      body = `Bonjour,\n\nPourriez-vous nous confirmer la date de livraison prévue pour la commande suivante :\n\n- Référence : ${o.ref || "—"}\n- Article(s) : ${articleDesc}\n- Commande passée le : ${fmt(o.date)}\n\nMerci de votre retour.\n\nCordialement,\nHigh Point Structures`;
+    } else {
+      subject = `Retard de livraison — ${o.ref || articleDesc}`;
+      body = `Bonjour,\n\nNous constatons que la commande suivante devait être livrée le ${fmt(o.dateLivraison)}, mais n'est pas encore arrivée à ce jour :\n\n- Référence : ${o.ref || "—"}\n- Article(s) : ${articleDesc}\n\nPourriez-vous nous indiquer l'état d'avancement et une nouvelle date de livraison estimée ?\n\nCordialement,\nHigh Point Structures`;
+    }
+    if (!to) {
+      alert(`Aucun email valide trouvé pour "${o.fourn}" (champ "Email / contact" de la fiche fournisseur). Le mail va s'ouvrir sans destinataire pré-rempli — complétez-le manuellement, ou mettez à jour la fiche fournisseur pour la prochaine fois.`);
+    }
+    const mailto = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.location.href = mailto;
+    sheet.update(o.id, { ...o, derniereRelance: TODAY });
+  }
   async function toggleRecue(o) {
     const wasRecue = isBool(o.recue);
     const next = {
@@ -25227,6 +25279,17 @@ function Commandes({
         lignes: lignesJSON
       };
       if (editing) {
+        const original = sheet.rows.find(o => String(o.id) === String(editing));
+        if (original?.dateLivraison && !form.dateLivraison && events) {
+          // La date confirmée a été retirée (commande repassée en "à confirmer") : l'événement de
+          // livraison existant n'a plus lieu d'être — on le retire du calendrier local ET de Google
+          // Agenda, sinon l'atelier continuerait de voir une date de livraison qui n'est plus valide.
+          const evLivr = events.rows.find(e => e.type === "livraison" && (e.title || "").includes(original.article || getLignes(original)[0]?.article || "") && toISO(e.date) === toISO(original.dateLivraison));
+          if (evLivr) {
+            if (evLivr.gcalEventId) { try { await gasDeleteGCal(evLivr.gcalEventId); } catch (e) { console.warn("Suppression Google Agenda échouée :", e); } }
+            await events.remove(evLivr.id);
+          }
+        }
         await sheet.update(editing, data);
       } else {
         await sheet.add({
@@ -25291,6 +25354,7 @@ function Commandes({
     return true;
   };
   const livraisonsRetard = sheet.rows.filter(o => !isBool(o.recue) && o.dateLivraison && toISO(o.dateLivraison) < TODAY && !isProjetTermine(o) && applyFiltre(o));
+  const relancesDateAConfirmer = sheet.rows.filter(o => !isBool(o.recue) && isBool(o.dateAConfirmer) && !o.dateLivraison && !isProjetTermine(o) && applyFiltre(o)).sort((a, b) => toISO(a.date || "").localeCompare(toISO(b.date || "")));
   const encours = sheet.rows.filter(o => !isBool(o.recue) && !isProjetTermine(o) && applyFiltre(o));
   const attenteFacture = sheet.rows.filter(o => isBool(o.recue) && !isBool(o.factureCompta) && !isProjetTermine(o) && applyFiltre(o)).sort((a, b) => toISO(b.date || "").localeCompare(toISO(a.date || "")));
   const historique = sheet.rows.filter(o => isBool(o.recue) && isBool(o.factureCompta) && applyFiltre(o)).sort((a, b) => toISO(b.date || "").localeCompare(toISO(a.date || "")));
@@ -25359,8 +25423,18 @@ function Commandes({
   }, React.createElement(Inp, {
     type: "date",
     value: form.dateLivraison || "",
+    disabled: isBool(form.dateAConfirmer),
     onChange: e => f("dateLivraison", e.target.value)
-  }), form.dateLivraison && React.createElement("div", {
+  }), React.createElement("label", {
+    style: { display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12, color: "#7A7A7A", cursor: "pointer" }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: isBool(form.dateAConfirmer),
+    onChange: e => {
+      const checked = e.target.checked;
+      setForm(x => ({ ...x, dateAConfirmer: checked, ...(checked ? { dateLivraison: "" } : {}) }));
+    }
+  }), "Date à confirmer plus tard avec le fournisseur"), form.dateLivraison && React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#CC6600",
@@ -25615,7 +25689,7 @@ function Commandes({
       justifyContent: "center"
     },
     onClick: e => {
-      if (e.target === e.currentTarget) {
+      if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */) {
         setAiOpen(false);
         setAiPreview(null);
         setAiErr("");
@@ -25954,7 +26028,72 @@ function Commandes({
     label: `${Math.abs(diffWorkDays(o.dateLivraison))}j de retard`,
     bg: "#FFF0F0",
     color: "#CC2222"
-  })))), React.createElement("div", {
+  }), React.createElement("button", {
+    onClick: () => composerRelance(o, "retard"),
+    title: "Rédiger un mail de relance au fournisseur",
+    style: {
+      fontSize: 10.5,
+      fontWeight: 600,
+      color: "#CC2222",
+      background: "#fff",
+      border: "1px solid #FFCCCC",
+      borderRadius: 5,
+      padding: "3px 8px",
+      cursor: "pointer",
+      fontFamily: "'DM Sans',sans-serif",
+      whiteSpace: "nowrap"
+    }
+  }, "✉ Relancer", o.derniereRelance ? ` (${fmt(o.derniereRelance)})` : "")))), relancesDateAConfirmer.length > 0 && React.createElement("div", {
+    style: {
+      background: "#FFFBF0",
+      border: "1px solid #FFD580",
+      borderLeft: "4px solid #CC8800",
+      borderRadius: 8,
+      padding: "10px 14px",
+      marginBottom: 14
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#CC8800",
+      marginBottom: 6
+    }
+  }, "📅 ", relancesDateAConfirmer.length, " commande", relancesDateAConfirmer.length > 1 ? "s" : "", " en attente de confirmation de date"), relancesDateAConfirmer.map(o => React.createElement("div", {
+    key: o.id,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "4px 0",
+      borderBottom: "0.5px solid #FFE9BE"
+    }
+  }, React.createElement("div", {
+    style: { flex: 1 }
+  }, React.createElement("span", {
+    style: { fontSize: 12, fontWeight: 600, color: "#CC8800" }
+  }, o.article), React.createElement("span", {
+    style: { fontSize: 11, color: "#7A7A7A", marginLeft: 8 }
+  }, o.fourn, " · commandée le ", fmt(o.date))), React.createElement(Badge, {
+    label: `${diffWorkDays(o.date) * -1}j sans date`,
+    bg: "#FFF8EC",
+    color: "#CC8800"
+  }), React.createElement("button", {
+    onClick: () => composerRelance(o, "confirmation"),
+    title: "Rédiger un mail de relance au fournisseur",
+    style: {
+      fontSize: 10.5,
+      fontWeight: 600,
+      color: "#CC8800",
+      background: "#fff",
+      border: "1px solid #FFD580",
+      borderRadius: 5,
+      padding: "3px 8px",
+      cursor: "pointer",
+      fontFamily: "'DM Sans',sans-serif",
+      whiteSpace: "nowrap"
+    }
+  }, "✉ Relancer", o.derniereRelance ? ` (${fmt(o.derniereRelance)})` : "")))), React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(3,1fr)",
