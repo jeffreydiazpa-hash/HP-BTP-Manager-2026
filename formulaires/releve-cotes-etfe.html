@@ -44,14 +44,14 @@
 <footer>HIGH POINT — 17 rue Robert Geffré — 17000 La Rochelle — FRANCE — SARL au capital de 32 000€ — SIRET : 53454409300030</footer>
 
 <script>
-const TOOL_VERSION = "1.0";
+const TOOL_VERSION = "1.1";
 document.getElementById('versionBadge').textContent = 'v' + TOOL_VERSION;
 const { useState, useEffect } = React;
 
 // ---------- Contexte / mode intégré (même convention que les autres outils) ----------
 const CTX = (() => {
   const p = new URLSearchParams(window.location.search);
-  return { projet: p.get('projet') || '', email: p.get('email') || '', token: p.get('token') || '', gas: p.get('gas') || '' };
+  return { projet: p.get('projet') || '', formId: p.get('formId') || '', action: p.get('action') || 'view', email: p.get('email') || '', token: p.get('token') || '', gas: p.get('gas') || '' };
 })();
 const isEmbedded = window.self !== window.top;
 document.getElementById('hpLogoImg').src = LOGO_B64;
@@ -635,7 +635,9 @@ function AppRoot() {
   const [formulairesRows, setFormulairesRows] = useState([]);
   const [team, setTeam] = useState([]);
   const [projetsList, setProjetsList] = useState([]);
-  const [vue, setVue] = useState("menu");
+  // Pas de menu ici — ce fichier ne gère qu'UN enregistrement à la fois, désigné par CTX.formId
+  // (onglet Formulaire natif du site = le menu + la liste ; cf. FormulairesModule dans index.html).
+  const [vue, setVue] = useState(CTX.formId ? CTX.action : "form");
   const [current, setCurrent] = useState(null);
   const isMobile = window.innerWidth < 700;
 
@@ -645,13 +647,25 @@ function AppRoot() {
         const token = await getFreshToken();
         const r = await jsonpFetch(CTX.gas, { action: 'getbatch', email: CTX.email, token, keys: JSON.stringify(['formulaires', 'team', 'projects']) });
         if (!r.ok) throw new Error(r.msg || 'Échec du chargement');
-        setFormulairesRows((r.data.formulaires || []).filter(f => f.type === 'releve_cotes_etfe'));
+        const rows = (r.data.formulaires || []).filter(f => f.type === 'releve_cotes_etfe');
+        setFormulairesRows(rows);
         setTeam(r.data.team || []);
         setProjetsList(r.data.projects || []);
+        if (CTX.formId) {
+          const row = rows.find(f => String(f.id) === CTX.formId);
+          if (row) setCurrent(row);
+          else { setVue("form"); } // référence introuvable (supprimée entre-temps ?) — repli sur un formulaire vierge
+        }
       } catch (e) { setLoadErr(e.message || String(e)); }
       setLoading(false);
     })();
   }, []);
+
+  // Signale au parent (onglet Formulaire natif) qu'on a fini — retour à sa liste, plutôt qu'un menu
+  // interne qui n'existe plus ici.
+  function signalerRetourAuParent() {
+    window.parent.postMessage({ type: 'hp-form-done' }, '*');
+  }
 
   if (loading) return null; // le message "Chargement…" HTML statique reste visible
   document.getElementById('loadingNote').style.display = loadErr ? 'none' : 'none';
@@ -662,30 +676,10 @@ function AppRoot() {
   const Sec = title => React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#1C1C1C", borderLeft: "3px solid #CC2222", paddingLeft: 8, margin: "18px 0 10px", fontFamily: "'DM Sans',sans-serif" } }, title);
   const gridStyle = { display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 10 };
 
-  async function removeFormulaire(id) {
-    if (!confirm("Supprimer ce formulaire ? (les photos restent sur le Drive)")) return;
-    try {
-      await gasPost({ action: 'delete', key: 'formulaires', id });
-      setFormulairesRows(rows => rows.filter(r => r.id !== id));
-    } catch (e) { alert("Échec de la suppression : " + (e.message || e)); }
-  }
-
-  function onDoneForm() {
-    // Recharge la liste après enregistrement pour rester synchronisé (nouvelle fiche ou modification).
-    setCurrent(null); setVue("menu");
-    (async () => {
-      try {
-        const token = await getFreshToken();
-        const r = await jsonpFetch(CTX.gas, { action: 'getbatch', email: CTX.email, token, keys: JSON.stringify(['formulaires']) });
-        if (r.ok) setFormulairesRows((r.data.formulaires || []).filter(f => f.type === 'releve_cotes_etfe'));
-      } catch (e) {}
-    })();
-  }
-
   if (vue === "form") {
     return React.createElement(FicheReleveCotesETFE, {
       formulairesRows, projetsList, chantierMembres, beMembres, existing: current,
-      user: null, isMobile, onDone: onDoneForm, Sec, gridStyle
+      user: null, isMobile, onDone: signalerRetourAuParent, Sec, gridStyle
     });
   }
 
@@ -709,7 +703,7 @@ function AppRoot() {
     ) : null;
     return React.createElement("div", { style: { fontFamily: "'DM Sans',sans-serif" } },
       React.createElement("div", { style: { display: "flex", gap: 8 } },
-        React.createElement(Btn, { onClick: () => setVue("menu") }, "← Retour"),
+        React.createElement(Btn, { onClick: signalerRetourAuParent }, "← Retour"),
         React.createElement(Btn, { primary: true, onClick: () => setVue("form") }, "Compléter / modifier"),
         React.createElement(Btn, { onClick: () => exportFicheETFEPDF({ ref: current.ref, projet: current.projet }, d, photos) }, "📄 Export PDF")
       ),
@@ -757,45 +751,8 @@ function AppRoot() {
     );
   }
 
-  // vue === "menu"
-  const saved = formulairesRows.slice().sort((a, b) => (toISO(b.date) || "").localeCompare(toISO(a.date) || ""));
-  const statutOf = r => { try { return (JSON.parse(r.data || "{}").statut) || ""; } catch (e) { return ""; } };
-  return React.createElement("div", { style: { fontFamily: "'DM Sans',sans-serif" } },
-    React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: "#1C1C1C", marginBottom: 4 } }, "Relevés de cotes ETFE"),
-    React.createElement("div", { style: { fontSize: 12, color: "#7A7A7A", marginBottom: 16 } }, "Fiche ETFE : le BE prépare (plan + infos de base), les monteurs complètent sur place."),
-    Sec("Nouveau relevé"),
-    React.createElement("div", {
-      onClick: () => { setCurrent(null); setVue("form"); },
-      style: { border: "0.5px solid #DDDDDD", borderTop: "3px solid #CC2222", borderRadius: 10, padding: 16, cursor: "pointer", background: "#fff", maxWidth: 320 }
-    },
-      React.createElement("div", { style: { fontSize: 26, marginBottom: 8 } }, "📐"),
-      React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#1C1C1C", marginBottom: 4 } }, "Relevé de cotes — Coussin ETFE"),
-      React.createElement("div", { style: { fontSize: 12, color: "#7A7A7A", lineHeight: 1.5 } }, "Profilés, réseau d'air, valves, cotes d'après plan, photos.")
-    ),
-    Sec("Relevés enregistrés (" + saved.length + ")"),
-    saved.length === 0
-      ? React.createElement("div", { style: { fontSize: 12, color: "#7A7A7A", fontStyle: "italic", padding: "8px 0" } }, "Aucun formulaire enregistré pour l'instant.")
-      : React.createElement("div", { style: { border: "0.5px solid #DDDDDD", borderRadius: 8, overflow: "hidden", background: "#fff" } },
-          saved.map((r, i) => {
-            const st = statutOf(r);
-            const stColor = /complé/i.test(st) ? "#2A7A2A" : "#CC6600";
-            return React.createElement("div", {
-              key: r.id,
-              style: { display: "grid", gridTemplateColumns: isMobile ? "1fr auto" : "1.3fr 1.1fr 0.9fr 1fr auto", gap: 8, alignItems: "center", padding: "10px 12px", borderTop: i ? "1px solid #F2F0ED" : "none", fontSize: 12 }
-            },
-              React.createElement("span", { style: { fontFamily: "'DM Mono',monospace", color: "#CC2222", fontWeight: 600 } }, r.ref || "—"),
-              !isMobile && React.createElement("span", { style: { color: "#7A7A7A" } }, r.projet || "—"),
-              !isMobile && (st ? React.createElement("span", { style: { color: stColor, fontWeight: 600, fontSize: 11 } }, st) : React.createElement("span", null, "")),
-              !isMobile && React.createElement("span", { style: { color: "#7A7A7A", whiteSpace: "nowrap" } }, (r.date ? new Date(toISO(r.date) + "T00:00:00").toLocaleDateString("fr-FR") : "—") + " · " + countAllPhotos(r) + " 📷"),
-              React.createElement("span", { style: { display: "flex", gap: 6, justifyContent: "flex-end" } },
-                React.createElement(Btn, { small: true, onClick: () => { setCurrent(r); setVue("view"); } }, "Voir"),
-                React.createElement(Btn, { small: true, primary: true, onClick: () => { setCurrent(r); setVue("form"); } }, "Compléter"),
-                React.createElement("button", { onClick: () => removeFormulaire(r.id), style: { background: "none", border: "none", cursor: "pointer", color: "#CC2222", fontSize: 13 } }, "✕")
-              )
-            );
-          })
-        )
-  );
+  // Ne devrait plus être atteint (vue résolue à "form" ou "view" au chargement) — repli défensif.
+  return React.createElement("div", { className: "placeholder-note" }, "Aucun formulaire sélectionné.");
 }
 
 const hasCtx = CTX.gas && CTX.email && CTX.token;
