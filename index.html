@@ -539,7 +539,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.4";
+const VERSION = "v4.7.7";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -12597,6 +12597,34 @@ function MissionModule({
   const [detailOngletList, setDetailOngletList] = useState("fab");
   const [deps, setDeps] = useState([]);
   const [noteTexte, setNoteTexte] = useState("");
+  // ── Onglet "Fiches de prod" (atelier uniquement) — même convention d'iframe que l'onglet Outils du
+  // BE : postMessage "hp-tool-resize" pour ajuster la hauteur, iframeRefFP pour distinguer ce message
+  // de ceux d'autres iframes potentiellement ouvertes ailleurs sur la page.
+  const [iframeSrcFP, setIframeSrcFP] = useState("");
+  const [iframeHeightFP, setIframeHeightFP] = useState(500);
+  const iframeRefFP = useRef(null);
+  useEffect(() => {
+    if (moduleType !== "atelier") return;
+    let alive = true;
+    (async () => {
+      try {
+        const auth = await ensureAuth();
+        if (!alive) return;
+        const params = new URLSearchParams({ mode: "atelier", email: auth.email, token: auth.token, gas: GAS_URL });
+        setIframeSrcFP("outils/fiche-prod.html?" + params.toString());
+      } catch (e) { if (alive) setIframeSrcFP(""); }
+    })();
+    return () => { alive = false; };
+  }, [moduleType]);
+  useEffect(() => {
+    const onMsg = e => {
+      if (!e.data || e.data.type !== "hp-tool-resize") return;
+      if (iframeRefFP.current && e.source !== iframeRefFP.current.contentWindow) return;
+      setIframeHeightFP(Math.max(300, Math.ceil(e.data.height) + 4));
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
   const f = (k, v) => setForm(x => ({
     ...x,
     [k]: v
@@ -14329,7 +14357,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
       borderRadius: 6,
       overflow: "hidden"
     }
-  }, [["liste", "≡ Liste"], ["planning", "▦ Vue planning"]].map(([v, l]) => React.createElement("button", {
+  }, [["liste", "≡ Liste"], ["planning", "▦ Vue planning"], ...(moduleType === "atelier" ? [["fichesProd", "📄 Fiches de prod"]] : [])].map(([v, l]) => React.createElement("button", {
     key: v,
     onClick: () => setVue(v),
     style: {
@@ -14783,7 +14811,15 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
     journal: journal,
     user: user,
     conges: conges
-  }));
+  }), vue === "fichesProd" && moduleType === "atelier" && React.createElement("div", null,
+    !iframeSrcFP && React.createElement("div", { style: { fontSize: 13, color: "#7A7A7A", padding: 20, textAlign: "center" } }, "Chargement…"),
+    iframeSrcFP && React.createElement("iframe", {
+      ref: iframeRefFP,
+      src: iframeSrcFP,
+      style: { width: "100%", height: iframeHeightFP, border: "none", display: "block", overflow: "hidden" },
+      scrolling: "no"
+    })
+  ));
 }
 const ET = {
   text: "",
@@ -14838,8 +14874,55 @@ const EM_METRE = {
   stock_reserve: "",
   statut: "à commander",
   note: "",
-  tags: ""
+  tags: "",
+  cat: "",
+  specs: ""
 };
+// Caractéristiques détaillées d'une membrane saisie au métré — même structure que celle utilisée par
+// la fiche de production (couches, épaisseurs, teintes) pour que celle-ci puisse la retrouver et la
+// reprendre automatiquement quand elle est liée au même projet, sans ressaisie. "value" est une chaîne
+// JSON (colonne "specs" du métré) ; "onChange" reçoit la nouvelle chaîne JSON à chaque modification.
+function MetreSpecsMembrane({ value, onChange }) {
+  let specs = {};
+  try { specs = JSON.parse(value || "{}"); } catch (e) {}
+  const set = (k, v) => onChange(JSON.stringify({ ...specs, [k]: v }));
+  const nbC = TYPO_COUCHES[specs.typologie] || 0;
+  const setCouche = (i, k, v) => {
+    const couches = [...(specs.couches || [])];
+    couches[i] = { ...(couches[i] || {}), [k]: v };
+    onChange(JSON.stringify({ ...specs, couches }));
+  };
+  return React.createElement("div", {
+    style: { border: "1px solid #DDDDDD", borderRadius: 8, padding: 12, marginBottom: 10, background: "#FCFCFB" }
+  },
+    React.createElement("div", { style: { fontSize: 11.5, fontWeight: 700, color: "#CC2222", marginBottom: 8 } },
+      "Caractéristiques membrane — reprises automatiquement par la fiche de production"),
+    React.createElement(FG, { label: "Typologie" },
+      React.createElement(Sel, { value: specs.typologie || "", onChange: e => set("typologie", e.target.value) },
+        React.createElement("option", { value: "" }, "—"),
+        Object.keys(TYPO_COUCHES).map(t => React.createElement("option", { key: t }, t)))),
+    nbC > 0 && Array.from({ length: nbC }).map((_, i) => React.createElement("div", {
+      key: i, style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 4 }
+    },
+      React.createElement(FG, { label: `Couche ${i + 1} — épaisseur` },
+        React.createElement(Inp, {
+          value: (specs.couches || [])[i]?.epaisseur || "",
+          onChange: e => setCouche(i, "epaisseur", e.target.value),
+          placeholder: "µm ou g/m²"
+        })),
+      React.createElement(FG, { label: `Couche ${i + 1} — teinte / sérigraphie` },
+        React.createElement(Inp, {
+          value: (specs.couches || [])[i]?.teinte || "",
+          onChange: e => setCouche(i, "teinte", e.target.value)
+        })))),
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 } },
+      React.createElement(FG, { label: "Dimensions finies" },
+        React.createElement(Inp, { value: specs.dimensionsFinies || "", onChange: e => set("dimensionsFinies", e.target.value) })),
+      React.createElement(FG, { label: "Tolérances" },
+        React.createElement(Inp, { value: specs.tolerances || "", onChange: e => set("tolerances", e.target.value) })),
+      React.createElement(FG, { label: "Lot à utiliser" },
+        React.createElement(Inp, { value: specs.lot || "", onChange: e => set("lot", e.target.value) }))));
+}
 const METRE_STATUTS = ["à commander", "commandé", "partiellement reçu", "reçu", "annulé"];
 function statutMetreColor(s) {
   if (s === "reçu") return { bg: "#EAF7EA", color: "#2A7A2A" };
@@ -15089,7 +15172,14 @@ function MetreProjet({
         fontWeight: 600,
         color: "#1C1C1C"
       }
-    }, l.article), l.note && React.createElement("div", {
+    }, l.article), l.cat && React.createElement("div", {
+      style: {
+        fontSize: 9.5,
+        color: "#CC2222",
+        marginTop: 1,
+        fontWeight: 600
+      }
+    }, l.cat), l.note && React.createElement("div", {
       style: {
         fontSize: 10,
         color: "#7A7A7A",
@@ -15178,7 +15268,17 @@ function MetreProjet({
     value: form.article || "",
     onChange: e => f("article", e.target.value),
     placeholder: "Ex: Vis inox A4 M8x40"
-  })), React.createElement("div", {
+  })), React.createElement(FG, {
+    label: "Catégorie de matériau"
+  }, React.createElement(Sel, {
+    value: form.cat || "",
+    onChange: e => f("cat", e.target.value)
+  }, React.createElement("option", { value: "" }, "— Non catégorisé —"), CATS.map(c => React.createElement("option", {
+    key: c
+  }, c)))), form.cat === "Membranes (ETFE, PVC, etc)" && React.createElement(MetreSpecsMembrane, {
+    value: form.specs,
+    onChange: v => f("specs", v)
+  }), React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
@@ -18071,7 +18171,8 @@ function PlanningProjet({
 const BE_OUTILS = [
   { key: "cheneau", label: "Dimensionnement de chéneau", desc: "Débit d'eaux pluviales, formule de Bazin — NF DTU 60.11 P3 / NF DTU 40.5", file: "outils/dimensionnement-cheneau.html" },
   { key: "bilanC", label: "Bilan Carbone ETFE", desc: "Analyse cycle de vie A1-A5 — membranes ETFE, ossature aluminium, transport, chantier", file: "outils/bilan-carbone.html" },
-  { key: "finProjet", label: "Fiche de fin de projet", desc: "Compile toutes les données du projet et produit un bilan analysé par IA", file: "outils/fin-projet.html" }
+  { key: "finProjet", label: "Fiche de fin de projet", desc: "Compile toutes les données du projet et produit un bilan analysé par IA", file: "outils/fin-projet.html" },
+  { key: "ficheProd", label: "Fiche de production", desc: "Transmet à l'atelier les infos de fabrication d'un coussin (soudure ETFE ou couture PVC)", file: "outils/fiche-prod.html?mode=be" }
 ];
 function OutilsBE({ projects, user, isMobile = false, preselect = null, onPreselectConsumed = null }) {
   const [projetSelId, setProjetSelId] = useState("");
@@ -18100,7 +18201,8 @@ function OutilsBE({ projects, user, isMobile = false, preselect = null, onPresel
         if (!alive) return;
         const params = new URLSearchParams({ projet: projetSel.name || "", projetId: String(projetSel.id||""), email: auth.email, token: auth.token, gas: GAS_URL });
         setIframeHeight(500); // repli le temps que le nouvel outil signale sa vraie hauteur
-        setIframeSrc(outil.file + "?" + params.toString());
+        const sep = outil.file.includes("?") ? "&" : "?";
+        setIframeSrc(outil.file + sep + params.toString());
       } catch (e) {
         if (alive) setIframeSrc("");
       }
@@ -18302,677 +18404,34 @@ function BureauEtudes({
   }));
 }
 // ═══ Module Formulaires sur mesure (Chantier) — v4.6.30 : installation site + cotes photo + PDF brouillon ═══
-const FORM_TYPES = [{
-  key: "releve_cotes_etfe",
-  label: "Relevé de cotes — Coussin ETFE",
-  icon: "📐",
-  desc: "Fiche ETFE : le BE prépare (plan + infos de base), les monteurs complètent sur place. Profilés, réseau d'air, valves, cotes d'après plan, photos."
-}];
-const FORM_LABEL = k => (FORM_TYPES.find(t => t.key === k) || {}).label || k;
 const TYPO_COUCHES = { "Simple peau": 1, "Coussin 2 couches": 2, "Coussin 3 couches": 3, "Coussin 4 couches": 4, "Coussin 5 couches": 5 };
-const VALVE_TYPES = [
-  "Buse / valve d'entrée d'air (alimentation)",
-  "Clapet anti-retour (anti-déflation)",
-  "Soupape / clapet de surpression",
-  "Sortie / évacuation d'air (air outlet)",
-  "Prise de pression (capteur / pressostat)",
-  "Raccord flexible / piquage",
-  "Autre"
-];
-const MATERIEL_INSTALLATION = [
-  "Sac à dos de transport EPI",
-  "Casque",
-  "Harnais anti-chute",
-  "Longe double avec absorbeur",
-  "Corde semi-statique",
-  "Mousqueton triple action (alu)",
-  "Mousqueton triple action (acier)",
-  "Ligne de vie temporaire horizontale",
-  "Points d'ancrage provisoires",
-  "Kit de mouflage (traction / levage)",
-  "Poulie bloqueur",
-  "Poulie simple à flasques mobiles",
-  "Palan à chaîne",
-  "Treuil manuel",
-  "Treuil électrique",
-  "Sangles à cliquet",
-  "Élingues textile",
-  "Autre"
-];
-const LIGNES_VIE_TYPES = [
-  "Points d'ancrage permanents existants",
-  "Ligne de vie temporaire à installer",
-  "Potence / portique provisoire",
-  "Aucun moyen identifié sur place",
-  "Autre"
-];
-const MOYENS_TIRAGE_TYPES = [
-  "Treuil manuel",
-  "Treuil électrique",
-  "Palan à chaîne",
-  "Sangles à cliquet + point fixe",
-  "Équipe au sol (traction manuelle)",
-  "Autre"
-];
-const ACCESSIBILITE_TYPES = [
-  "Nacelle élévatrice",
-  "Échafaudage fixe",
-  "Plateforme suspendue",
-  "Grue",
-  "Accès direct depuis la structure",
-  "Autre"
-];
-
-function fileToB64(file) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(String(r.result).split(",")[1]);
-    r.onerror = () => rej(new Error("Lecture du fichier impossible"));
-    r.readAsDataURL(file);
-  });
-}
-function countAllPhotos(row) {
-  let n = 0;
-  try {
-    const ph = JSON.parse(row.photos || "{}");
-    if (Array.isArray(ph)) n += ph.length;
-    else Object.values(ph || {}).forEach(a => { if (Array.isArray(a)) n += a.length; });
-  } catch (e) {}
-  try {
-    const d = JSON.parse(row.data || "{}");
-    (d.valves || []).forEach(v => { n += (v.photos || []).length; });
-  } catch (e) {}
-  return n;
-}
-
-// ── Zone de photos réutilisable (upload -> sous-dossier Drive) ──
-function PhotoZone({ refValue, subfolder, photos, onChange, label, hint, isMobile, accept, required }) {
-  const [uploading, setUploading] = useState(false);
-  const [msg, setMsg] = useState("");
-  const [err, setErr] = useState("");
-  const acceptAttr = accept || "image/*";
-  const acceptsDoc = acceptAttr.indexOf("pdf") !== -1;
-  const manque = required && !(photos && photos.length);
-  async function handle(e) {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (!files.length) return;
-    if (!refValue || !refValue.trim()) { setErr("Renseignez d'abord la référence du formulaire (elle nomme le dossier Drive)."); return; }
-    setErr(""); setUploading(true);
-    let cur = photos.slice();
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      setMsg("Envoi " + (i + 1) + "/" + files.length + "…");
-      try {
-        const b64 = await fileToB64(file);
-        const r = await gasUploadPhoto(refValue.trim(), subfolder || "", file.name, file.type, b64);
-        cur = [...cur, { name: r.name, url: r.url, thumbnail: r.thumbnail, id: r.id }];
-        onChange(cur);
-      } catch (e2) { setErr("Échec « " + file.name + " » : " + (e2.message || e2)); }
-    }
-    setUploading(false); setMsg("");
-  }
-  return React.createElement("div", { style: { margin: "6px 0 4px" } },
-    label && React.createElement("div", { style: { fontSize: 12, color: "#3A3A3A", fontWeight: 600, marginBottom: 2 } }, label, required && React.createElement("span", { style: { color: "#CC2222" } }, " *")),
-    hint && React.createElement("div", { style: { fontSize: 11, color: "#7A7A7A", marginBottom: 6 } }, hint),
-    React.createElement("label", {
-      style: { display: "inline-block", padding: "6px 14px", background: uploading ? "#AAAAAA" : "#fff", color: uploading ? "#fff" : "#CC2222", border: "1px solid #CC2222", borderRadius: 6, cursor: uploading ? "wait" : "pointer", fontSize: 12, fontWeight: 600 }
-    }, uploading ? "Envoi…" : (acceptsDoc ? "📷📄 Photo ou plan PDF" : "📷 Photos / dessin à la main"),
-      React.createElement("input", { type: "file", accept: acceptAttr, multiple: true, disabled: uploading, onChange: handle, style: { display: "none" } })
-    ),
-    manque && React.createElement("span", { style: { fontSize: 11, color: "#CC2222", marginLeft: 8, fontStyle: "italic" } }, "obligatoire avant finalisation"),
-    msg && React.createElement("span", { style: { fontSize: 11, color: "#7A7A7A", marginLeft: 8 } }, msg),
-    err && React.createElement("div", { style: { fontSize: 11, color: "#CC2222", marginTop: 4 } }, err),
-    photos.length > 0 && React.createElement("div", { style: { display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 8, marginTop: 8 } },
-      photos.map((p, i) => React.createElement("div", { key: i, style: { position: "relative", border: "0.5px solid #DDDDDD", borderRadius: 8, overflow: "hidden" } },
-        React.createElement("a", { href: p.url, target: "_blank", rel: "noopener" },
-          React.createElement("img", { src: p.thumbnail || p.url, alt: p.name, style: { width: "100%", height: 90, objectFit: "cover", display: "block", background: "#F2F0ED" } })),
-        React.createElement("button", { onClick: () => onChange(photos.filter((_, j) => j !== i)), style: { position: "absolute", top: 3, right: 3, background: "rgba(204,34,34,0.9)", color: "#fff", border: "none", borderRadius: "50%", width: 20, height: 20, cursor: "pointer", fontSize: 11 } }, "✕")
-      ))
-    )
-  );
-}
-
-// ── Export PDF de la fiche relevé de cotes ETFE (disponible à tout moment, finalisée ou non) ──
-function exportFicheETFEPDF(meta, d, photos) {
-  const avecAutre = (v, k) => (v || "") + (d[k + "_autre"] ? " — " + d[k + "_autre"] : "");
-  const ligne = (label, val) => (val || val === 0) ? `<div class="l"><span class="lb">${label}</span><span class="lv">${String(val)}</span></div>` : "";
-  const galerie = (arr, titre) => (arr && arr.length) ? `<div class="section-title" style="font-size:9.5pt;margin-top:10px;">${titre || ""}</div>
-    <div class="photogrid">${arr.map(p => `<div class="photo"><img src="${p.thumbnail || p.url}" /></div>`).join("")}</div>` : "";
-  const statut = d.statut || "—";
-  const brouillon = statut !== "Complété (chantier)";
-  let valvesHtml = "";
-  (d.valves || []).forEach((v, i) => {
-    valvesHtml += `<div class="carte"><div class="carte-titre">Valve ${v.repere || i + 1} — ${avecAutre(v.type, "type") || "—"}</div>
-      ${ligne("Localisation", v.localisation)}${ligne("Couche du coussin", v.couche)}${ligne("Ø (mm)", v.diametre)}
-      ${galerie(v.photos, null)}</div>`;
-  });
-  let cotesRows = "";
-  (d.cotes || []).forEach((c, i) => {
-    cotesRows += `<tr><td style="padding:3px 6px;font-weight:700;color:#CC2222;">${c.lettre || i + 1}</td><td style="padding:3px 6px;">${c.description || "—"}</td><td style="padding:3px 6px;">${c.valeur || "—"}</td><td style="padding:3px 6px;">${c.etat || "—"}</td></tr>`;
-  });
-  const cotesTable = (d.cotes && d.cotes.length) ? `<table style="width:100%;border-collapse:collapse;margin-top:6px;font-size:9pt;"><thead><tr style="background:#F2F0ED;"><th style="padding:3px 6px;text-align:left;">Cote</th><th style="padding:3px 6px;text-align:left;">Description</th><th style="padding:3px 6px;text-align:left;">Valeur mm</th><th style="padding:3px 6px;text-align:left;">État</th></tr></thead><tbody>${cotesRows}</tbody></table>` : "";
-  const teintesTexte = (d.teintes || []).map((arr, i) => "C" + (i + 1) + ": " + ((arr && arr.length) ? arr.join("/") : "—")).join("  |  ");
-  const h = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relevé de cotes ETFE — ${meta.ref || ""}</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0;}
-    body{font-family:'DM Sans',Arial,sans-serif;color:#1C1C1C;font-size:10pt;padding:20px 24px;}
-    .hp-header{display:flex;align-items:center;gap:16px;padding-bottom:12px;border-bottom:3px solid #CC2222;margin-bottom:16px;}
-    .hp-logo-mark{font-size:22pt;font-weight:900;color:#CC2222;letter-spacing:-1px;line-height:1;}
-    .hp-logo-text{font-size:13pt;font-weight:700;color:#1C1C1C;}
-    .hp-logo-sub{font-size:8pt;color:#7A7A7A;display:block;}
-    .doc-title{margin-left:auto;text-align:right;}
-    .doc-title h1{font-size:14pt;font-weight:700;color:#1C1C1C;}
-    .doc-title p{font-size:9pt;color:#7A7A7A;}
-    .draft-badge{display:inline-block;margin-top:4px;padding:3px 10px;border-radius:3px;font-size:8.5pt;font-weight:700;background:#FFF0D6;color:#CC6600;}
-    .section-title{font-size:11pt;font-weight:700;color:#1C1C1C;border-left:4px solid #CC2222;padding-left:10px;margin:16px 0 8px;}
-    .l{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid #F5F5F5;font-size:9.5pt;}
-    .lb{color:#7A7A7A;} .lv{color:#1C1C1C;font-weight:600;text-align:right;}
-    .carte{border:0.5px solid #DDDDDD;border-radius:6px;padding:8px 10px;margin-bottom:8px;background:#FAFAFA;}
-    .carte-titre{font-size:9.5pt;font-weight:700;color:#CC2222;margin-bottom:4px;}
-    .photogrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:4px;}
-    .photo img{width:100%;height:80px;object-fit:cover;border-radius:4px;border:0.5px solid #DDDDDD;}
-    .footer{margin-top:24px;padding-top:10px;border-top:0.5px solid #DDDDDD;font-size:7.5pt;color:#7A7A7A;text-align:center;}
-    @media print{body{padding:12px;} @page{margin:15mm;}}
-  </style></head><body>
-  <div class="hp-header">
-    <img src="${LOGO_B64}" style="height:40px;object-fit:contain;"/>
-    <div class="doc-title">
-      <h1>Relevé de cotes — Coussin ETFE</h1>
-      <p>Réf. ${meta.ref || "—"} ${meta.projet ? "— " + meta.projet : ""}</p>
-      <p style="color:#CC2222;font-weight:600;">Émis le ${new Date().toLocaleDateString("fr-FR")}</p>
-      ${brouillon ? `<span class="draft-badge">BROUILLON — ${statut}</span>` : `<span class="draft-badge" style="background:#E8F5E8;color:#2A7A2A;">FINALISÉ — ${statut}</span>`}
-    </div>
-  </div>
-  <div class="section-title">Identification</div>
-  ${ligne("Préparé par (BE)", d.ingenieur)}${ligne("Relevé par (chantier)", (d.releveurs || []).join(", "))}${ligne("Repère coussin", d.coussin_repere)}${ligne("Localisation", d.localisation)}
-  <div class="section-title">Configuration</div>
-  ${ligne("Typologie", d.typologie)}${ligne("Épaisseurs (µm, ext→int)", (d.epaisseurs || []).filter(Boolean).join(" / "))}${ligne("Traitement par couche", teintesTexte)}${ligne("Pression nominale (Pa)", d.pression_nominale)}${ligne("Pression sous neige (Pa)", d.pression_neige)}
-  <div class="section-title">Profilés & fixation</div>
-  ${ligne("Type de profil", avecAutre(d.profil_type, "profil_type"))}${ligne("Finition", d.profil_finition)}${ligne("Ø jonc / keder (mm)", d.jonc_diametre)}${ligne("Structure porteuse", avecAutre(d.structure_porteuse, "structure_porteuse"))}
-  ${galerie(photos.profil, "Photos du profil")}
-  <div class="section-title">Pocket ETFE</div>
-  ${ligne("Longueur (m)", d.pocket_longueur)}${ligne("Cote jonc → system line (mm)", d.pocket_cote_jonc_systemline)}${ligne("Épaisseur membrane pocket (µm)", d.pocket_epaisseur_membrane)}${ligne("Épaisseur / Ø du jonc (mm)", d.pocket_jonc_epaisseur)}${ligne("Matière du jonc", avecAutre(d.pocket_jonc_matiere, "pocket_jonc_matiere"))}
-  <div class="section-title">Soufflerie & réseau d'air</div>
-  ${ligne("Type de réseau", d.reseau_type)}${ligne("Soufflerie", d.soufflerie_modele)}${ligne("Déshumidificateur", d.deshumidificateur)}
-  ${(d.valves && d.valves.length) ? `<div class="section-title">Valves (${d.valves.length})</div>${valvesHtml}` : ""}
-  <div class="section-title">Cotes</div>
-  ${galerie(photos.plan, "Plan de base")}
-  ${cotesTable}
-  ${galerie(photos.cotes, "Photos de vérification des cotes")}
-  <div class="section-title">Installation sur site</div>
-  ${ligne("Matériel prévu", (d.installation_materiel || []).join(", "))}
-  ${ligne("Lignes de vie", avecAutre(d.lignes_vie_type, "lignes_vie_type"))}${ligne("Détail lignes de vie", d.lignes_vie_description)}
-  ${ligne("Moyens de traction", avecAutre(d.moyens_tirage_type, "moyens_tirage_type"))}${ligne("Détail moyens de traction", d.moyens_tirage_description)}
-  ${ligne("Accessibilité", avecAutre(d.accessibilite_type, "accessibilite_type"))}
-  ${galerie(photos.installation, "Photos installation")}
-  <div class="section-title">Contexte</div>
-  ${galerie(photos.contexte, null)}
-  ${d.observations ? `<div class="section-title">Observations</div><p style="font-size:9.5pt;white-space:pre-wrap;">${d.observations}</p>` : ""}
-  ${galerie(photos.general, "Autres photos")}
-  <div class="footer">HIGH POINT — 17 rue Robert Geffré — 17000 La Rochelle — FRANCE — SIRET : 53454409300030</div>
-  </body></html>`;
-  const w = window.open("", "_blank");
-  w.document.write(h);
-  w.document.close();
-  setTimeout(() => w.print(), 600);
-}
-
-function FormulairesModule({ formulaires, projets, team, user = null, isMobile = false }) {
-  const [vue, setVue] = useState("menu");
-  const [current, setCurrent] = useState(null); // row en cours (view/edit)
-  const chantierMembres = ((team && team.rows) || []).filter(t => t.statut !== "inactif" && getEquipeMembres(t).includes("chantier"));
-  const beMembres = ((team && team.rows) || []).filter(t => t.statut !== "inactif" && getEquipeMembres(t).includes("be"));
-  const projetsList = (projets && projets.rows) || [];
-
-  const Sec = title => React.createElement("div", {
-    style: { fontSize: 14, fontWeight: 700, color: "#1C1C1C", borderLeft: "3px solid #CC2222", paddingLeft: 8, margin: "18px 0 10px", fontFamily: "'DM Sans',sans-serif" }
-  }, title);
-  const gridStyle = { display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 10 };
-
-  if (vue === "menu") {
-    const saved = (formulaires.rows || []).slice().sort((a, b) => (toISO(b.date) || "").localeCompare(toISO(a.date) || ""));
-    const statutOf = r => { try { return (JSON.parse(r.data || "{}").statut) || ""; } catch (e) { return ""; } };
-    return React.createElement("div", { style: { fontFamily: "'DM Sans',sans-serif" } },
-      React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: "#1C1C1C", marginBottom: 4 } }, "Formulaires"),
-      React.createElement("div", { style: { fontSize: 12, color: "#7A7A7A", marginBottom: 16 } }, "Fiches sur mesure par type de tâche"),
-      Sec("Nouveau formulaire"),
-      React.createElement("div", { style: { display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fill,minmax(280px,1fr))", gap: 12 } },
-        FORM_TYPES.map(t => React.createElement("div", {
-          key: t.key,
-          onClick: () => { setCurrent(null); setVue("form"); },
-          style: { border: "0.5px solid #DDDDDD", borderTop: "3px solid #CC2222", borderRadius: 10, padding: 16, cursor: "pointer", background: "#fff" }
-        },
-          React.createElement("div", { style: { fontSize: 26, marginBottom: 8 } }, t.icon),
-          React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#1C1C1C", marginBottom: 4 } }, t.label),
-          React.createElement("div", { style: { fontSize: 12, color: "#7A7A7A", lineHeight: 1.5 } }, t.desc)
-        ))
-      ),
-      Sec("Formulaires enregistrés (" + saved.length + ")"),
-      saved.length === 0
-        ? React.createElement("div", { style: { fontSize: 12, color: "#7A7A7A", fontStyle: "italic", padding: "8px 0" } }, "Aucun formulaire enregistré pour l'instant.")
-        : React.createElement("div", { style: { border: "0.5px solid #DDDDDD", borderRadius: 8, overflow: "hidden", background: "#fff" } },
-            saved.map((r, i) => {
-              const st = statutOf(r);
-              const stColor = /complé/i.test(st) ? "#2A7A2A" : "#CC6600";
-              return React.createElement("div", {
-                key: r.id,
-                style: { display: "grid", gridTemplateColumns: isMobile ? "1fr auto" : "1.3fr 1.1fr 0.9fr 1fr auto", gap: 8, alignItems: "center", padding: "10px 12px", borderTop: i ? "1px solid #F2F0ED" : "none", fontSize: 12 }
-              },
-                React.createElement("span", { style: { fontFamily: "'DM Mono',monospace", color: "#CC2222", fontWeight: 600 } }, r.ref || "—"),
-                !isMobile && React.createElement("span", { style: { color: "#7A7A7A" } }, r.projet || "—"),
-                !isMobile && (st ? React.createElement("span", { style: { color: stColor, fontWeight: 600, fontSize: 11 } }, st) : React.createElement("span", null, "")),
-                !isMobile && React.createElement("span", { style: { color: "#7A7A7A", whiteSpace: "nowrap" } }, (r.date ? new Date(toISO(r.date) + "T00:00:00").toLocaleDateString("fr-FR") : "—") + " · " + countAllPhotos(r) + " 📷"),
-                React.createElement("span", { style: { display: "flex", gap: 6, justifyContent: "flex-end" } },
-                  React.createElement(Btn, { small: true, onClick: () => { setCurrent(r); setVue("view"); } }, "Voir"),
-                  React.createElement(Btn, { small: true, primary: true, onClick: () => { setCurrent(r); setVue("form"); } }, "Compléter"),
-                  React.createElement("button", { onClick: async () => { if (confirm("Supprimer ce formulaire ? (les photos restent sur le Drive)")) await formulaires.remove(r.id); }, style: { background: "none", border: "none", cursor: "pointer", color: "#CC2222", fontSize: 13 } }, "✕")
-                )
-              );
-            })
-          )
-    );
-  }
-
-  if (vue === "view" && current) {
-    let d = {}, photos = {};
-    try { d = JSON.parse(current.data || "{}"); } catch (e) {}
-    try { photos = JSON.parse(current.photos || "{}"); if (Array.isArray(photos)) photos = { general: photos }; } catch (e) {}
-    const Ligne = (label, val) => (val || val === 0) ? React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, padding: "5px 0", borderBottom: "1px solid #F5F5F5", fontSize: 12 } },
-      React.createElement("span", { style: { color: "#7A7A7A" } }, label),
-      React.createElement("span", { style: { color: "#1C1C1C", fontWeight: 600, textAlign: "right" } }, String(val))
-    ) : null;
-    const avecAutre = (v, k) => v + (d[k + "_autre"] ? " — " + d[k + "_autre"] : "");
-    const galerie = (arr, titre) => (arr && arr.length) ? React.createElement("div", { style: { marginTop: 8 } },
-      titre && React.createElement("div", { style: { fontSize: 11, color: "#7A7A7A", marginBottom: 4, fontStyle: "italic" } }, titre),
-      React.createElement("div", { style: { display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 10 } },
-        arr.map((p, i) => React.createElement("a", { key: i, href: p.url, target: "_blank", rel: "noopener", style: { display: "block", border: "0.5px solid #DDDDDD", borderRadius: 8, overflow: "hidden", textDecoration: "none" } },
-          React.createElement("img", { src: p.thumbnail || p.url, alt: p.name, style: { width: "100%", height: 110, objectFit: "cover", display: "block", background: "#F2F0ED" } }),
-          React.createElement("div", { style: { fontSize: 10, color: "#7A7A7A", padding: "4px 6px", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.name)
-        ))
-      )
-    ) : null;
-    return React.createElement("div", { style: { fontFamily: "'DM Sans',sans-serif" } },
-      React.createElement("div", { style: { display: "flex", gap: 8 } },
-        React.createElement(Btn, { onClick: () => setVue("menu") }, "← Retour"),
-        React.createElement(Btn, { primary: true, onClick: () => setVue("form") }, "Compléter / modifier"),
-        React.createElement(Btn, { onClick: () => exportFicheETFEPDF({ ref: current.ref, projet: current.projet }, d, photos) }, "📄 Export PDF")
-      ),
-      React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: "#1C1C1C", marginTop: 12 } }, FORM_LABEL(current.type)),
-      React.createElement("div", { style: { fontFamily: "'DM Mono',monospace", color: "#CC2222", fontSize: 13, marginBottom: 12 } }, "Réf. " + (current.ref || "—")),
-      Sec("Identification"),
-      Ligne("Statut", d.statut), Ligne("Préparé par (BE)", d.ingenieur), Ligne("Projet", current.projet), Ligne("Date", current.date && new Date(toISO(current.date) + "T00:00:00").toLocaleDateString("fr-FR")), Ligne("Relevé par (chantier)", (d.releveurs || []).join(", ")), Ligne("Repère coussin", d.coussin_repere), Ligne("Localisation", d.localisation),
-      Sec("Configuration"),
-      Ligne("Typologie (couches)", d.typologie), Ligne("Épaisseurs (µm, ext→int)", (d.epaisseurs || []).filter(Boolean).join(" / ")), Ligne("Traitement par couche", (d.teintes || []).map((arr, i) => "C" + (i + 1) + ": " + ((arr && arr.length) ? arr.join("/") : "—")).join("  |  ")), Ligne("Pression nominale (Pa)", d.pression_nominale), Ligne("Pression sous neige (Pa)", d.pression_neige),
-      Sec("Profilés & fixation"),
-      Ligne("Type de profil alu", avecAutre(d.profil_type, "profil_type")), Ligne("Finition", d.profil_finition), Ligne("Ø jonc / keder (mm)", d.jonc_diametre), Ligne("Joint EPDM", d.joint_epdm), Ligne("Structure porteuse", avecAutre(d.structure_porteuse, "structure_porteuse")),
-      galerie(photos.profil, "Photos / dessin du profil"),
-      Sec("Pocket ETFE (jonc / keder)"),
-      Ligne("Longueur de pocket (m)", d.pocket_longueur), Ligne("Cote jonc → system line (mm)", d.pocket_cote_jonc_systemline), Ligne("Épaisseur membrane pocket (µm)", d.pocket_epaisseur_membrane), Ligne("Épaisseur / Ø du jonc (mm)", d.pocket_jonc_epaisseur), Ligne("Matière du jonc", avecAutre(d.pocket_jonc_matiere, "pocket_jonc_matiere")),
-      Sec("Soufflerie & réseau d'air"),
-      Ligne("Type de réseau", avecAutre(d.reseau_type, "reseau_type")), Ligne("Localisation soufflerie", d.soufflerie_localisation), Ligne("Modèle soufflerie", d.soufflerie_modele), Ligne("Déshumidificateur", avecAutre(d.deshumidificateur, "deshumidificateur")), Ligne("Tuyau d'alimentation — Ø (mm)", d.tuyau_diametre), Ligne("Tuyau — matériau / type", d.tuyau_materiau), Ligne("Tuyau — longueur (m)", d.tuyau_longueur),
-      galerie(photos.alimentation, "Photos alimentation"),
-      (d.valves && d.valves.length) ? React.createElement("div", null, Sec("Valves (" + d.valves.length + ")"),
-        d.valves.map((v, i) => React.createElement("div", { key: i, style: { border: "0.5px solid #DDDDDD", borderRadius: 8, padding: 10, marginBottom: 8 } },
-          React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#1C1C1C", marginBottom: 4 } }, (v.repere ? v.repere + " — " : "") + (v.type || "Valve") + (v.type_autre ? " (" + v.type_autre + ")" : "")),
-          Ligne("Localisation", v.localisation), Ligne("Couche du coussin", v.couche), Ligne("Ø (mm)", v.diametre),
-          galerie(v.photos, null)
-        ))
-      ) : null,
-      Sec("Cotes"),
-      galerie(photos.plan, "Plan de base (cotes lettrées)"),
-      (d.cotes && d.cotes.length) ? React.createElement("div", { style: { border: "0.5px solid #DDDDDD", borderRadius: 8, overflow: "hidden", marginTop: 8 } },
-        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "50px 1fr 1fr 1fr", gap: 6, padding: "6px 10px", background: "#F2F0ED", fontSize: 11, fontWeight: 600, color: "#7A7A7A" } },
-          React.createElement("div", null, "Cote"), React.createElement("div", null, "Description"), React.createElement("div", null, "Valeur (mm)"), React.createElement("div", null, "État")),
-        d.cotes.map((c, i) => React.createElement("div", { key: i, style: { display: "grid", gridTemplateColumns: "50px 1fr 1fr 1fr", gap: 6, padding: "7px 10px", borderTop: "1px solid #F5F5F5", fontSize: 12 } },
-          React.createElement("div", { style: { fontFamily: "'DM Mono',monospace", fontWeight: 700, color: "#CC2222" } }, c.lettre),
-          React.createElement("div", { style: { color: "#7A7A7A" } }, c.description || "—"),
-          React.createElement("div", { style: { fontWeight: 600 } }, c.valeur || "—"),
-          React.createElement("div", { style: { color: "#7A7A7A" } }, c.etat || "—")
-        ))
-      ) : null,
-      galerie(photos.cotes, "Photos de vérification des cotes"),
-      Sec("Installation sur site"),
-      Ligne("Matériel prévu", (d.installation_materiel || []).join(", ")), Ligne("Lignes de vie", avecAutre(d.lignes_vie_type, "lignes_vie_type")), Ligne("Détail lignes de vie", d.lignes_vie_description), Ligne("Moyens de traction", avecAutre(d.moyens_tirage_type, "moyens_tirage_type")), Ligne("Détail moyens de traction", d.moyens_tirage_description), Ligne("Accessibilité", avecAutre(d.accessibilite_type, "accessibilite_type")),
-      galerie(photos.installation, "Photos installation"),
-      Sec("Contexte autour du coussin"),
-      galerie(photos.contexte, null),
-      d.observations && React.createElement("div", null, Sec("Observations"), React.createElement("div", { style: { fontSize: 12, color: "#1C1C1C", whiteSpace: "pre-wrap", background: "#F2F0ED", borderLeft: "3px solid #CC2222", padding: 10, borderRadius: 4 } }, d.observations)),
-      galerie(photos.general, "Autres photos")
-    );
-  }
-
-  return React.createElement(FicheReleveCotesETFE, {
-    formulaires: formulaires, projetsList: projetsList, chantierMembres: chantierMembres, beMembres: beMembres,
-    existing: current, user: user, isMobile: isMobile, onDone: () => { setCurrent(null); setVue("menu"); }, Sec: Sec, gridStyle: gridStyle
-  });
-}
-
-function FicheReleveCotesETFE({ formulaires, projetsList, chantierMembres, beMembres, existing, user, isMobile, onDone, Sec, gridStyle }) {
-  function initial() {
-    if (existing) {
-      let d = {}, photos = {};
-      try { d = JSON.parse(existing.data || "{}"); } catch (e) {}
-      try { photos = JSON.parse(existing.photos || "{}"); if (Array.isArray(photos)) photos = { general: photos }; } catch (e) {}
-      return {
-        ref: existing.ref || "", projet: existing.projet || "", date: toISO(existing.date) || TODAY,
-        releveurs: d.releveurs || [],
-        photos: { general: photos.general || [], profil: photos.profil || [], alimentation: photos.alimentation || [], plan: photos.plan || [], cotes: photos.cotes || [], installation: photos.installation || [], contexte: photos.contexte || [] },
-        data: { epaisseurs: [], typologie: "", teintes: [], teintes_autre: [], valves: [], cotes: [], installation_materiel: [], statut: "Préparé par le BE", ...d }
-      };
-    }
-    return {
-      ref: "RC-ETFE-" + TODAY.replace(/-/g, "") + "-",
-      projet: "", date: TODAY, releveurs: [],
-      photos: { general: [], profil: [], alimentation: [], plan: [], cotes: [], installation: [], contexte: [] },
-      data: { epaisseurs: [], typologie: "", teintes: [], teintes_autre: [], valves: [], cotes: [], installation_materiel: [], statut: "Préparé par le BE", ingenieur: (user && getEquipeMembres(user).includes && false) ? "" : (user ? user.nom : "") }
-    };
-  }
-  const [form, setForm] = useState(initial);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState("");
-
-  const d = form.data;
-  const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const setD = (k, v) => setForm(f => ({ ...f, data: { ...f.data, [k]: v } }));
-  const setPhotos = (cat, arr) => setForm(f => ({ ...f, photos: { ...f.photos, [cat]: arr } }));
-
-  const Champ = (label, k, ph, type) => React.createElement(FG, { label: label },
-    React.createElement(Inp, { value: d[k] || "", onChange: e => setD(k, e.target.value), placeholder: ph || "", type: type || "text" }));
-  // Select avec champ précision automatique quand la valeur déclenche "Autre" (ou autres valeurs)
-  const ChampSel = (label, k, options, precisionOn) => {
-    const triggers = precisionOn || ["Autre"];
-    const showPrec = triggers.indexOf(d[k]) !== -1;
-    return React.createElement(React.Fragment, null,
-      React.createElement(FG, { label: label },
-        React.createElement(Sel, { value: d[k] || "", onChange: e => setD(k, e.target.value) },
-          React.createElement("option", { value: "" }, "—"),
-          options.map(o => React.createElement("option", { key: o, value: o }, o)))),
-      showPrec && React.createElement(FG, { label: "Préciser : " + (d[k] || "Autre") },
-        React.createElement(Inp, { value: d[k + "_autre"] || "", onChange: e => setD(k + "_autre", e.target.value), placeholder: "précisez…" }))
-    );
-  };
-
-  const toggleReleveur = nom => setForm(f => ({ ...f, releveurs: f.releveurs.includes(nom) ? f.releveurs.filter(n => n !== nom) : [...f.releveurs, nom] }));
-
-  const nbC = TYPO_COUCHES[d.typologie] || 0;
-  const setEpaisseur = (i, v) => setForm(f => { const arr = [...(f.data.epaisseurs || [])]; arr[i] = v; return { ...f, data: { ...f.data, epaisseurs: arr } }; });
-  const toggleTeinteCouche = (i, val) => setForm(f => {
-    const arr = [...(f.data.teintes || [])];
-    const cur = arr[i] || [];
-    arr[i] = cur.includes(val) ? cur.filter(x => x !== val) : [...cur, val];
-    return { ...f, data: { ...f.data, teintes: arr } };
-  });
-  const setTeinteAutre = (i, v) => setForm(f => { const arr = [...(f.data.teintes_autre || [])]; arr[i] = v; return { ...f, data: { ...f.data, teintes_autre: arr } }; });
-  const coucheOptions = (() => {
-    if (nbC <= 1) return ["Membrane unique", "Profil / rive", "Autre"];
-    const arr = [];
-    for (let i = 0; i < nbC; i++) arr.push("Couche " + (i + 1) + (i === 0 ? " (ext.)" : i === nbC - 1 ? " (int.)" : " (interm.)"));
-    arr.push("Profil / rive", "Autre");
-    return arr;
-  })();
-
-  // valves
-  const addValve = () => setForm(f => ({ ...f, data: { ...f.data, valves: [...(f.data.valves || []), { type: "", type_autre: "", repere: "", localisation: "", couche: "", diametre: "", photos: [] }] } }));
-  const setValve = (i, k, v) => setForm(f => { const arr = [...(f.data.valves || [])]; arr[i] = { ...arr[i], [k]: v }; return { ...f, data: { ...f.data, valves: arr } }; });
-  const setValvePhotos = (i, ph) => setForm(f => { const arr = [...(f.data.valves || [])]; arr[i] = { ...arr[i], photos: ph }; return { ...f, data: { ...f.data, valves: arr } }; });
-  const removeValve = i => setForm(f => ({ ...f, data: { ...f.data, valves: (f.data.valves || []).filter((_, j) => j !== i) } }));
-
-  // cotes
-  const nextLettre = () => String.fromCharCode(65 + (d.cotes || []).length);
-  const addCote = () => setForm(f => ({ ...f, data: { ...f.data, cotes: [...(f.data.cotes || []), { lettre: String.fromCharCode(65 + (f.data.cotes || []).length), description: "", valeur: "", etat: "" }] } }));
-  const setCote = (i, k, v) => setForm(f => { const arr = [...(f.data.cotes || [])]; arr[i] = { ...arr[i], [k]: v }; return { ...f, data: { ...f.data, cotes: arr } }; });
-  const removeCote = i => setForm(f => ({ ...f, data: { ...f.data, cotes: (f.data.cotes || []).filter((_, j) => j !== i) } }));
-
-  // matériel d'installation (tags multi-sélection)
-  const toggleMateriel = m => setForm(f => { const cur = f.data.installation_materiel || []; const arr = cur.includes(m) ? cur.filter(x => x !== m) : [...cur, m]; return { ...f, data: { ...f.data, installation_materiel: arr } }; });
-
-  // blocs photo obligatoires avant de pouvoir passer le statut à "Complété (chantier)"
-  function blocsPhotoManquants(f) {
-    const dd = f.data;
-    const missing = [];
-    if (!(f.photos.profil || []).length) missing.push("Profil (photos)");
-    if (!(f.photos.plan || []).length) missing.push("Plan de base");
-    (dd.valves || []).forEach((v, i) => { if (!(v.photos || []).length) missing.push("Valve " + (v.repere || i + 1)); });
-    if ((dd.cotes || []).length && !(f.photos.cotes || []).length) missing.push("Cotes (quelques photos de vérification)");
-    if (!(f.photos.installation || []).length) missing.push("Installation (matériel / lignes de vie)");
-    if (!(f.photos.contexte || []).length) missing.push("Contexte autour du coussin");
-    return missing;
-  }
-
-  async function save() {
-    if (!form.ref.trim()) { setErr("La référence du formulaire est obligatoire."); return; }
-    if (d.statut === "Complété (chantier)") {
-      const missing = blocsPhotoManquants(form);
-      if (missing.length) {
-        setErr("Impossible de finaliser en « Complété (chantier) » : photo(s) manquante(s) — " + missing.join(", ") + ". Ajoutez les photos ou repassez le statut en « Préparé par le BE ».");
-        return;
-      }
-    }
-    setSaving(true); setErr("");
-    const payload = {
-      ref: form.ref.trim(), type: "releve_cotes_etfe", projet: form.projet || "",
-      date: toISO(form.date) || TODAY,
-      auteur: (form.data.ingenieur || "") + (form.releveurs.length ? " / " + form.releveurs.join(", ") : ""),
-      data: JSON.stringify({ ...form.data, releveurs: form.releveurs }),
-      photos: JSON.stringify(form.photos),
-      note: form.data.observations || ""
-    };
-    try {
-      if (existing) await formulaires.update(existing.id, payload);
-      else await formulaires.add(payload);
-      onDone();
-    } catch (e) { setErr(e.message || "Erreur d'enregistrement"); }
-    setSaving(false);
-  }
-
-  return React.createElement("div", { style: { fontFamily: "'DM Sans',sans-serif" } },
-    React.createElement(Btn, { onClick: onDone }, "← Retour"),
-    React.createElement("div", { style: { fontSize: 18, fontWeight: 700, color: "#1C1C1C", marginTop: 12 } }, (existing ? "Compléter" : "Nouveau") + " — Relevé de cotes coussin ETFE"),
-    React.createElement("div", { style: { fontFamily: "'DM Mono',monospace", color: "#CC2222", fontSize: 13, marginBottom: 8 } }, "Réf. " + (form.ref || "—")),
-    React.createElement("div", { style: { fontSize: 12, color: "#3A3A3A", background: "#F2F0ED", borderLeft: "3px solid #CC2222", padding: 10, borderRadius: 4, marginBottom: 4 } },
-      "Workflow : le bureau d'études crée la fiche, charge le plan de base (cotes lettrées) et pré-remplit les infos connues, puis enregistre en « Préparé par le BE ». Les monteurs rouvrent la fiche sur le chantier, complètent les cotes et les photos, puis enregistrent en « Complété (chantier) »."),
-
-    Sec("Identification"),
-    React.createElement("div", { style: gridStyle },
-      React.createElement(FG, { label: "Référence du formulaire *" }, React.createElement(Inp, { value: form.ref, onChange: e => setF("ref", e.target.value), placeholder: "RC-ETFE-…" })),
-      React.createElement(FG, { label: "Statut" }, React.createElement(Sel, { value: d.statut || "", onChange: e => setD("statut", e.target.value) },
-        ["Préparé par le BE", "Complété (chantier)"].map(o => React.createElement("option", { key: o, value: o }, o)))),
-      React.createElement(FG, { label: "Préparé par (ingénieur / BE)" }, beMembres.length
-        ? React.createElement(Sel, { value: d.ingenieur || "", onChange: e => setD("ingenieur", e.target.value) }, React.createElement("option", { value: "" }, "—"), beMembres.map(m => React.createElement("option", { key: m.id, value: m.nom }, m.nom)))
-        : React.createElement(Inp, { value: d.ingenieur || "", onChange: e => setD("ingenieur", e.target.value) })),
-      React.createElement(FG, { label: "Projet" }, React.createElement(Sel, { value: form.projet, onChange: e => setF("projet", e.target.value) },
-        React.createElement("option", { value: "" }, "—"),
-        projetsList.map(p => React.createElement("option", { key: p.id, value: p.name }, p.name)))),
-      React.createElement(FG, { label: "Date" }, React.createElement(Inp, { type: "date", value: form.date, onChange: e => setF("date", e.target.value) })),
-      Champ("Repère du coussin", "coussin_repere", "ex : C-14")
-    ),
-    React.createElement(FG, { label: "Relevé par (équipe chantier — plusieurs possibles)" },
-      chantierMembres.length === 0
-        ? React.createElement("div", { style: { fontSize: 12, color: "#CC2222", fontStyle: "italic" } }, "Aucun membre avec le rôle Chantier. Ajoutez le rôle Chantier dans le module Équipe.")
-        : React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-            chantierMembres.map(m => {
-              const on = form.releveurs.includes(m.nom);
-              return React.createElement("button", {
-                key: m.id, type: "button", onClick: () => toggleReleveur(m.nom),
-                style: { padding: "6px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans',sans-serif", fontWeight: on ? 700 : 500, border: "1.5px solid " + (on ? "#CC2222" : "#DDDDDD"), background: on ? "#CC2222" : "#FAFAFA", color: on ? "#fff" : "#7A7A7A" }
-              }, (on ? "✓ " : "") + m.nom);
-            })
-          )
-    ),
-    React.createElement("div", { style: gridStyle }, Champ("Localisation sur l'ouvrage", "localisation", "zone / travée / axe")),
-
-    Sec("Configuration du coussin"),
-    React.createElement("div", { style: gridStyle },
-      ChampSel("Typologie (définit le nombre de couches)", "typologie", Object.keys(TYPO_COUCHES)),
-      Champ("Pression nominale (Pa)", "pression_nominale", "250 – 300", "number"),
-      Champ("Pression sous neige (Pa)", "pression_neige", "≤ 600", "number")
-    ),
-    nbC > 0 && React.createElement("div", { style: { marginTop: 10 } },
-      React.createElement("div", { style: { fontSize: 11, color: "#7A7A7A", marginBottom: 8 } },
-        "Détail de chaque membrane, ext→int — " + nbC + " couche" + (nbC > 1 ? "s" : "") + ". Le traitement (sérigraphie, filtre IR…) peut être présent sur une ou plusieurs couches — à cocher couche par couche."),
-      Array.from({ length: nbC }).map((_, i) => {
-        const treats = (d.teintes || [])[i] || [];
-        return React.createElement("div", { key: i, style: { border: "0.5px solid #DDDDDD", borderRadius: 8, padding: 10, marginBottom: 8, background: "#FAFAFA" } },
-          React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#CC2222", marginBottom: 6 } },
-            "Couche " + (i + 1) + (i === 0 ? " (ext.)" : i === nbC - 1 ? " (int.)" : " (interm.)")),
-          React.createElement("div", { style: { display: "grid", gridTemplateColumns: isMobile ? "1fr" : "160px 1fr", gap: 8, alignItems: "start" } },
-            React.createElement(FG, { label: "Épaisseur (µm)" }, React.createElement(Inp, { type: "number", value: (d.epaisseurs || [])[i] || "", onChange: e => setEpaisseur(i, e.target.value), placeholder: "µm" })),
-            React.createElement("div", null,
-              React.createElement("div", { style: { fontSize: 11, color: "#7A7A7A", marginBottom: 4 } }, "Traitement / teinte de cette couche"),
-              React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-                ["Transparent", "Sérigraphié", "Filtre IR", "Autre"].map(t => {
-                  const on = treats.includes(t);
-                  return React.createElement("button", {
-                    key: t, type: "button", onClick: () => toggleTeinteCouche(i, t),
-                    style: { padding: "5px 10px", borderRadius: 16, cursor: "pointer", fontSize: 11, fontFamily: "'DM Sans',sans-serif", fontWeight: on ? 700 : 500, border: "1.5px solid " + (on ? "#CC2222" : "#DDDDDD"), background: on ? "#CC2222" : "#FFF", color: on ? "#fff" : "#7A7A7A" }
-                  }, (on ? "✓ " : "") + t);
-                })
-              ),
-              treats.includes("Autre") && React.createElement("div", { style: { marginTop: 6 } },
-                React.createElement(Inp, { value: (d.teintes_autre || [])[i] || "", onChange: e => setTeinteAutre(i, e.target.value), placeholder: "précisez le traitement « Autre »…" }))
-            )
-          )
-        );
-      })
-    ),
-
-    Sec("Profilés aluminium & fixation"),
-    React.createElement("div", { style: gridStyle },
-      ChampSel("Type de profil alu", "profil_type", ["Keder simple", "Keder double (intermédiaire)", "Profil de rive", "Profil de base + capot", "Autre"]),
-      React.createElement(FG, { label: "Finition" }, React.createElement(Inp, { value: d.profil_finition || "", onChange: e => setD("profil_finition", e.target.value), placeholder: "Anodisé / Laqué RAL…" })),
-      Champ("Ø jonc / keder (mm)", "jonc_diametre", "6 – 12", "number"),
-      Champ("Joint EPDM (dureté Shore)", "joint_epdm", "70 Shore A"),
-      ChampSel("Structure porteuse", "structure_porteuse", ["Acier", "Bois", "Béton", "Aluminium", "Autre"])
-    ),
-    React.createElement(PhotoZone, { refValue: form.ref, subfolder: "Profil", photos: form.photos.profil, onChange: arr => setPhotos("profil", arr), label: "Photos du profil ou dessin à la main", hint: "Sous-dossier « Profil ».", isMobile: isMobile, required: true }),
-
-    Sec("Pocket ETFE (jonc / keder)"),
-    React.createElement("div", { style: { fontSize: 12, color: "#3A3A3A", background: "#F2F0ED", borderLeft: "3px solid #CC2222", padding: 10, borderRadius: 4, marginBottom: 8 } },
-      "Dimensions de la pocket où vient se loger le jonc dans le profil."),
-    React.createElement("div", { style: gridStyle },
-      Champ("Longueur de pocket (m)", "pocket_longueur", "", "number"),
-      Champ("Cote jonc → system line (mm)", "pocket_cote_jonc_systemline", "", "number"),
-      Champ("Épaisseur membrane de pocket (µm)", "pocket_epaisseur_membrane", "", "number"),
-      Champ("Épaisseur / Ø du jonc (mm)", "pocket_jonc_epaisseur", "", "number"),
-      ChampSel("Matière du jonc", "pocket_jonc_matiere", ["PVC souple", "Polyester tressé", "Silicone", "Autre"])
-    ),
-
-    Sec("Soufflerie & réseau d'air"),
-    React.createElement("div", { style: gridStyle },
-      ChampSel("Type de réseau d'air", "reseau_type", ["SAS", "OAS", "D-OAS", "CAS", "D-CAS", "Autre"]),
-      Champ("Localisation de la soufflerie", "soufflerie_localisation", "local technique…"),
-      Champ("Modèle de soufflerie", "soufflerie_modele", "ex : Nolting DG-400"),
-      ChampSel("Déshumidificateur", "deshumidificateur", ["Aucun", "DST DR-010B", "Autre"]),
-      Champ("Tuyau d'alimentation — Ø (mm)", "tuyau_diametre", "ex : 50", "number"),
-      Champ("Tuyau — matériau / type", "tuyau_materiau", "PVC souple, gaine…"),
-      Champ("Tuyau — longueur (m)", "tuyau_longueur", "", "number")
-    ),
-
-    React.createElement("div", { style: { marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center" } },
-      React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#1C1C1C", borderLeft: "3px solid #CC2222", paddingLeft: 8 } }, "Valves (" + (d.valves || []).length + ")"),
-      React.createElement(Btn, { small: true, primary: true, onClick: addValve }, "+ Ajouter une valve")
-    ),
-    React.createElement("div", { style: { fontSize: 11, color: "#7A7A7A", margin: "4px 0 8px" } }, "Ajoutez chaque valve du coussin (entrée d'air, clapet anti-retour, sortie, etc.) avec sa localisation, la couche concernée, son Ø et ses photos."),
-    (d.valves || []).length === 0 && React.createElement("div", { style: { fontSize: 12, color: "#AAAAAA", fontStyle: "italic", marginBottom: 8 } }, "Aucune valve renseignée."),
-    (d.valves || []).map((v, i) => React.createElement("div", { key: i, style: { border: "0.5px solid #DDDDDD", borderRadius: 8, padding: 10, marginBottom: 8, background: "#FAFAFA" } },
-      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 } },
-        React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#CC2222" } }, "Valve " + (i + 1)),
-        React.createElement(Btn, { small: true, danger: true, onClick: () => removeValve(i) }, "Supprimer")),
-      React.createElement("div", { style: { display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.4fr 1fr 1fr", gap: 8 } },
-        React.createElement(FG, { label: "Type de valve" }, React.createElement(Sel, { value: v.type || "", onChange: e => setValve(i, "type", e.target.value) },
-          React.createElement("option", { value: "" }, "—"), VALVE_TYPES.map(o => React.createElement("option", { key: o, value: o }, o)))),
-        React.createElement(FG, { label: "Repère" }, React.createElement(Inp, { value: v.repere || "", onChange: e => setValve(i, "repere", e.target.value), placeholder: "ex : V1" })),
-        React.createElement(FG, { label: "Ø (mm)" }, React.createElement(Inp, { type: "number", value: v.diametre || "", onChange: e => setValve(i, "diametre", e.target.value) }))
-      ),
-      v.type === "Autre" && React.createElement(FG, { label: "Préciser le type de valve" }, React.createElement(Inp, { value: v.type_autre || "", onChange: e => setValve(i, "type_autre", e.target.value), placeholder: "précisez…" })),
-      React.createElement("div", { style: { display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 8, marginTop: 8 } },
-        React.createElement(FG, { label: "Localisation sur le coussin" }, React.createElement(Inp, { value: v.localisation || "", onChange: e => setValve(i, "localisation", e.target.value), placeholder: "angle NE, rive sud…" })),
-        React.createElement(FG, { label: "Couche du coussin" }, React.createElement(Sel, { value: v.couche || "", onChange: e => setValve(i, "couche", e.target.value) },
-          React.createElement("option", { value: "" }, "—"), coucheOptions.map(o => React.createElement("option", { key: o, value: o }, o))))
-      ),
-      React.createElement(PhotoZone, { refValue: form.ref, subfolder: "Valve-" + (v.repere || (i + 1)), photos: v.photos || [], onChange: ph => setValvePhotos(i, ph), label: null, hint: "Sous-dossier « Valve-" + (v.repere || (i + 1)) + " ».", isMobile: isMobile, required: true })
-    )),
-
-    Sec("Cotes — d'après le plan de base (préparé par le BE)"),
-    React.createElement("div", { style: { fontSize: 12, color: "#3A3A3A", background: "#F2F0ED", borderLeft: "3px solid #CC2222", padding: 10, borderRadius: 4, marginBottom: 8 } },
-      "Le BE charge ici le plan de base (cotes repérées par lettres A, B, C…). Il apparaît ci-dessous. Les monteurs saisissent ensuite la valeur de chaque cote lettrée."),
-    React.createElement(PhotoZone, { refValue: form.ref, subfolder: "Plan", photos: form.photos.plan, onChange: arr => setPhotos("plan", arr), label: "Plan de base (cotes lettrées)", hint: "Photo ou PDF (export CAO) — sous-dossier « Plan ».", isMobile: isMobile, accept: "image/*,application/pdf", required: true }),
-    form.photos.plan.length > 0 && React.createElement("div", { style: { marginTop: 8, marginBottom: 8 } },
-      form.photos.plan.map((p, i) => React.createElement("a", { key: i, href: p.url, target: "_blank", rel: "noopener" },
-        React.createElement("img", { src: p.thumbnail || p.url, alt: "plan", style: { width: "100%", maxWidth: 680, border: "1px solid #DDDDDD", borderRadius: 8, display: "block", marginBottom: 6 } })))
-    ),
-    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 } },
-      React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: "#3A3A3A" } }, "Cotes relevées"),
-      React.createElement(Btn, { small: true, onClick: addCote }, "+ Ajouter la cote " + nextLettre())
-    ),
-    (d.cotes || []).length > 0 && React.createElement("div", { style: { border: "0.5px solid #DDDDDD", borderRadius: 8, overflow: "hidden", marginTop: 8 } },
-      React.createElement("div", { style: { display: "grid", gridTemplateColumns: "44px 1fr 90px 110px 32px", gap: 6, padding: "6px 8px", background: "#F2F0ED", fontSize: 11, fontWeight: 600, color: "#7A7A7A" } },
-        React.createElement("div", null, "Cote"), React.createElement("div", null, "Description"), React.createElement("div", null, "Valeur mm"), React.createElement("div", null, "État"), React.createElement("div", null, "")),
-      (d.cotes || []).map((c, i) => React.createElement("div", { key: i, style: { display: "grid", gridTemplateColumns: "44px 1fr 90px 110px 32px", gap: 6, padding: "6px 8px", borderTop: "1px solid #F5F5F5", alignItems: "center" } },
-        React.createElement(Inp, { value: c.lettre || "", onChange: e => setCote(i, "lettre", e.target.value) }),
-        React.createElement(Inp, { value: c.description || "", onChange: e => setCote(i, "description", e.target.value), placeholder: "ex : longueur rive nord" }),
-        React.createElement(Inp, { type: "number", value: c.valeur || "", onChange: e => setCote(i, "valeur", e.target.value) }),
-        React.createElement(Sel, { value: c.etat || "", onChange: e => setCote(i, "etat", e.target.value) }, ["", "Gonflé", "Dégonflé"].map(o => React.createElement("option", { key: o, value: o }, o || "—"))),
-        React.createElement("button", { onClick: () => removeCote(i), style: { background: "none", border: "none", cursor: "pointer", color: "#CC2222", fontSize: 13 } }, "✕")
-      ))
-    ),
-    React.createElement(PhotoZone, {
-      refValue: form.ref, subfolder: "Cotes", photos: form.photos.cotes, onChange: arr => setPhotos("cotes", arr),
-      label: "Photos de vérification des cotes", hint: "Pas besoin d'une photo par cote — quelques exemples suffisent pour s'assurer que le principe de prise est correct. Sous-dossier « Cotes ».",
-      isMobile: isMobile, required: true
-    }),
-
-    Sec("Installation sur site (montage du coussin)"),
-    React.createElement("div", { style: { fontSize: 12, color: "#3A3A3A", background: "#F2F0ED", borderLeft: "3px solid #CC2222", padding: 10, borderRadius: 4, marginBottom: 8 } },
-      "À compléter par les monteurs sur place : matériel nécessaire (à préparer par l'atelier), moyens disponibles pour les lignes de vie, et moyens pour s'appuyer / tirer le coussin dans le profil."),
-    React.createElement(FG, { label: "Matériel nécessaire pour les monteurs (plusieurs choix possibles)" },
-      React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-        MATERIEL_INSTALLATION.map(m => {
-          const on = (d.installation_materiel || []).includes(m);
-          return React.createElement("button", {
-            key: m, type: "button", onClick: () => toggleMateriel(m),
-            style: { padding: "6px 12px", borderRadius: 20, cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans',sans-serif", fontWeight: on ? 700 : 500, border: "1.5px solid " + (on ? "#CC2222" : "#DDDDDD"), background: on ? "#CC2222" : "#FAFAFA", color: on ? "#fff" : "#7A7A7A" }
-          }, (on ? "✓ " : "") + m);
-        })
-      )
-    ),
-    (d.installation_materiel || []).includes("Autre") && React.createElement(FG, { label: "Préciser le matériel « Autre »" },
-      React.createElement(Inp, { value: d.installation_materiel_autre || "", onChange: e => setD("installation_materiel_autre", e.target.value), placeholder: "précisez…" })),
-    React.createElement("div", { style: gridStyle },
-      ChampSel("Lignes de vie — moyens sur place", "lignes_vie_type", LIGNES_VIE_TYPES),
-      ChampSel("Moyens pour tirer / rentrer le coussin dans le profil", "moyens_tirage_type", MOYENS_TIRAGE_TYPES),
-      ChampSel("Accessibilité en hauteur", "accessibilite_type", ACCESSIBILITE_TYPES)
-    ),
-    React.createElement(FG, { label: "Précisions — lignes de vie (points d'ancrage, hauteur, structure porteuse concernée…)" },
-      React.createElement("textarea", { value: d.lignes_vie_description || "", onChange: e => setD("lignes_vie_description", e.target.value), style: { width: "100%", minHeight: 50, padding: 8, borderRadius: 6, border: "1px solid #DDDDDD", fontSize: 13, fontFamily: "'DM Sans',sans-serif", boxSizing: "border-box", resize: "vertical" } })),
-    React.createElement(FG, { label: "Précisions — moyens de traction / mise en place" },
-      React.createElement("textarea", { value: d.moyens_tirage_description || "", onChange: e => setD("moyens_tirage_description", e.target.value), style: { width: "100%", minHeight: 50, padding: 8, borderRadius: 6, border: "1px solid #DDDDDD", fontSize: 13, fontFamily: "'DM Sans',sans-serif", boxSizing: "border-box", resize: "vertical" } })),
-    React.createElement(PhotoZone, { refValue: form.ref, subfolder: "Installation", photos: form.photos.installation, onChange: arr => setPhotos("installation", arr), label: "Photos du matériel / points d'ancrage / lignes de vie sur place", hint: "Sous-dossier « Installation ».", isMobile: isMobile, required: true }),
-
-    Sec("Contexte autour du coussin"),
-    React.createElement("div", { style: { fontSize: 12, color: "#3A3A3A", background: "#F2F0ED", borderLeft: "3px solid #CC2222", padding: 10, borderRadius: 4, marginBottom: 8 } },
-      "Photos de l'environnement immédiat du coussin (accès, obstacles, structure porteuse, réseaux existants…), utiles pour préparer l'intervention."),
-    React.createElement(PhotoZone, { refValue: form.ref, subfolder: "Contexte", photos: form.photos.contexte, onChange: arr => setPhotos("contexte", arr), label: "Photos du contexte", hint: "Sous-dossier « Contexte ».", isMobile: isMobile, required: true }),
-
-    Sec("Observations"),
-    React.createElement("textarea", {
-      value: d.observations || "", onChange: e => setD("observations", e.target.value),
-      placeholder: "Remarques, anomalies, points d'attention…",
-      style: { width: "100%", minHeight: 70, padding: 10, borderRadius: 6, border: "1px solid #DDDDDD", fontSize: 13, fontFamily: "'DM Sans',sans-serif", boxSizing: "border-box", resize: "vertical" }
-    }),
-
-    err && React.createElement("div", { style: { color: "#CC2222", fontSize: 12, marginTop: 12, background: "#FFF0F0", border: "1px solid #FFD0D0", borderRadius: 6, padding: "8px 12px" } }, err),
-    React.createElement("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16, borderTop: "1px solid #EEEEEE", paddingTop: 14 } },
-      React.createElement(Btn, { onClick: onDone }, "Annuler"),
-      React.createElement(Btn, { onClick: () => exportFicheETFEPDF({ ref: form.ref, projet: form.projet }, form.data, form.photos) }, "📄 Export PDF"),
-      React.createElement(Btn, { primary: true, disabled: saving || !form.ref.trim(), onClick: save }, saving ? "Enregistrement…" : (existing ? "Enregistrer les modifications" : "Enregistrer le formulaire"))
-    )
-  );
-}
 
 function ChantierWrapper({ missionProps, camions, kilometrage, formulaires, team, user, isMobile }) {
   const [sub, setSub] = useState("missions");
+  const [iframeSrcRC, setIframeSrcRC] = useState("");
+  const [iframeHeightRC, setIframeHeightRC] = useState(500);
+  const iframeRefRC = useRef(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const auth = await ensureAuth();
+        if (!alive) return;
+        const params = new URLSearchParams({ email: auth.email, token: auth.token, gas: GAS_URL });
+        setIframeSrcRC("formulaires/releve-cotes-etfe.html?" + params.toString());
+      } catch (e) { if (alive) setIframeSrcRC(""); }
+    })();
+    return () => { alive = false; };
+  }, []);
+  useEffect(() => {
+    const onMsg = e => {
+      if (!e.data || e.data.type !== "hp-tool-resize") return;
+      if (iframeRefRC.current && e.source !== iframeRefRC.current.contentWindow) return;
+      setIframeHeightRC(Math.max(300, Math.ceil(e.data.height) + 4));
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
   const tab = (id, label) => React.createElement("button", {
     key: id,
     onClick: () => setSub(id),
@@ -18996,7 +18455,15 @@ function ChantierWrapper({ missionProps, camions, kilometrage, formulaires, team
     ),
     sub === "missions" && React.createElement(MissionModule, missionProps),
     sub === "kilometrage" && React.createElement(Kilometrage, { camions: camions, kilometrage: kilometrage, team: team, user: user, isMobile: isMobile }),
-    sub === "formulaire" && React.createElement(FormulairesModule, { formulaires: formulaires, projets: missionProps.projects, team: team, user: user, isMobile: isMobile })
+    sub === "formulaire" && React.createElement("div", null,
+      !iframeSrcRC && React.createElement("div", { style: { fontSize: 13, color: "#7A7A7A", padding: 20, textAlign: "center" } }, "Chargement…"),
+      iframeSrcRC && React.createElement("iframe", {
+        ref: iframeRefRC,
+        src: iframeSrcRC,
+        style: { width: "100%", height: iframeHeightRC, border: "none", display: "block", overflow: "hidden" },
+        scrolling: "no"
+      })
+    )
   );
 }
 // ═══ Module Suivi des véhicules (Chantier) — v4.6.33 : rappel relevé km déplacé à l'édition (✎), onglet Sheets renommé Kilometrage → SuiviVehicules (cf. Code.gs setupV333) ═══
