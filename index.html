@@ -388,6 +388,106 @@ function getMissionStockItems(m){
   if(m.stockRef)return [{ref:m.stockRef,qty:Number(m.stockQty)||1}];
   return[];
 }
+// Recalcule les heures réelles d'une étape liée à une phase du Suivi, à partir des coches déjà
+// enregistrées (indépendamment de toggleUnite — utilisé pour un recalcul manuel à la demande, ex.
+// quand nbPersonnes a été renseigné après avoir coché les cases, ou si le calcul automatique n'a pas
+// abouti au bon moment). Retourne null si pas assez d'info pour calculer (étape non liée, ou aucune
+// coche exploitable sur la phase).
+// Calcule les heures RÉELLEMENT travaillées entre deux instants, en tenant compte des horaires de
+// chantier (ex. 8h-17h) et de la pause déjeuner — pour qu'une étape à cheval sur plusieurs jours ne
+// compte pas les nuits comme du temps de travail. Pour chaque jour calendaire entre début et fin, on
+// prend l'intersection avec la fenêtre de travail de ce jour, puis on déduit la pause déjeuner si une
+// partie du travail de ce jour tombe dans la fenêtre travaillée.
+function heuresTravailEntre(debut, fin, heureDebut, heureFin, pauseDejMinutes) {
+  if (!(fin > debut)) return 0;
+  const [hD, mD] = String(heureDebut || "08:00").split(":").map(Number);
+  const [hF, mF] = String(heureFin || "17:00").split(":").map(Number);
+  const pause = Number(pauseDejMinutes) || 0;
+  let total = 0;
+  let jour = new Date(debut.getFullYear(), debut.getMonth(), debut.getDate());
+  const dernierJour = new Date(fin.getFullYear(), fin.getMonth(), fin.getDate());
+  let garde = 0;
+  while (jour <= dernierJour && garde < 400) {
+    garde++;
+    const debutTravail = new Date(jour.getFullYear(), jour.getMonth(), jour.getDate(), hD || 0, mD || 0, 0);
+    const finTravail = new Date(jour.getFullYear(), jour.getMonth(), jour.getDate(), hF || 0, mF || 0, 0);
+    const s = Math.max(debut.getTime(), debutTravail.getTime());
+    const e = Math.min(fin.getTime(), finTravail.getTime());
+    if (e > s) {
+      let h = (e - s) / 3600000;
+      h = Math.max(0, h - pause / 60);
+      total += h;
+    }
+    jour = new Date(jour.getFullYear(), jour.getMonth(), jour.getDate() + 1);
+  }
+  return total;
+}
+// Recalcule les heures réelles d'une étape liée à une phase du Suivi, à partir des coches déjà
+// enregistrées (indépendamment de toggleUnite — utilisé pour un recalcul manuel à la demande, ex.
+// quand nbPersonnes a été renseigné après avoir coché les cases, ou si le calcul automatique n'a pas
+// abouti au bon moment). Retourne null si pas assez d'info pour calculer (étape non liée, ou aucune
+// coche exploitable sur la phase). Le "bornes" démarrage/finalisation peut venir soit de deux opérations
+// nommées "Démarrage"/"Finalisation" (convention textuelle), soit d'une seule opération dont le type
+// d'unité est "demarrage_finition" (unité 0 = démarrage, unité 1 = finalisation) — les deux sont
+// équivalentes pour le calcul.
+function calculerHeuresPhaseLiee(etapeLiee, lignesFabMission, mission) {
+  const note = String(etapeLiee.note || "");
+  if (!note.startsWith("fab:")) return null;
+  const [fam, ph] = note.slice(4).split("|||");
+  const lignesPhase = (lignesFabMission || []).filter(l => l.famille === fam && l.phase === ph);
+  if (!lignesPhase.length) return null;
+  const normOp = s => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const parseHist = l => {
+    try {
+      return JSON.parse(l.historique_coches || "[]");
+    } catch (e) {
+      return [];
+    }
+  };
+  const whensDe = l => parseHist(l).map(h => h.when).filter(Boolean).map(w => new Date(String(w).replace(" ", "T"))).filter(d => !isNaN(d));
+  const whensIdx = (l, idx) => parseHist(l).filter(h => h.idx === idx).map(h => h.when).filter(Boolean).map(w => new Date(String(w).replace(" ", "T"))).filter(d => !isNaN(d));
+  const nbPers = Number(etapeLiee.nbPersonnes) || 1;
+  const heureDebut = mission?.heureDebutTravail || "08:00";
+  const heureFin = mission?.heureFinTravail || "17:00";
+  const pauseDej = mission?.pauseDejMinutes || 60;
+  let whensD = [],
+    whensF = [];
+  const ligneUnite = lignesPhase.find(l => l.type_unite === "demarrage_finition");
+  if (ligneUnite) {
+    whensD = whensIdx(ligneUnite, 0);
+    whensF = whensIdx(ligneUnite, 1);
+  } else {
+    const ligneDemarrage = lignesPhase.find(l => normOp(l.operation) === "demarrage");
+    const ligneFinalisation = lignesPhase.find(l => normOp(l.operation) === "finalisation");
+    if (ligneDemarrage) whensD = whensDe(ligneDemarrage);
+    if (ligneFinalisation) whensF = whensDe(ligneFinalisation);
+  }
+  if (whensD.length || whensF.length) {
+    if (whensD.length && whensF.length) {
+      const tD = new Date(Math.min(...whensD.map(d => d.getTime())));
+      const tF = new Date(Math.max(...whensF.map(d => d.getTime())));
+      const dureeHeures = heuresTravailEntre(tD, tF, heureDebut, heureFin, pauseDej);
+      if (dureeHeures > 0) return Math.round(dureeHeures * nbPers * 100) / 100;
+    }
+    return null;
+  }
+  let tousLesWhen = [];
+  for (const l of lignesPhase) tousLesWhen.push(...whensDe(l));
+  if (tousLesWhen.length < 2) return null;
+  const parJour = {};
+  for (const d of tousLesWhen) {
+    const jourKey = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    if (!parJour[jourKey]) parJour[jourKey] = [];
+    parJour[jourKey].push(d.getTime());
+  }
+  let dureeHeures = 0;
+  for (const jourKey of Object.keys(parJour)) {
+    const times = parJour[jourKey];
+    if (times.length >= 2) dureeHeures += (Math.max(...times) - Math.min(...times)) / 3600000;
+  }
+  if (dureeHeures <= 0) return null;
+  return Math.round(dureeHeures * nbPers * 100) / 100;
+}
 function calcEstimHeuresAtelier(suiviFabRows, moisFiltre=null){
   const MOIS_FR=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
   const getMois=dateStr=>{if(!dateStr)return"";const d=new Date(dateStr+"T00:00:00");return MOIS_FR[d.getMonth()]||"";};
@@ -539,7 +639,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.17";
+const VERSION = "v4.7.20";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -9980,6 +10080,9 @@ function SuiviFabComponent({
         length: nb
       }, (_, i) => alpha[i] || String(i + 1));
     }
+    if (type === "demarrage_finition") {
+      return ["Démarrage", "Finalisation"];
+    }
     return Array.from({
       length: nb
     }, (_, i) => String(i + 1));
@@ -10035,37 +10138,45 @@ function SuiviFabComponent({
         const nouveauStatut = phaseTerminee ? "terminé" : "en cours";
         // Heures calculées automatiquement, avec deux méthodes possibles :
         // 1) Si la phase contient une opération "démarrage" ET une opération "finalisation" (marqueurs
-        //    volontairement posés par l'équipe), on prend l'écart entre la 1ère coche de "démarrage" et
-        //    la dernière coche de "finalisation" — c'est le signal le plus fiable, peu importe le nombre
-        //    de jours entre les deux.
+        //    textuels), OU une seule opération dont le type d'unité est "demarrage_finition" (unité 0 =
+        //    démarrage, unité 1 = finalisation), on prend l'écart entre la 1ère coche de démarrage et la
+        //    dernière coche de finalisation, MAIS uniquement les heures réellement travaillées (horaires
+        //    de chantier de la mission, pause déjeuner déduite) — pas le temps calendaire brut.
         // 2) Sinon (pas de marqueurs dédiés), repli sur l'ancienne heuristique : on additionne, jour par
-        //    jour, l'écart entre 1ère et dernière coche de la journée, toutes opérations confondues — ce
-        //    qui évite de compter les nuits/week-ends quand il n'y a pas de bornes explicites.
+        //    jour, l'écart entre 1ère et dernière coche de la journée, toutes opérations confondues.
         // Dans les deux cas, le résultat est multiplié par le nombre de personnes renseigné sur l'étape.
         const normOp = s => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-        const whensDe = l => {
-          let hist = [];
+        const parseHist = l => {
           try {
-            hist = JSON.parse(l.id === ligne.id ? JSON.stringify(historique) : l.historique_coches || "[]");
-          } catch (e) {}
-          return hist.map(h => h.when).filter(Boolean).map(w => new Date(String(w).replace(" ", "T"))).filter(d => !isNaN(d));
-        };
-        const ligneDemarrage = lignesPhase.find(l => normOp(l.operation) === "demarrage");
-        const ligneFinalisation = lignesPhase.find(l => normOp(l.operation) === "finalisation");
-        let nouvellesHeures = etapeLiee.heures;
-        if (ligneDemarrage && ligneFinalisation) {
-          const whensD = whensDe(ligneDemarrage);
-          const whensF = whensDe(ligneFinalisation);
-          if (whensD.length && whensF.length) {
-            const tD = Math.min(...whensD.map(d => d.getTime()));
-            const tF = Math.max(...whensF.map(d => d.getTime()));
-            if (tF > tD) {
-              const dureeHeures = (tF - tD) / 3600000;
-              const nbPers = Number(etapeLiee.nbPersonnes) || 1;
-              nouvellesHeures = Math.round(dureeHeures * nbPers * 100) / 100;
-            }
+            return JSON.parse(l.id === ligne.id ? JSON.stringify(historique) : l.historique_coches || "[]");
+          } catch (e) {
+            return [];
           }
+        };
+        const whensDe = l => parseHist(l).map(h => h.when).filter(Boolean).map(w => new Date(String(w).replace(" ", "T"))).filter(d => !isNaN(d));
+        const whensIdx = (l, i) => parseHist(l).filter(h => h.idx === i).map(h => h.when).filter(Boolean).map(w => new Date(String(w).replace(" ", "T"))).filter(d => !isNaN(d));
+        let nouvellesHeures = etapeLiee.heures;
+        let whensD = [],
+          whensF = [];
+        const ligneUnite = lignesPhase.find(l => l.type_unite === "demarrage_finition");
+        if (ligneUnite) {
+          whensD = whensIdx(ligneUnite, 0);
+          whensF = whensIdx(ligneUnite, 1);
         } else {
+          const ligneDemarrage = lignesPhase.find(l => normOp(l.operation) === "demarrage");
+          const ligneFinalisation = lignesPhase.find(l => normOp(l.operation) === "finalisation");
+          if (ligneDemarrage) whensD = whensDe(ligneDemarrage);
+          if (ligneFinalisation) whensF = whensDe(ligneFinalisation);
+        }
+        if (whensD.length && whensF.length) {
+          const tD = new Date(Math.min(...whensD.map(d => d.getTime())));
+          const tF = new Date(Math.max(...whensF.map(d => d.getTime())));
+          const dureeHeures = heuresTravailEntre(tD, tF, mission.heureDebutTravail || "08:00", mission.heureFinTravail || "17:00", mission.pauseDejMinutes || 60);
+          if (dureeHeures > 0) {
+            const nbPers = Number(etapeLiee.nbPersonnes) || 1;
+            nouvellesHeures = Math.round(dureeHeures * nbPers * 100) / 100;
+          }
+        } else if (!whensD.length && !whensF.length) {
           let tousLesWhen = [];
           for (const l of lignesPhase) tousLesWhen.push(...whensDe(l));
           if (tousLesWhen.length >= 2) {
@@ -10601,13 +10712,17 @@ function SuiviFabComponent({
     type: "number",
     value: newPhaseForm.nb_unites,
     onChange: e => npf("nb_unites", +e.target.value || 10),
+    disabled: newPhaseForm.type_unite === "demarrage_finition",
     min: "1",
     max: "100"
   })), React.createElement(FG, {
     label: "Type d'unités"
   }, React.createElement("select", {
     value: newPhaseForm.type_unite,
-    onChange: e => npf("type_unite", e.target.value),
+    onChange: e => {
+      npf("type_unite", e.target.value);
+      if (e.target.value === "demarrage_finition") npf("nb_unites", 2);
+    },
     style: {
       width: "100%",
       padding: "7px 10px",
@@ -10620,7 +10735,9 @@ function SuiviFabComponent({
     value: "num"
   }, "Numérique (1, 2, 3...)"), React.createElement("option", {
     value: "alpha"
-  }, "Alphabétique (A, B, C...)")))), React.createElement("div", {
+  }, "Alphabétique (A, B, C...)"), React.createElement("option", {
+    value: "demarrage_finition"
+  }, "🔖 Démarrage / Finalisation (mesure le temps de travail)")))), React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
@@ -11014,6 +11131,8 @@ function MissionDetailPanel({
     const [fam, ph] = note.slice(4).split("|||");
     const lignesPh = lignesFab.filter(l => l.famille === fam && l.phase === ph);
     if (!lignesPh.length) return null;
+    const aTypeUnite = lignesPh.some(l => l.type_unite === "demarrage_finition");
+    if (aTypeUnite) return "bornes";
     const aDemarrage = lignesPh.some(l => normOpLocal(l.operation) === "demarrage");
     const aFinalisation = lignesPh.some(l => normOpLocal(l.operation) === "finalisation");
     return aDemarrage && aFinalisation ? "bornes" : "jour";
@@ -11150,7 +11269,17 @@ function MissionDetailPanel({
       fontSize: 12,
       color: "#CC2222"
     }
-  }, "⚠ ", enRetard.length, " étape", enRetard.length > 1 ? "s" : "", " en retard")), React.createElement("div", {
+  }, "⚠ ", enRetard.length, " étape", enRetard.length > 1 ? "s" : "", " en retard")), String(m.tags || "").includes("planificateur") && m.statut === "planifié" && React.createElement("div", {
+    style: {
+      background: "#EEF2FA",
+      border: "0.5px solid #C7D6F0",
+      borderRadius: 6,
+      padding: "8px 10px",
+      fontSize: 12,
+      color: "#1A5DAB",
+      marginBottom: 10
+    }
+  }, "📋 Mission créée depuis le Planificateur Général — complète les informations ci-dessous (stock, dépendances, notes...) pour la rendre active."), React.createElement("div", {
     style: {
       display: "flex",
       gap: 0,
@@ -11275,7 +11404,56 @@ function MissionDetailPanel({
       color: "#fff",
       fontWeight: 700
     }
-  }, "+ Étape"))), totalHeuresEtapes > 0 && React.createElement("div", {
+  }, "+ Étape"))), React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 16,
+      alignItems: "center",
+      flexWrap: "wrap",
+      padding: "8px 12px",
+      background: "#F9F9F9",
+      border: "0.5px solid #E8E6E2",
+      borderRadius: 8,
+      marginBottom: 10,
+      fontSize: 12
+    }
+  }, React.createElement("span", {
+    style: { color: "#7A7A7A", fontWeight: 600 }
+  }, "🕐 Horaires de chantier :"), React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 5 }
+  }, React.createElement("span", { style: { color: "#7A7A7A" } }, "Début"), React.createElement("input", {
+    type: "time",
+    defaultValue: m.heureDebutTravail || "08:00",
+    onBlur: async ev => {
+      const latestM = (sheet?.rows || []).find(x => String(x.id) === String(m.id)) || m;
+      if (ev.target.value !== String(latestM.heureDebutTravail || "08:00")) await sheet.update(m.id, { ...latestM, heureDebutTravail: ev.target.value });
+    },
+    style: { padding: "4px 6px", borderRadius: 5, border: "1px solid #DDD", fontSize: 12, fontFamily: "'DM Sans',sans-serif" }
+  })), React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 5 }
+  }, React.createElement("span", { style: { color: "#7A7A7A" } }, "Pause déj (min)"), React.createElement("input", {
+    type: "number",
+    min: 0,
+    step: 5,
+    defaultValue: m.pauseDejMinutes || 60,
+    onBlur: async ev => {
+      const latestM = (sheet?.rows || []).find(x => String(x.id) === String(m.id)) || m;
+      if (ev.target.value !== String(latestM.pauseDejMinutes || 60)) await sheet.update(m.id, { ...latestM, pauseDejMinutes: ev.target.value });
+    },
+    style: { width: 54, padding: "4px 6px", borderRadius: 5, border: "1px solid #DDD", fontSize: 12, fontFamily: "'DM Sans',sans-serif" }
+  })), React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 5 }
+  }, React.createElement("span", { style: { color: "#7A7A7A" } }, "Fin"), React.createElement("input", {
+    type: "time",
+    defaultValue: m.heureFinTravail || "17:00",
+    onBlur: async ev => {
+      const latestM = (sheet?.rows || []).find(x => String(x.id) === String(m.id)) || m;
+      if (ev.target.value !== String(latestM.heureFinTravail || "17:00")) await sheet.update(m.id, { ...latestM, heureFinTravail: ev.target.value });
+    },
+    style: { padding: "4px 6px", borderRadius: 5, border: "1px solid #DDD", fontSize: 12, fontFamily: "'DM Sans',sans-serif" }
+  })), React.createElement("span", {
+    style: { color: "#AAAAAA", fontStyle: "italic", fontSize: 11 }
+  }, "Utilisés pour calculer les heures réelles quand une étape \"Démarrage/Finalisation\" s'étale sur plusieurs jours.")), totalHeuresEtapes > 0 && React.createElement("div", {
     style: {
       display: "flex",
       gap: 16,
@@ -11491,27 +11669,36 @@ function MissionDetailPanel({
   }).map(e => {
     const retard = e.statut !== "terminé" && e.dateFin && toISO(e.dateFin) < TODAY;
     const methode = methodeHeures(e);
+    const getLatest = () => (etapes?.rows || []).find(x => x.id === e.id) || e;
     return React.createElement("div", {
       key: e.id,
       style: {
         display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        padding: "14px 16px",
+        marginBottom: 10,
+        borderRadius: 10,
+        background: "#FAFAF9",
+        border: "0.5px solid #E8E6E2"
+      }
+    }, React.createElement("div", {
+      style: {
+        display: "flex",
         alignItems: "flex-start",
-        gap: 10,
-        padding: "8px 0",
-        borderBottom: "0.5px solid #EEEEEE",
-        flexWrap: "wrap"
+        gap: 12
       }
     }, React.createElement("button", {
       onClick: async () => {
         await etapes.update(e.id, {
-          ...e,
+          ...getLatest(),
           statut: e.statut === "terminé" ? "à faire" : "terminé"
         });
       },
       style: {
-        width: 18,
-        height: 18,
-        borderRadius: 3,
+        width: 22,
+        height: 22,
+        borderRadius: 4,
         border: `2px solid ${etapeColor(e.statut)}`,
         background: e.statut === "terminé" ? etapeColor(e.statut) : "#fff",
         cursor: "pointer",
@@ -11524,25 +11711,25 @@ function MissionDetailPanel({
     }, e.statut === "terminé" && React.createElement("span", {
       style: {
         color: "#fff",
-        fontSize: 10
+        fontSize: 13
       }
     }, "✓")), React.createElement("div", {
       style: {
         flex: 1,
-        minWidth: 220
+        minWidth: 200
       }
     }, React.createElement("div", {
       style: {
-        fontSize: 12,
-        fontWeight: 500,
+        fontSize: 14,
+        fontWeight: 600,
         color: e.statut === "terminé" ? "#7A7A7A" : "#1C1C1C",
         textDecoration: e.statut === "terminé" ? "line-through" : "none"
       }
     }, e.titre), React.createElement("div", {
       style: {
-        fontSize: 10,
+        fontSize: 11,
         color: "#7A7A7A",
-        marginTop: 1
+        marginTop: 2
       }
     }, e.responsable && React.createElement("span", null, "👤 ", e.responsable), e.dateDebut && React.createElement("span", {
       style: {
@@ -11553,65 +11740,19 @@ function MissionDetailPanel({
         marginLeft: 4,
         color: retard ? "#CC2222" : "#7A7A7A"
       }
-    }, "→ ", fmt(e.dateFin), retard ? " ⚠" : "")), React.createElement("div", {
-      style: {
-        display: "flex",
-        gap: 10,
-        alignItems: "center",
-        marginTop: 4,
-        flexWrap: "wrap"
-      }
-    }, React.createElement("span", {
-      style: { display: "flex", alignItems: "center", gap: 3 }
-    }, React.createElement("span", { style: { fontSize: 10 } }, "⏱"), React.createElement("input", {
-      type: "number",
-      min: 0,
-      step: 0.5,
-      defaultValue: e.heures || "",
-      placeholder: "0",
-      title: "Heures passées sur cette étape",
-      onBlur: async ev => { if (ev.target.value !== String(e.heures || "")) await etapes.update(e.id, { ...e, heures: ev.target.value }); },
-      style: { width: 42, padding: "2px 4px", borderRadius: 4, border: "1px solid #DDD", fontSize: 10, fontFamily: "'DM Sans',sans-serif" }
-    }), React.createElement("span", { style: { fontSize: 10, color: "#7A7A7A" } }, "h")), methode && React.createElement("span", {
-      title: methode === "bornes" ? "Heures calculées depuis les coches des opérations \"Démarrage\" et \"Finalisation\"" : "Heures calculées automatiquement, jour par jour, à partir des coches du Suivi",
-      style: {
-        fontSize: 9,
-        padding: "2px 6px",
-        borderRadius: 10,
-        background: methode === "bornes" ? "#E9F3EC" : "#EEF2FA",
-        color: methode === "bornes" ? "#2A7A2A" : "#1A5DAB",
-        fontWeight: 600
-      }
-    }, methode === "bornes" ? "🔖 Démarrage → Finalisation" : "📅 Auto (par jour)"), React.createElement("span", {
-      style: { display: "flex", alignItems: "center", gap: 3 }
-    }, React.createElement("span", { style: { fontSize: 10 } }, "👥"), React.createElement("input", {
-      type: "number",
-      min: 0,
-      step: 1,
-      defaultValue: e.nbPersonnes || "",
-      placeholder: "0",
-      title: "Nombre de personnes ayant participé",
-      onBlur: async ev => { if (ev.target.value !== String(e.nbPersonnes || "")) await etapes.update(e.id, { ...e, nbPersonnes: ev.target.value }); },
-      style: { width: 34, padding: "2px 4px", borderRadius: 4, border: "1px solid #DDD", fontSize: 10, fontFamily: "'DM Sans',sans-serif" }
-    })), React.createElement("input", {
-      defaultValue: e.commentaire || "",
-      placeholder: "💬 commentaire",
-      title: "Commentaire sur cette étape",
-      onBlur: async ev => { if (ev.target.value !== String(e.commentaire || "")) await etapes.update(e.id, { ...e, commentaire: ev.target.value }); },
-      style: { flex: 1, minWidth: 100, padding: "2px 6px", borderRadius: 4, border: "1px solid #DDD", fontSize: 10, fontFamily: "'DM Sans',sans-serif" }
-    }))), React.createElement("select", {
+    }, "→ ", fmt(e.dateFin), retard ? " ⚠" : ""))), React.createElement("select", {
       value: e.statut,
       onChange: async ev => {
         await etapes.update(e.id, {
-          ...e,
+          ...getLatest(),
           statut: ev.target.value
         });
       },
       style: {
-        padding: "3px 6px",
-        borderRadius: 4,
+        padding: "5px 8px",
+        borderRadius: 5,
         border: "1px solid #DDD",
-        fontSize: 10,
+        fontSize: 12,
         fontFamily: "'DM Sans',sans-serif",
         color: etapeColor(e.statut)
       }
@@ -11625,10 +11766,74 @@ function MissionDetailPanel({
         background: "none",
         border: "none",
         cursor: "pointer",
-        fontSize: 12,
-        color: "#CCCCCC"
+        fontSize: 16,
+        color: "#CCCCCC",
+        padding: "0 4px"
       }
-    }, "✕"));
+    }, "✕")), methode && React.createElement("div", {
+      style: {
+        display: "inline-flex",
+        alignSelf: "flex-start",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 11,
+        padding: "3px 8px",
+        borderRadius: 10,
+        background: methode === "bornes" ? "#E9F3EC" : "#EEF2FA",
+        color: methode === "bornes" ? "#2A7A2A" : "#1A5DAB",
+        fontWeight: 600
+      },
+      title: methode === "bornes" ? "Heures calculées depuis les coches des opérations \"Démarrage\" et \"Finalisation\"" : "Heures calculées automatiquement, jour par jour, à partir des coches du Suivi"
+    }, methode === "bornes" ? "🔖 Démarrage → Finalisation" : "📅 Auto (par jour)"), React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 16,
+        alignItems: "center",
+        flexWrap: "wrap"
+      }
+    }, React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 6 }
+    }, React.createElement("span", { style: { fontSize: 12, color: "#7A7A7A" } }, "⏱ Heures :"), React.createElement("input", {
+      type: "number",
+      min: 0,
+      step: 0.5,
+      defaultValue: e.heures || "",
+      placeholder: "0",
+      title: "Heures passées sur cette étape",
+      onBlur: async ev => { if (ev.target.value !== String(e.heures || "")) await etapes.update(e.id, { ...getLatest(), heures: ev.target.value }); },
+      style: { width: 60, padding: "5px 6px", borderRadius: 5, border: "1px solid #DDD", fontSize: 13, fontFamily: "'DM Sans',sans-serif" }
+    }), React.createElement("span", { style: { fontSize: 12, color: "#7A7A7A" } }, "h"), methode && React.createElement("button", {
+      title: "Recalculer les heures à partir des coches actuelles du Suivi",
+      onClick: async () => {
+        const latest = getLatest();
+        const nouvelleValeur = calculerHeuresPhaseLiee(latest, lignesFab, m);
+        if (nouvelleValeur === null) {
+          alert("Impossible de recalculer : aucune coche exploitable sur la phase liée du Suivi pour l'instant.");
+          return;
+        }
+        await etapes.update(e.id, { ...latest, heures: nouvelleValeur });
+      },
+      style: { background: "#fff", border: "1px solid #DDD", borderRadius: 5, cursor: "pointer", fontSize: 12, padding: "4px 7px" }
+    }, "🔄")), React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 6 }
+    }, React.createElement("span", { style: { fontSize: 12, color: "#7A7A7A" } }, "👥 Personnes :"), React.createElement("input", {
+      type: "number",
+      min: 0,
+      step: 1,
+      defaultValue: e.nbPersonnes || "",
+      placeholder: "0",
+      title: "Nombre de personnes ayant participé",
+      onBlur: async ev => { if (ev.target.value !== String(e.nbPersonnes || "")) await etapes.update(e.id, { ...getLatest(), nbPersonnes: ev.target.value }); },
+      style: { width: 50, padding: "5px 6px", borderRadius: 5, border: "1px solid #DDD", fontSize: 13, fontFamily: "'DM Sans',sans-serif" }
+    }))), React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 6 }
+    }, React.createElement("span", { style: { fontSize: 12, color: "#7A7A7A", flexShrink: 0 } }, "💬 Commentaire :"), React.createElement("input", {
+      defaultValue: e.commentaire || "",
+      placeholder: "Ex : vent fort le matin, retard",
+      title: "Commentaire sur cette étape",
+      onBlur: async ev => { if (ev.target.value !== String(e.commentaire || "")) await etapes.update(e.id, { ...getLatest(), commentaire: ev.target.value }); },
+      style: { flex: 1, padding: "6px 8px", borderRadius: 5, border: "1px solid #DDD", fontSize: 13, fontFamily: "'DM Sans',sans-serif" }
+    })));
   })), detailOnglet === "heures" && React.createElement("div", null, React.createElement(Bd, {
     style: {
       marginBottom: 12
@@ -14759,10 +14964,17 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
       display: "flex",
       gap: 6
     }
-  }, peutEditerMission && React.createElement(Btn, {
-    primary: true,
-    onClick: () => openPanel()
-  }, "+ ", isMobile ? "Mission" : "Nouvelle mission"), !isMobile && moduleType === "atelier" && React.createElement(Btn, {
+  }, peutEditerMission && React.createElement("span", {
+    title: "Les missions se créent depuis le Planificateur Général, puis se complètent ici.",
+    style: {
+      fontSize: 11,
+      color: "#7A7A7A",
+      padding: "6px 10px",
+      border: "1px dashed #DDD",
+      borderRadius: 6,
+      fontStyle: "italic"
+    }
+  }, "📋 Nouvelles missions → Planificateur Général"), !isMobile && moduleType === "atelier" && React.createElement(Btn, {
     onClick: () => genRapportHebdo(),
     "data-rapport-hebdo": "1"
   }, "📊 Rapport hebdo"))), !missionSelected && alertesAll.length > 0 && React.createElement("div", {
@@ -16338,6 +16550,28 @@ function getAvancement(row, atelierChantier, missionsBE) {
   });
   return count ? Math.round(total / count) : null;
 }
+// Une tâche liée à une ou plusieurs missions doit rester cohérente si la mission est décalée ou prend
+// du retard : plutôt que de dupliquer les dates et risquer un désaccord entre les deux écrans, on lit
+// les dates EN DIRECT depuis la ou les missions liées au moment de l'affichage (même principe que
+// getAvancement ci-dessus). Sans mission liée (ou sans dates renseignées sur la mission), on retombe
+// sur les dates propres à la tâche du Planificateur.
+function getDatesEffectives(row, atelierChantier, missionsBE) {
+  const links = parseModules(row);
+  if (!links.length) return { start: row.task_start, end: row.task_end };
+  const starts = [], ends = [];
+  links.forEach(({ mod, id }) => {
+    if (!id) return;
+    const sheet = getSheetForMod(mod, missionsBE, atelierChantier);
+    const mission = (sheet?.rows || []).find(m => String(m.id) === id);
+    if (mission?.dateDebut) starts.push(mission.dateDebut);
+    if (mission?.dateFin) ends.push(mission.dateFin);
+  });
+  if (!starts.length && !ends.length) return { start: row.task_start, end: row.task_end };
+  return {
+    start: starts.length ? starts.slice().sort()[0] : row.task_start,
+    end: ends.length ? ends.slice().sort().slice(-1)[0] : row.task_end
+  };
+}
 function PlanificateurGeneral({
   planificateur,
   projects,
@@ -16456,7 +16690,7 @@ function PlanificateurGeneral({
         const sheet = getSheetForMod(grp, missionsBE, atelierChantier);
         let mission = null;
         if (existing?.id) mission = (sheet?.rows || []).find(m => String(m.id) === existing.id) || null;
-        if (!mission) mission = (sheet?.rows || []).find(m => (m.note || "").includes(noteKey)) || null;
+        if (!mission) mission = (sheet?.rows || []).find(m => m.planificateurRef === noteKey || (m.note || "").includes(noteKey)) || null;
         if (mission) {
           await sheet.update(mission.id, {
             ...mission,
@@ -16480,7 +16714,8 @@ function PlanificateurGeneral({
               dateDebut: taskForm.start || "",
               dateFin: taskForm.end || "",
               statut: "planifié",
-              note: noteKey,
+              note: "",
+              planificateurRef: noteKey,
               importance: "",
               tags: "planificateur",
               stockItems: "",
@@ -16501,7 +16736,8 @@ function PlanificateurGeneral({
               dateDebut: taskForm.start,
               dateFin: taskForm.end,
               statut: "planifié",
-              note: noteKey,
+              note: "",
+              planificateurRef: noteKey,
               importance: "",
               tags: "planificateur",
               stockItems: "",
@@ -16790,12 +17026,13 @@ function PlanificateurGeneral({
       rows_html += `<tr style="background:${gc}"><td colspan="3" style="color:#fff;font-weight:700;font-size:9pt;padding:4px 8px;letter-spacing:.04em">${ph.label.toUpperCase()}</td></tr>`;
       tasks.filter(t => t.phase_label === ph.label).forEach((t, i) => {
         const avPct = t.avancement ? Number(t.avancement) : getAvancement(t, atelierChantier, missionsBE) || 0;
+        const datesEff = getDatesEffectives(t, atelierChantier, missionsBE);
         const mods = parseModules(t);
         const gr = mods.length ? getGroupInfo(mods[0].mod) : getGroupInfo("autre");
         rows_html += `<tr style="background:${i % 2 === 0 ? "#fff" : "#f9f9f9"}">
           <td style="padding:3px 8px;font-size:8.5pt;border-bottom:0.5px solid #EEE">${t.task_name || ""}</td>
           <td style="padding:3px 8px;font-size:8pt;color:${gr.dot};font-weight:600;border-bottom:0.5px solid #EEE">${gr.label}</td>
-          <td style="padding:3px 8px;font-size:8pt;color:#7A7A7A;border-bottom:0.5px solid #EEE">${t.task_start ? fmt(t.task_start) : ""} → ${t.task_end ? fmt(t.task_end) : ""}${avPct > 0 ? " · " + avPct + "%" : ""}</td>
+          <td style="padding:3px 8px;font-size:8pt;color:#7A7A7A;border-bottom:0.5px solid #EEE">${datesEff.start ? fmt(datesEff.start) : ""} → ${datesEff.end ? fmt(datesEff.end) : ""}${avPct > 0 ? " · " + avPct + "%" : ""}</td>
         </tr>`;
       });
     });
@@ -17075,9 +17312,10 @@ function PlanificateurGeneral({
         ctx.fillStyle = gr.dot;
         ctx.font = "bold 9px 'DM Sans',sans-serif";
         ctx.fillText(gr.label.substring(0, 14), LBL_W + 6, cy + ROW_H / 2);
-        if (t.task_start && t.task_end) {
-          const bx1 = xOf(t.task_start),
-            bx2 = xOf(t.task_end);
+        const datesEff = getDatesEffectives(t, atelierChantier, missionsBE);
+        if (datesEff.start && datesEff.end) {
+          const bx1 = xOf(datesEff.start),
+            bx2 = xOf(datesEff.end);
           if (bx2 > bx1) {
             ctx.fillStyle = ph.color || "#1A5DAB";
             ctx.globalAlpha = 0.2;
@@ -17688,6 +17926,7 @@ function PlanificateurGeneral({
     const mods = parseModules(t);
     const gr = mods.length ? getGroupInfo(mods[0].mod) : getGroupInfo("autre");
     const avPct = t.avancement ? Number(t.avancement) : getAvancement(t, atelierChantier, missionsBE) || 0;
+    const datesEff = getDatesEffectives(t, atelierChantier, missionsBE);
     return React.createElement("div", {
       key: t.id,
       draggable: true,
@@ -17759,13 +17998,13 @@ function PlanificateurGeneral({
           fontWeight: 600
         }
       }, g.label);
-    }), t.task_start && React.createElement("span", {
+    }), datesEff.start && React.createElement("span", {
       style: {
         fontSize: 10,
         color: "#7A7A7A",
         fontFamily: "'DM Mono',monospace"
       }
-    }, fmt(t.task_start), " → ", fmt(t.task_end || "")), avPct > 0 && React.createElement("span", {
+    }, fmt(datesEff.start), " → ", fmt(datesEff.end || "")), avPct > 0 && React.createElement("span", {
       style: {
         fontSize: 10,
         color: "#2A7A2A",
@@ -17798,8 +18037,8 @@ function PlanificateurGeneral({
         setTaskForm({
           name: t.task_name || "",
           groups: (t.linked_module || "").split(",").map(s => s.trim()).filter(Boolean),
-          start: toISO(t.task_start) || "",
-          end: toISO(t.task_end) || "",
+          start: toISO(datesEff.start) || "",
+          end: toISO(datesEff.end) || "",
           flag: t.task_flag || "",
           phase_label: t.phase_label || "",
           resp: t.task_resp || ""
