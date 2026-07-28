@@ -430,11 +430,38 @@ function heuresTravailEntre(debut, fin, heureDebut, heureFin, pauseDejMinutes) {
 // nommées "Démarrage"/"Finalisation" (convention textuelle), soit d'une seule opération dont le type
 // d'unité est "demarrage_finition" (unité 0 = démarrage, unité 1 = finalisation) — les deux sont
 // équivalentes pour le calcul.
+// Trouve l'étape liée à une phase de Suivi, en préférant le lien STABLE par ID (etape_id sur les lignes
+// suiviFab) — qui ne casse pas si la famille/phase est renommée après création — avec repli sur
+// l'ancienne convention texte "fab:famille|||phase" pour les liens créés avant l'introduction de
+// etape_id. lignesPhase : toutes les lignes (opérations) d'UNE SEULE phase (même famille+phase).
+function trouverEtapeLieePhase(lignesPhase, etapesRows, missionId) {
+  if (!lignesPhase || !lignesPhase.length) return null;
+  const idDeja = lignesPhase.map(l => l.etape_id).find(v => v !== undefined && v !== null && v !== "");
+  if (idDeja) {
+    const parId = (etapesRows || []).find(e => String(e.id) === String(idDeja));
+    if (parId) return parId;
+  }
+  const { famille, phase } = lignesPhase[0];
+  const etapeKey = `fab:${famille}|||${phase}`;
+  return (etapesRows || []).find(e => String(e.mission_id) === String(missionId) && String(e.note || "").includes(etapeKey)) || null;
+}
+// Fixe etape_id sur toutes les lignes d'une phase qui ne l'ont pas encore (auto-guérison des liens créés
+// avant l'introduction de ce champ, ou dont le lien vient d'être établi/retrouvé par repli texte).
+async function assurerLienEtapeId(lignesPhase, etapeId, suiviFabSheet) {
+  for (const l of lignesPhase) {
+    if (String(l.etape_id || "") !== String(etapeId)) {
+      await suiviFabSheet.update(l.id, { ...l, etape_id: etapeId });
+    }
+  }
+}
 function calculerHeuresPhaseLiee(etapeLiee, lignesFabMission, mission) {
-  const note = String(etapeLiee.note || "");
-  if (!note.startsWith("fab:")) return null;
-  const [fam, ph] = note.slice(4).split("|||");
-  const lignesPhase = (lignesFabMission || []).filter(l => l.famille === fam && l.phase === ph);
+  let lignesPhase = (lignesFabMission || []).filter(l => String(l.etape_id || "") === String(etapeLiee.id));
+  if (!lignesPhase.length) {
+    const note = String(etapeLiee.note || "");
+    if (!note.startsWith("fab:")) return null;
+    const [fam, ph] = note.slice(4).split("|||");
+    lignesPhase = (lignesFabMission || []).filter(l => l.famille === fam && l.phase === ph);
+  }
   if (!lignesPhase.length) return null;
   const normOp = s => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   const parseHist = l => {
@@ -620,15 +647,20 @@ function parseDeps(note, depsCol){
 function serializeDeps(deps,noteTexte){
   return {depsJSON:deps&&deps.length?JSON.stringify(deps):"",noteTexte:noteTexte||""};
 }
-function isMissionBlocked(mission,atelierChantierRows,missionsBERows){
+function isMissionBlocked(mission,atelierChantierRows,missionsBERows,metreRows){
   const deps=(parseDeps(mission.note,mission.deps).deps)||[];
   const mDeps=deps.filter(d=>["missionBE","missionAtelier","missionChantier"].includes(d.type));
-  if(!mDeps.length)return false;
-  return mDeps.some(dep=>{
+  const matDeps=deps.filter(d=>d.type==="metre");
+  const missionBlockee=mDeps.some(dep=>{
     const rows=dep.type==="missionBE"?(missionsBERows||[]):(atelierChantierRows||[]);
     const found=rows.find(x=>Number(x.id)===Number(dep.id));
     return !found||found.statut!=="terminé";
   });
+  const materiauBloque=matDeps.some(dep=>{
+    const found=(metreRows||[]).find(x=>Number(x.id)===Number(dep.id));
+    return !found||found.statut!=="reçu";
+  });
+  return missionBlockee||materiauBloque;
 }
 </script>
 <script>
@@ -639,7 +671,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.22";
+const VERSION = "v4.7.25";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -7428,6 +7460,7 @@ ${sections}
       devis: devis,
       orders: orders,
       stocks: stocks,
+      atelierChantier: atelierChantier,
       hideFinances: hideFinances
     }));
   }
@@ -10132,9 +10165,9 @@ function SuiviFabComponent({
         const nb = Number(l.nb_unites) || 0;
         return v.slice(0, nb).every(x => x === 1) && nb > 0;
       });
-      const etapeKey = `fab:${ligne.famille}|||${ligne.phase}`;
-      const etapeLiee = (etapes?.rows || []).find(e => String(e.mission_id) === String(mission.id) && String(e.note || "").includes(etapeKey));
+      const etapeLiee = trouverEtapeLieePhase(lignesPhase, etapes?.rows, mission.id);
       if (etapeLiee) {
+        await assurerLienEtapeId(lignesPhase, etapeLiee.id, suiviFab);
         const nouveauStatut = phaseTerminee ? "terminé" : "en cours";
         // Heures calculées automatiquement, avec deux méthodes possibles :
         // 1) Si la phase contient une opération "démarrage" ET une opération "finalisation" (marqueurs
@@ -10226,8 +10259,9 @@ function SuiviFabComponent({
     const nb = newPhaseForm.nb_unites || 10;
     const valeurs = JSON.stringify(Array(nb).fill(0));
     setSaving(true);
+    const lignesCreees = [];
     for (const op of ops) {
-      await suiviFab.add({
+      const cree = await suiviFab.add({
         mission_id: String(mission.id),
         famille: newPhaseForm.famille,
         phase: newPhaseForm.phase,
@@ -10237,12 +10271,13 @@ function SuiviFabComponent({
         deadline: newPhaseForm.deadline || "",
         valeurs
       });
+      lignesCreees.push(cree);
     }
+    let etapeExistante = trouverEtapeLieePhase(lignesCreees, etapes?.rows, mission.id);
     const etapeKey = `fab:${newPhaseForm.famille}|||${newPhaseForm.phase}`;
-    const etapeExistante = (etapes?.rows || []).find(e => String(e.mission_id) === String(mission.id) && String(e.note || "").includes(etapeKey));
     if (!etapeExistante) {
       const titreEtape = `${newPhaseForm.famille} — ${newPhaseForm.phase}`;
-      await etapes.add({
+      etapeExistante = await etapes.add({
         mission_id: String(mission.id),
         module: moduleType,
         titre: titreEtape,
@@ -10253,6 +10288,7 @@ function SuiviFabComponent({
         note: etapeKey
       });
     }
+    await assurerLienEtapeId(lignesCreees, etapeExistante.id, suiviFab);
     if (newPhaseForm.deadline) {
       const titreJalon = `${newPhaseForm.famille} — ${newPhaseForm.phase}`;
       await events.add({
@@ -10282,13 +10318,17 @@ function SuiviFabComponent({
       config = JSON.parse(t.config || "[]");
     } catch (e) {}
     setSaving(true);
-    const phasesVues = new Set();
+    const lignesParPhase = new Map();
+    const ajouterLigne = (key, ligne) => {
+      if (!lignesParPhase.has(key)) lignesParPhase.set(key, []);
+      lignesParPhase.get(key).push(ligne);
+    };
     for (const item of config) {
       if (item.o && Array.isArray(item.o)) {
         const nb = item.n || 10;
-        phasesVues.add(`${item.f}|||${item.p}`);
+        const key = `${item.f}|||${item.p}`;
         for (const operation of item.o) {
-          await suiviFab.add({
+          const cree = await suiviFab.add({
             mission_id: String(mission.id),
             famille: item.f,
             phase: item.p,
@@ -10298,11 +10338,12 @@ function SuiviFabComponent({
             deadline: "",
             valeurs: JSON.stringify(Array(nb).fill(0))
           });
+          ajouterLigne(key, cree);
         }
       } else {
         const nb = item.nb_unites || 10;
-        phasesVues.add(`${item.famille}|||${item.phase}`);
-        await suiviFab.add({
+        const key = `${item.famille}|||${item.phase}`;
+        const cree = await suiviFab.add({
           mission_id: String(mission.id),
           famille: item.famille,
           phase: item.phase,
@@ -10312,17 +10353,17 @@ function SuiviFabComponent({
           deadline: "",
           valeurs: JSON.stringify(Array(nb).fill(0))
         });
+        ajouterLigne(key, cree);
       }
     }
     // Une étape liée par phase distincte du template (évite les doublons si plusieurs opérations
     // partagent la même famille/phase, ex. le format verbeux qui liste une ligne par opération).
-    for (const key of phasesVues) {
+    for (const [key, lignesCreees] of lignesParPhase) {
       const [fam, ph] = key.split("|||");
       if (!fam || !ph) continue;
-      const etapeKey = `fab:${fam}|||${ph}`;
-      const etapeExistante = (etapes?.rows || []).find(e => String(e.mission_id) === String(mission.id) && String(e.note || "").includes(etapeKey));
+      let etapeExistante = trouverEtapeLieePhase(lignesCreees, etapes?.rows, mission.id);
       if (!etapeExistante) {
-        await etapes.add({
+        etapeExistante = await etapes.add({
           mission_id: String(mission.id),
           module: moduleType,
           titre: `${fam} — ${ph}`,
@@ -10330,17 +10371,18 @@ function SuiviFabComponent({
           dateDebut: TODAY,
           dateFin: "",
           statut: "à faire",
-          note: etapeKey
+          note: `fab:${fam}|||${ph}`
         });
       }
+      await assurerLienEtapeId(lignesCreees, etapeExistante.id, suiviFab);
     }
     await logAction(journal, user, `[${mission.description}] 📋 Template appliqué : "${t.nom}"`, mission.projet || "");
     setSaving(false);
     setOnglet("grille");
   }
   function getEtapeLieePhase(fam, ph) {
-    const etapeKey = `fab:${fam}|||${ph}`;
-    return (etapes?.rows || []).find(e => String(e.mission_id) === String(mission.id) && String(e.note || "").includes(etapeKey));
+    const lignesPhase = lignes.filter(l => l.famille === fam && l.phase === ph);
+    return trouverEtapeLieePhase(lignesPhase, etapes?.rows, mission.id);
   }
   async function deplacerPhase(fam, phasesTrieesNoms, index, direction) {
     const cible = index + direction;
@@ -10349,6 +10391,7 @@ function SuiviFabComponent({
     [arr[index], arr[cible]] = [arr[cible], arr[index]];
     for (let i = 0; i < arr.length; i++) {
       const ph = arr[i];
+      const lignesPhase = lignes.filter(l => l.famille === fam && l.phase === ph);
       let etapeLiee = getEtapeLieePhase(fam, ph);
       if (!etapeLiee) {
         // Phase créée avant la liaison automatique — on crée l'étape manquante à la volée pour
@@ -10364,8 +10407,12 @@ function SuiviFabComponent({
           note: `fab:${fam}|||${ph}`,
           ordre: i
         });
-      } else if (Number(etapeLiee.ordre || 0) !== i) {
-        await etapes.update(etapeLiee.id, { ...etapeLiee, ordre: i });
+        await assurerLienEtapeId(lignesPhase, etapeLiee.id, suiviFab);
+      } else {
+        await assurerLienEtapeId(lignesPhase, etapeLiee.id, suiviFab);
+        if (Number(etapeLiee.ordre || 0) !== i) {
+          await etapes.update(etapeLiee.id, { ...etapeLiee, ordre: i });
+        }
       }
     }
   }
@@ -11127,10 +11174,13 @@ function MissionDetailPanel({
   const lignesFab = (suiviFab?.rows || []).filter(r => String(r.mission_id) === String(m.id));
   const normOpLocal = s => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   function methodeHeures(e) {
-    const note = String(e.note || "");
-    if (!note.startsWith("fab:")) return null;
-    const [fam, ph] = note.slice(4).split("|||");
-    const lignesPh = lignesFab.filter(l => l.famille === fam && l.phase === ph);
+    let lignesPh = lignesFab.filter(l => String(l.etape_id || "") === String(e.id));
+    if (!lignesPh.length) {
+      const note = String(e.note || "");
+      if (!note.startsWith("fab:")) return null;
+      const [fam, ph] = note.slice(4).split("|||");
+      lignesPh = lignesFab.filter(l => l.famille === fam && l.phase === ph);
+    }
     if (!lignesPh.length) return null;
     const aTypeUnite = lignesPh.some(l => l.type_unite === "demarrage_finition");
     if (aTypeUnite) return "bornes";
@@ -11351,9 +11401,9 @@ function MissionDetailPanel({
           return v.some(y => y === 1);
         });
         const key = `fab:${l.famille}|||${l.phase}`;
-        const etapeLiee = (etapes?.rows || []).find(e => String(e.mission_id) === String(m.id) && (String(e.note || "").includes(key) || norme(e.titre) === norme(`${l.phase}`) || norme(e.titre) === norme(`${l.famille} ${l.phase}`) || norme(e.titre) === norme(`${l.famille} / ${l.phase}`)));
+        const etapeLiee = trouverEtapeLieePhase(lignesPhase, etapes?.rows, m.id) || (etapes?.rows || []).find(e => String(e.mission_id) === String(m.id) && (norme(e.titre) === norme(`${l.phase}`) || norme(e.titre) === norme(`${l.famille} ${l.phase}`) || norme(e.titre) === norme(`${l.famille} / ${l.phase}`)));
         if (!etapeLiee) {
-          await etapes.add({
+          const etapeCreee = await etapes.add({
             mission_id: String(m.id),
             module: moduleType,
             titre: `${l.famille} — ${l.phase}`,
@@ -11363,8 +11413,10 @@ function MissionDetailPanel({
             statut: phaseTerminee ? "terminé" : auMoinsUneCoche ? "en cours" : "à faire",
             note: key
           });
+          await assurerLienEtapeId(lignesPhase, etapeCreee.id, suiviFab);
           crees++;
         } else {
+          await assurerLienEtapeId(lignesPhase, etapeLiee.id, suiviFab);
           const nouveauStatut = phaseTerminee ? "terminé" : auMoinsUneCoche ? "en cours" : etapeLiee.statut;
           if (etapeLiee.statut !== nouveauStatut) {
             await etapes.update(etapeLiee.id, {
@@ -13186,6 +13238,7 @@ function MissionModule({
   isMobile = false,
   atelierChantierAll = null,
   missionsBEAll = null,
+  metre = null,
   conges = null
 }) {
   const [filterProjet, setFilterProjet] = useState("");
@@ -13878,7 +13931,7 @@ function MissionModule({
     setSaving(false);
   }
   async function terminer(m) {
-    if (isMissionBlocked(m, atelierChantierAll?.rows || [], missionsBEAll?.rows || [])) {
+    if (isMissionBlocked(m, atelierChantierAll?.rows || [], missionsBEAll?.rows || [], metre?.rows || [])) {
       alert("⛔ Mission bloquée\n\nUn ou plusieurs prérequis ne sont pas encore terminés.\nFinalisez d\'abord les missions prérequises.");
       return;
     }
@@ -14633,10 +14686,12 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
       marginBottom: 8
     }
   }, deps.map((dep, i) => {
-    const icon = dep.type === "stock" ? "📦" : dep.type === "commande" ? "🛒" : dep.type === "missionBE" ? "🔬" : dep.type === "missionAtelier" ? "🔨" : dep.type === "missionChantier" ? "🏗" : "🔨";
+    const icon = dep.type === "stock" ? "📦" : dep.type === "commande" ? "🛒" : dep.type === "metre" ? "📏" : dep.type === "missionBE" ? "🔬" : dep.type === "missionAtelier" ? "🔨" : dep.type === "missionChantier" ? "🏗" : "🔨";
     const isMissionDep = ["missionBE", "missionAtelier", "missionChantier"].includes(dep.type);
     const missionDepObj = isMissionDep ? (dep.type === "missionBE" ? missionsBEAll?.rows || [] : atelierChantierAll?.rows || []).find(x => Number(x.id) === Number(dep.id)) : null;
     const missionDepOK = !isMissionDep || missionDepObj?.statut === "terminé";
+    const metreDepObj = dep.type === "metre" ? (metre?.rows || []).find(x => String(x.id) === String(dep.id)) : null;
+    const metreDepOK = dep.type !== "metre" || metreDepObj?.statut === "reçu";
     const cmdObj = dep.type === "commande" ? (orders?.rows || []).find(o => String(o.id) === String(dep.id)) : null;
     const cmdRecue = cmdObj && (cmdObj.recue === true || String(cmdObj.recue).toUpperCase() === "TRUE");
     let curItems = [];
@@ -14651,10 +14706,10 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
         alignItems: "center",
         gap: 8,
         padding: "5px 8px",
-        background: isMissionDep ? missionDepOK ? "#F0FFF0" : "#FFF0F0" : cmdRecue ? "#F0FFF0" : "#F9F9F9",
+        background: isMissionDep ? missionDepOK ? "#F0FFF0" : "#FFF0F0" : dep.type === "metre" ? metreDepOK ? "#F0FFF0" : "#FFF0F0" : cmdRecue ? "#F0FFF0" : "#F9F9F9",
         borderRadius: 4,
         marginBottom: 4,
-        border: `0.5px solid ${isMissionDep ? missionDepOK ? "#AADDAA" : "#FFAAAA" : cmdRecue ? "#AADDAA" : "#EEEEEE"}`
+        border: `0.5px solid ${isMissionDep ? missionDepOK ? "#AADDAA" : "#FFAAAA" : dep.type === "metre" ? metreDepOK ? "#AADDAA" : "#FFAAAA" : cmdRecue ? "#AADDAA" : "#EEEEEE"}`
       }
     }, React.createElement("span", {
       style: {
@@ -14666,12 +14721,18 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
         fontSize: 12,
         color: "#1C1C1C"
       }
-    }, dep.ref || dep.id, dep.qty > 0 && React.createElement("span", {
+    }, dep.type === "metre" ? (metreDepObj?.article || `Article #${dep.id}`) : dep.ref || dep.id, dep.qty > 0 && React.createElement("span", {
       style: {
         color: "#7A7A7A",
         fontFamily: "'DM Mono',monospace"
       }
-    }, " × ", dep.qty)), cmdRecue && React.createElement("span", {
+    }, " × ", dep.qty)), dep.type === "metre" && metreDepObj && React.createElement("span", {
+      style: {
+        fontSize: 10,
+        fontWeight: 600,
+        color: metreDepOK ? "#2A7A2A" : "#CC2222"
+      }
+    }, metreDepOK ? "✓ Reçu" : "⏳ " + (metreDepObj.statut || "à commander")), cmdRecue && React.createElement("span", {
       style: {
         fontSize: 10,
         color: "#2A7A2A",
@@ -15497,7 +15558,10 @@ const EM_METRE = {
   note: "",
   tags: "",
   cat: "",
-  specs: ""
+  specs: "",
+  usage: "chantier",
+  mission_id: "",
+  statut_prep: ""
 };
 // Caractéristiques détaillées d'une membrane saisie au métré — même structure que celle utilisée par
 // la fiche de production (couches, épaisseurs, teintes) pour que celle-ci puisse la retrouver et la
@@ -15544,11 +15608,12 @@ function MetreSpecsMembrane({ value, onChange }) {
       React.createElement(FG, { label: "Lot à utiliser" },
         React.createElement(Inp, { value: specs.lot || "", onChange: e => set("lot", e.target.value) }))));
 }
-const METRE_STATUTS = ["à commander", "commandé", "partiellement reçu", "reçu", "annulé"];
+const METRE_STATUTS = ["à commander", "devis en cours", "commandé", "partiellement reçu", "reçu", "annulé"];
 function statutMetreColor(s) {
   if (s === "reçu") return { bg: "#EAF7EA", color: "#2A7A2A" };
   if (s === "partiellement reçu") return { bg: "#FFF8E8", color: "#8A5A00" };
   if (s === "commandé") return { bg: "#EBF3FF", color: "#1A5DAB" };
+  if (s === "devis en cours") return { bg: "#F3EBFA", color: "#6A2DA8" };
   if (s === "annulé") return { bg: "#F2F0ED", color: "#7A7A7A" };
   return { bg: "#FFF0F0", color: "#CC2222" };
 }
@@ -15559,6 +15624,7 @@ function MetreProjet({
   devis,
   orders,
   stocks,
+  atelierChantier,
   hideFinances = false
 }) {
   const [open, setOpen] = useState(false);
@@ -15573,11 +15639,13 @@ function MetreProjet({
   const [reserving, setReserving] = useState(null);
   const [reserveQty, setReserveQty] = useState("");
   const [reserveBusy, setReserveBusy] = useState(false);
+  const [filterUsage, setFilterUsage] = useState("tout");
   const f = (k, v) => setForm(x => ({
     ...x,
     [k]: v
   }));
-  const lignes = (metre?.rows || []).filter(l => String(l.projet_id) === String(projet?.name) || String(l.projet_id) === String(projet?.id));
+  const lignesProjet = (metre?.rows || []).filter(l => String(l.projet_id) === String(projet?.name) || String(l.projet_id) === String(projet?.id));
+  const lignes = lignesProjet.filter(l => filterUsage === "tout" || (l.usage || "chantier") === filterUsage);
   const projOrders = (orders?.rows || []).filter(o => o.projet === projet?.name || o.projet === String(projet?.id));
   function openNew() {
     setForm(EM_METRE);
@@ -15593,6 +15661,20 @@ function MetreProjet({
     setEditing(l.id);
     setErr("");
     setOpen(true);
+  }
+  // Quand un article atelier est rattaché à une mission, la mission doit avoir une dépendance
+  // "metre" pointant sur cet article — c'est cette dépendance (et le statut de l'article, pas une
+  // copie séparée) qui déterminera si la mission est prête (isMissionBlocked).
+  async function assurerDependanceMetre(ligneId, missionId) {
+    if (!missionId || !atelierChantier) return;
+    const mission = (atelierChantier.rows || []).find(m => String(m.id) === String(missionId));
+    if (!mission) return;
+    const parsed = parseDeps(mission.note, mission.deps);
+    const deja = (parsed.deps || []).some(d => d.type === "metre" && String(d.id) === String(ligneId));
+    if (deja) return;
+    const nouveauxDeps = [...(parsed.deps || []), { type: "metre", id: ligneId }];
+    const ser = serializeDeps(nouveauxDeps, parsed.noteTexte || "");
+    await atelierChantier.update(mission.id, { ...mission, note: ser.noteTexte, deps: ser.depsJSON });
   }
   async function save() {
     if (!form.article) {
@@ -15610,8 +15692,12 @@ function MetreProjet({
       stock_reserve: +form.stock_reserve || 0
     };
     try {
-      if (editing) await metre.update(editing, item);
-      else await metre.add(item);
+      let ligne;
+      if (editing) ligne = await metre.update(editing, item);
+      else ligne = await metre.add(item);
+      if (item.usage === "atelier" && item.mission_id) {
+        await assurerDependanceMetre(editing || ligne.id, item.mission_id);
+      }
       setOpen(false);
     } finally {
       setSaving(false);
@@ -15623,6 +15709,31 @@ function MetreProjet({
   }
   function ligneTotal(l) {
     return (+l.qty_besoin || 0) * (+l.prix_estime || 0);
+  }
+  // ── Resynchronise nom / fournisseur / prix depuis le devis ou la commande liée, à la demande (utile
+  // si le fournisseur a mis à jour ses infos après la liaison initiale, ou si le nom saisi au métré
+  // diffère du nom utilisé sur le devis/commande) ──
+  async function syncInfosLigne(l) {
+    let source = null,
+      lignesSource = [];
+    if (l.commande_id) {
+      source = projOrders.find(o => String(o.id) === String(l.commande_id)) || (orders?.rows || []).find(o => String(o.id) === String(l.commande_id));
+      if (source) lignesSource = getLignes(source);
+    } else if (l.devis_id) {
+      source = (devis?.rows || []).find(d => String(d.id) === String(l.devis_id));
+      if (source) lignesSource = getLignes(source);
+    }
+    if (!source) {
+      alert("Aucun devis ou commande lié à cet article.");
+      return;
+    }
+    const ligneMatch = lignesSource.find(x => normRef(x.article) === normRef(l.article)) || (lignesSource.length === 1 ? lignesSource[0] : null);
+    await metre.update(l.id, {
+      ...l,
+      article: (ligneMatch && ligneMatch.article) || l.article,
+      fourn: source.fourn || l.fourn,
+      prix_estime: (ligneMatch ? ligneMatch.prix : source.prix) || l.prix_estime
+    });
   }
   // ── Liaison Commandes : créer une nouvelle commande à partir de la ligne, ou la lier à une commande existante ──
   function openLink(l) {
@@ -15728,6 +15839,7 @@ function MetreProjet({
     }
   }
   const totalEstime = lignes.reduce((s, l) => s + ligneTotal(l), 0);
+  const manquantsAtelier = lignesProjet.filter(l => l.usage === "atelier" && l.statut_prep === "manquant");
   return React.createElement("div", null, React.createElement("div", {
     style: {
       display: "flex",
@@ -15752,7 +15864,37 @@ function MetreProjet({
   }, "· Estimé : ", totalEstime.toLocaleString("fr-FR"), " €")), React.createElement(Btn, {
     primary: true,
     onClick: openNew
-  }, "+ Article")), !lignes.length && React.createElement(Bd, {
+  }, "+ Article")), React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      marginBottom: 12
+    }
+  }, [["tout", "Tout"], ["chantier", "🏗️ Chantier"], ["atelier", "🔧 Atelier"]].map(([v, l]) => React.createElement("button", {
+    key: v,
+    onClick: () => setFilterUsage(v),
+    style: {
+      padding: "5px 12px",
+      borderRadius: 6,
+      border: "1px solid #DDDDDD",
+      background: filterUsage === v ? "#CC2222" : "#fff",
+      color: filterUsage === v ? "#fff" : "#3A3A3A",
+      cursor: "pointer",
+      fontSize: 12,
+      fontFamily: "'DM Sans',sans-serif",
+      fontWeight: filterUsage === v ? 700 : 400
+    }
+  }, l, " (", lignesProjet.filter(x => v === "tout" || (x.usage || "chantier") === v).length, ")"))), manquantsAtelier.length > 0 && React.createElement("div", {
+    style: {
+      background: "#FFF0F0",
+      border: "0.5px solid #FFCCCC",
+      borderRadius: 8,
+      padding: "10px 12px",
+      marginBottom: 12,
+      fontSize: 12,
+      color: "#CC2222"
+    }
+  }, "⚠ ", manquantsAtelier.length, " matériau", manquantsAtelier.length > 1 ? "x" : "", " manquant", manquantsAtelier.length > 1 ? "s" : "", " pour une production atelier — à commander : ", manquantsAtelier.map(l => l.article).join(", ")), !lignes.length && React.createElement(Bd, {
     style: {
       textAlign: "center",
       padding: 24,
@@ -15837,7 +15979,29 @@ function MetreProjet({
     }, React.createElement(Btn, {
       small: true,
       onClick: () => openEdit(l)
-    }, "Modifier"), l.statut === "à commander" && React.createElement(Btn, {
+    }, "Modifier"), (l.devis_id || l.commande_id) && React.createElement(Btn, {
+      small: true,
+      secondary: true,
+      onClick: async () => { await syncInfosLigne(l); },
+      title: "Recopier nom / fournisseur / prix depuis le devis ou la commande liée"
+    }, "🔄 Sync"), l.usage === "atelier" && React.createElement("button", {
+      title: "Statut de préparation atelier — cliquer pour changer (visible par le BE)",
+      onClick: async () => {
+        const next = l.statut_prep === "prêt" ? "manquant" : l.statut_prep === "manquant" ? "" : "prêt";
+        await metre.update(l.id, { ...l, statut_prep: next });
+      },
+      style: {
+        fontSize: 10,
+        padding: "3px 8px",
+        borderRadius: 10,
+        border: `1px solid ${l.statut_prep === "prêt" ? "#2A7A2A" : l.statut_prep === "manquant" ? "#CC2222" : "#DDDDDD"}`,
+        background: l.statut_prep === "prêt" ? "#EAF7EA" : l.statut_prep === "manquant" ? "#FFF0F0" : "#F2F0ED",
+        color: l.statut_prep === "prêt" ? "#2A7A2A" : l.statut_prep === "manquant" ? "#CC2222" : "#7A7A7A",
+        cursor: "pointer",
+        fontWeight: 600,
+        fontFamily: "'DM Sans',sans-serif"
+      }
+    }, l.statut_prep === "prêt" ? "✓ Prêt" : l.statut_prep === "manquant" ? "⚠ Manquant" : "À préparer"), (l.statut === "à commander" || l.statut === "devis en cours") && React.createElement(Btn, {
       small: true,
       secondary: true,
       onClick: () => openLink(l)
@@ -15889,7 +16053,26 @@ function MetreProjet({
     value: form.article || "",
     onChange: e => f("article", e.target.value),
     placeholder: "Ex: Vis inox A4 M8x40"
-  })), React.createElement(FG, {
+  })), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: form.usage === "atelier" ? "1fr 1fr" : "1fr",
+      gap: 8
+    }
+  }, React.createElement(FG, {
+    label: "Usage"
+  }, React.createElement(Sel, {
+    value: form.usage || "chantier",
+    onChange: e => f("usage", e.target.value)
+  }, React.createElement("option", { value: "chantier" }, "🏗️ Chantier"), React.createElement("option", { value: "atelier" }, "🔧 Atelier (production)"))), form.usage === "atelier" && React.createElement(FG, {
+    label: "Mission atelier liée"
+  }, React.createElement(Sel, {
+    value: form.mission_id || "",
+    onChange: e => f("mission_id", e.target.value)
+  }, React.createElement("option", { value: "" }, "— Aucune —"), (atelierChantier?.rows || []).filter(m => m.type === "atelier" && (m.projet === projet?.name || m.projet === String(projet?.id))).map(m => React.createElement("option", {
+    key: m.id,
+    value: m.id
+  }, m.description || `Mission #${m.id}`))))), React.createElement(FG, {
     label: "Catégorie de matériau"
   }, React.createElement(Sel, {
     value: form.cat || "",
@@ -15945,7 +16128,28 @@ function MetreProjet({
     label: "Devis lié (optionnel)"
   }, React.createElement(Sel, {
     value: form.devis_id || "",
-    onChange: e => f("devis_id", e.target.value)
+    onChange: e => {
+      const devisId = e.target.value;
+      if (!devisId) {
+        f("devis_id", "");
+        return;
+      }
+      const dv = (devis?.rows || []).find(d => String(d.id) === String(devisId));
+      if (!dv) {
+        f("devis_id", devisId);
+        return;
+      }
+      const lignesDevis = getLignes(dv);
+      const ligneMatch = lignesDevis.find(l => normRef(l.article) === normRef(form.article)) || (lignesDevis.length === 1 ? lignesDevis[0] : null);
+      setForm(x => ({
+        ...x,
+        devis_id: devisId,
+        article: (ligneMatch && ligneMatch.article) || x.article,
+        fourn: dv.fourn || x.fourn,
+        prix_estime: (ligneMatch ? ligneMatch.prix : dv.prix) || x.prix_estime,
+        statut: x.statut === "à commander" ? "devis en cours" : x.statut
+      }));
+    }
   }, React.createElement("option", {
     value: ""
   }, "— Aucun —"), (devis?.rows || []).filter(d => d.projet === projet?.name || d.projet === String(projet?.id)).map(d => React.createElement("option", {
@@ -19042,6 +19246,7 @@ function BureauEtudes({
     isMobile: isMobile,
     atelierChantierAll: atelierChantier,
     missionsBEAll: missionsBE,
+    metre: metre,
     conges: conges
   }), onglet === "outils" && React.createElement(OutilsBE, {
     projects: projects,
@@ -27870,6 +28075,7 @@ function AppContent({
     isMobile: isMobile,
     atelierChantierAll: atelierChantier,
     missionsBEAll: missionsBE,
+    metre: metre,
     conges: conges
   }), panel === "chantier" && React.createElement(ChantierWrapper, {
     camions: camions,
@@ -27897,6 +28103,7 @@ function AppContent({
       isMobile: isMobile,
       atelierChantierAll: atelierChantier,
       missionsBEAll: missionsBE,
+      metre: metre,
       conges: conges
     }
   }), panel === "prestataires" && React.createElement(Prestataires, {
