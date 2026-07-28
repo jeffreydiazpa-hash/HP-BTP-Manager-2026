@@ -78,7 +78,7 @@ function jsonp(params) {
     script.async = true;
     const url = GAS_URL + "?" + new URLSearchParams({...params, callback: cb}).toString();
     const cleanup = () => { if(window[cb])delete window[cb]; if(script.parentNode)script.parentNode.removeChild(script); };
-    const timer = window.setTimeout(() => { cleanup(); reject(new Error("Délai d'attente dépassé")); }, 20000);
+    const timer = window.setTimeout(() => { cleanup(); reject(new Error("Délai d'attente dépassé")); }, 35000);
     window[cb] = (data) => { window.clearTimeout(timer); cleanup(); resolve(data); };
     script.onerror = () => { window.clearTimeout(timer); cleanup(); reject(new Error("Erreur réseau")); };
     script.src = url;
@@ -639,7 +639,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.20";
+const VERSION = "v4.7.22";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -11116,6 +11116,7 @@ function MissionDetailPanel({
   });
   const [showAddEtape, setShowAddEtape] = useState(false);
   const [savingEtape, setSavingEtape] = useState(false);
+  const [commentDrafts, setCommentDrafts] = useState({});
   const etapeColor = s => s === "terminé" ? "#2A7A2A" : s === "en cours" ? "#CC2222" : "#7A7A7A";
   const etapes_m = (etapes?.rows || []).filter(r => String(r.mission_id) === String(m.id));
   const totalHeuresEtapes = etapes_m.reduce((s, e) => s + (Number(e.heures) || 0), 0);
@@ -11828,12 +11829,36 @@ function MissionDetailPanel({
     }))), React.createElement("div", {
       style: { display: "flex", alignItems: "center", gap: 6 }
     }, React.createElement("span", { style: { fontSize: 12, color: "#7A7A7A", flexShrink: 0 } }, "💬 Commentaire :"), React.createElement("input", {
-      defaultValue: e.commentaire || "",
+      value: commentDrafts[e.id] !== undefined ? commentDrafts[e.id] : (e.commentaire || ""),
       placeholder: "Ex : vent fort le matin, retard",
       title: "Commentaire sur cette étape",
+      onChange: ev => setCommentDrafts(d => ({ ...d, [e.id]: ev.target.value })),
       onBlur: async ev => { if (ev.target.value !== String(e.commentaire || "")) await etapes.update(e.id, { ...getLatest(), commentaire: ev.target.value }); },
       style: { flex: 1, padding: "6px 8px", borderRadius: 5, border: "1px solid #DDD", fontSize: 13, fontFamily: "'DM Sans',sans-serif" }
-    })));
+    }), React.createElement("button", {
+      title: "Enregistrer le commentaire",
+      onClick: async () => {
+        const valeur = commentDrafts[e.id] !== undefined ? commentDrafts[e.id] : (e.commentaire || "");
+        await etapes.update(e.id, { ...getLatest(), commentaire: valeur });
+        setCommentDrafts(d => {
+          const next = { ...d };
+          delete next[e.id];
+          return next;
+        });
+      },
+      style: {
+        background: commentDrafts[e.id] !== undefined && commentDrafts[e.id] !== (e.commentaire || "") ? "#CC2222" : "#fff",
+        color: commentDrafts[e.id] !== undefined && commentDrafts[e.id] !== (e.commentaire || "") ? "#fff" : "#7A7A7A",
+        border: "1px solid #DDD",
+        borderRadius: 5,
+        cursor: "pointer",
+        fontSize: 12,
+        padding: "5px 10px",
+        fontFamily: "'DM Sans',sans-serif",
+        fontWeight: 600,
+        flexShrink: 0
+      }
+    }, "💾 Enregistrer")));
   })), detailOnglet === "heures" && React.createElement("div", null, React.createElement(Bd, {
     style: {
       marginBottom: 12
