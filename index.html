@@ -658,7 +658,7 @@ function isMissionBlocked(mission,atelierChantierRows,missionsBERows,metreRows){
   });
   const materiauBloque=matDeps.some(dep=>{
     const found=(metreRows||[]).find(x=>Number(x.id)===Number(dep.id));
-    return !found||found.statut!=="reçu";
+    return !found||(found.statut!=="reçu"&&found.statut!=="disponible");
   });
   return missionBlockee||materiauBloque;
 }
@@ -671,7 +671,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.25";
+const VERSION = "v4.7.31";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -10167,7 +10167,6 @@ function SuiviFabComponent({
       });
       const etapeLiee = trouverEtapeLieePhase(lignesPhase, etapes?.rows, mission.id);
       if (etapeLiee) {
-        await assurerLienEtapeId(lignesPhase, etapeLiee.id, suiviFab);
         const nouveauStatut = phaseTerminee ? "terminé" : "en cours";
         // Heures calculées automatiquement, avec deux méthodes possibles :
         // 1) Si la phase contient une opération "démarrage" ET une opération "finalisation" (marqueurs
@@ -10407,9 +10406,7 @@ function SuiviFabComponent({
           note: `fab:${fam}|||${ph}`,
           ordre: i
         });
-        await assurerLienEtapeId(lignesPhase, etapeLiee.id, suiviFab);
       } else {
-        await assurerLienEtapeId(lignesPhase, etapeLiee.id, suiviFab);
         if (Number(etapeLiee.ordre || 0) !== i) {
           await etapes.update(etapeLiee.id, { ...etapeLiee, ordre: i });
         }
@@ -14691,7 +14688,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
     const missionDepObj = isMissionDep ? (dep.type === "missionBE" ? missionsBEAll?.rows || [] : atelierChantierAll?.rows || []).find(x => Number(x.id) === Number(dep.id)) : null;
     const missionDepOK = !isMissionDep || missionDepObj?.statut === "terminé";
     const metreDepObj = dep.type === "metre" ? (metre?.rows || []).find(x => String(x.id) === String(dep.id)) : null;
-    const metreDepOK = dep.type !== "metre" || metreDepObj?.statut === "reçu";
+    const metreDepOK = dep.type !== "metre" || metreDepObj?.statut === "reçu" || metreDepObj?.statut === "disponible";
     const cmdObj = dep.type === "commande" ? (orders?.rows || []).find(o => String(o.id) === String(dep.id)) : null;
     const cmdRecue = cmdObj && (cmdObj.recue === true || String(cmdObj.recue).toUpperCase() === "TRUE");
     let curItems = [];
@@ -14732,7 +14729,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
         fontWeight: 600,
         color: metreDepOK ? "#2A7A2A" : "#CC2222"
       }
-    }, metreDepOK ? "✓ Reçu" : "⏳ " + (metreDepObj.statut || "à commander")), cmdRecue && React.createElement("span", {
+    }, metreDepOK ? (metreDepObj.statut === "disponible" ? "✓ Disponible" : "✓ Reçu") : "⏳ " + (metreDepObj.statut || "à préparer")), cmdRecue && React.createElement("span", {
       style: {
         fontSize: 10,
         color: "#2A7A2A",
@@ -15608,12 +15605,13 @@ function MetreSpecsMembrane({ value, onChange }) {
       React.createElement(FG, { label: "Lot à utiliser" },
         React.createElement(Inp, { value: specs.lot || "", onChange: e => set("lot", e.target.value) }))));
 }
-const METRE_STATUTS = ["à commander", "devis en cours", "commandé", "partiellement reçu", "reçu", "annulé"];
+const METRE_STATUTS = ["à préparer", "disponible", "à commander", "devis en cours", "commandé", "partiellement reçu", "reçu", "annulé"];
 function statutMetreColor(s) {
-  if (s === "reçu") return { bg: "#EAF7EA", color: "#2A7A2A" };
+  if (s === "reçu" || s === "disponible") return { bg: "#EAF7EA", color: "#2A7A2A" };
   if (s === "partiellement reçu") return { bg: "#FFF8E8", color: "#8A5A00" };
   if (s === "commandé") return { bg: "#EBF3FF", color: "#1A5DAB" };
   if (s === "devis en cours") return { bg: "#F3EBFA", color: "#6A2DA8" };
+  if (s === "à préparer") return { bg: "#F2F0ED", color: "#7A7A7A" };
   if (s === "annulé") return { bg: "#F2F0ED", color: "#7A7A7A" };
   return { bg: "#FFF0F0", color: "#CC2222" };
 }
@@ -15636,9 +15634,6 @@ function MetreProjet({
   const [linkMode, setLinkMode] = useState("new");
   const [linkCommandeId, setLinkCommandeId] = useState("");
   const [linkBusy, setLinkBusy] = useState(false);
-  const [reserving, setReserving] = useState(null);
-  const [reserveQty, setReserveQty] = useState("");
-  const [reserveBusy, setReserveBusy] = useState(false);
   const [filterUsage, setFilterUsage] = useState("tout");
   const f = (k, v) => setForm(x => ({
     ...x,
@@ -15710,30 +15705,72 @@ function MetreProjet({
   function ligneTotal(l) {
     return (+l.qty_besoin || 0) * (+l.prix_estime || 0);
   }
-  // ── Resynchronise nom / fournisseur / prix depuis le devis ou la commande liée, à la demande (utile
-  // si le fournisseur a mis à jour ses infos après la liaison initiale, ou si le nom saisi au métré
-  // diffère du nom utilisé sur le devis/commande) ──
-  async function syncInfosLigne(l) {
-    let source = null,
-      lignesSource = [];
-    if (l.commande_id) {
-      source = projOrders.find(o => String(o.id) === String(l.commande_id)) || (orders?.rows || []).find(o => String(o.id) === String(l.commande_id));
-      if (source) lignesSource = getLignes(source);
-    } else if (l.devis_id) {
-      source = (devis?.rows || []).find(d => String(d.id) === String(l.devis_id));
-      if (source) lignesSource = getLignes(source);
+  // ── Resynchronise tout le métré du projet en une fois : pour chaque article lié à un devis ou une
+  // commande, on recopie nom/fournisseur/prix depuis la source, ET — point important — si l'article
+  // n'est lié qu'à un devis (pas de commande_id), on recherche une commande qui correspond probablement
+  // à ce devis (même projet + même fournisseur, ou article correspondant), pour retrouver la liaison
+  // même si elle n'a pas été faite depuis cet article précis. Le statut avance selon l'état réel de la
+  // commande trouvée (reçue → "reçu", sinon "commandé") plutôt que de rester bloqué sur "devis en cours".
+  const [syncingTout, setSyncingTout] = useState(false);
+  async function syncTout() {
+    setSyncingTout(true);
+    let maj = 0,
+      lies = 0;
+    try {
+      for (const l of lignesProjet) {
+        let source = null,
+          lignesSource = [],
+          commandeIdTrouvee = l.commande_id || "";
+        if (l.commande_id) {
+          source = projOrders.find(o => String(o.id) === String(l.commande_id));
+        }
+        if (!source && l.devis_id) {
+          const dv = (devis?.rows || []).find(d => String(d.id) === String(l.devis_id));
+          if (dv) {
+            const lignesDevis = getLignes(dv);
+            const matchCmd = projOrders.find(o => normRef(o.fourn) === normRef(dv.fourn) || getLignes(o).some(x => lignesDevis.some(y => normRef(x.article) === normRef(y.article))));
+            if (matchCmd) {
+              source = matchCmd;
+              commandeIdTrouvee = matchCmd.id;
+              lies++;
+            } else {
+              source = dv;
+            }
+          }
+        }
+        if (!source) continue;
+        lignesSource = getLignes(source);
+        const estCommande = !!(source.recue !== undefined || source.passee !== undefined);
+        const estRecue = estCommande && (source.recue === true || String(source.recue).toUpperCase() === "TRUE");
+        const ligneMatch = lignesSource.find(x => normRef(x.article) === normRef(l.article)) || (lignesSource.length === 1 ? lignesSource[0] : null);
+        const nouveauStatut = estCommande ? (estRecue ? "reçu" : "commandé") : l.statut === "à commander" ? "devis en cours" : l.statut;
+        const qtyCommandeeTrouvee = estCommande ? (ligneMatch ? ligneMatch.qty : source.qty) || l.qty_besoin : l.qty_commandee;
+        // L'unité réelle de la commande/devis peut différer de l'unité du besoin (ex. besoin en m²,
+        // commande en ml de rouleau) — on la garde séparée plutôt que de supposer qu'elle correspond.
+        const uniteCommandeeTrouvee = estCommande ? (ligneMatch ? ligneMatch.unit : source.unit) || l.unit : l.unit_commandee;
+        const changements = {
+          article: (ligneMatch && ligneMatch.article) || l.article,
+          fourn: source.fourn || l.fourn,
+          prix_estime: (ligneMatch ? ligneMatch.prix : source.prix) || l.prix_estime,
+          commande_id: commandeIdTrouvee,
+          statut: nouveauStatut,
+          qty_commandee: qtyCommandeeTrouvee,
+          unit_commandee: uniteCommandeeTrouvee,
+          // La commande n'ayant qu'un statut reçu/pas reçu (pas de quantité partielle), on considère
+          // que tout ce qui a été commandé a été reçu dès que "reçue" est cochée — évite d'avoir à
+          // ressaisir une info déjà connue. Reste modifiable à la main pour un suivi plus fin.
+          qty_recue: estRecue ? qtyCommandeeTrouvee : l.qty_recue
+        };
+        const aChange = Object.keys(changements).some(k => String(changements[k] || "") !== String(l[k] || ""));
+        if (aChange) {
+          await metre.update(l.id, { ...l, ...changements });
+          maj++;
+        }
+      }
+      alert(`Synchronisation terminée : ${maj} article${maj !== 1 ? "s" : ""} mis à jour${lies > 0 ? `, dont ${lies} rattaché${lies > 1 ? "s" : ""} à une commande retrouvée` : ""}.`);
+    } finally {
+      setSyncingTout(false);
     }
-    if (!source) {
-      alert("Aucun devis ou commande lié à cet article.");
-      return;
-    }
-    const ligneMatch = lignesSource.find(x => normRef(x.article) === normRef(l.article)) || (lignesSource.length === 1 ? lignesSource[0] : null);
-    await metre.update(l.id, {
-      ...l,
-      article: (ligneMatch && ligneMatch.article) || l.article,
-      fourn: source.fourn || l.fourn,
-      prix_estime: (ligneMatch ? ligneMatch.prix : source.prix) || l.prix_estime
-    });
   }
   // ── Liaison Commandes : créer une nouvelle commande à partir de la ligne, ou la lier à une commande existante ──
   function openLink(l) {
@@ -15775,12 +15812,17 @@ function MetreProjet({
           ...linking,
           commande_id: newOrder.id,
           qty_commandee: linking.qty_besoin,
+          unit_commandee: linking.unit || "pcs",
           statut: "commandé"
         });
       } else if (linkMode === "link" && linkCommandeId) {
+        const cmdChoisie = projOrders.find(o => String(o.id) === String(linkCommandeId));
+        const ligneCmd = cmdChoisie ? getLignes(cmdChoisie).find(x => normRef(x.article) === normRef(linking.article)) || getLignes(cmdChoisie)[0] : null;
         await metre.update(linking.id, {
           ...linking,
           commande_id: linkCommandeId,
+          qty_commandee: (ligneCmd && ligneCmd.qty) || cmdChoisie?.qty || linking.qty_commandee,
+          unit_commandee: (ligneCmd && ligneCmd.unit) || cmdChoisie?.unit || linking.unit,
           statut: "commandé"
         });
       }
@@ -15789,57 +15831,8 @@ function MetreProjet({
       setLinkBusy(false);
     }
   }
-  // ── Mise à jour de la quantité reçue ──
-  async function updateRecue(l, val) {
-    const qr = +val || 0;
-    const qc = +l.qty_commandee || +l.qty_besoin || 0;
-    let statut = l.statut;
-    if (qr <= 0) statut = "commandé";
-    else if (qr < qc) statut = "partiellement reçu";
-    else statut = "reçu";
-    await metre.update(l.id, {
-      ...l,
-      qty_recue: qr,
-      statut
-    });
-  }
-  // ── Liaison Stock libre : réserver/déduire du stock disponible ──
-  function openReserve(l) {
-    setReserving(l);
-    setReserveQty(String(l.qty_besoin || ""));
-  }
-  async function confirmReserve() {
-    if (!reserving) return;
-    const stockItem = (stocks?.rows || []).find(s => normRef(s.ref) === normRef(reserving.stock_ref || reserving.article));
-    if (!stockItem) {
-      alert("Aucun article de stock trouvé avec cette référence.");
-      return;
-    }
-    const qty = +reserveQty || 0;
-    const dispo = Number(stockItem.qty) || 0;
-    if (qty > dispo) {
-      alert(`Quantité demandée (${qty}) supérieure au stock disponible (${dispo}).`);
-      return;
-    }
-    setReserveBusy(true);
-    try {
-      await stocks.update(stockItem.id, {
-        ...stockItem,
-        qty: dispo - qty
-      });
-      await metre.update(reserving.id, {
-        ...reserving,
-        stock_ref: stockItem.ref,
-        stock_reserve: (+reserving.stock_reserve || 0) + qty,
-        note: (reserving.note ? reserving.note + " · " : "") + `${qty} ${stockItem.unit || ""} réservé(s) du stock libre le ${TODAY}`
-      });
-      setReserving(null);
-    } finally {
-      setReserveBusy(false);
-    }
-  }
   const totalEstime = lignes.reduce((s, l) => s + ligneTotal(l), 0);
-  const manquantsAtelier = lignesProjet.filter(l => l.usage === "atelier" && l.statut_prep === "manquant");
+  const manquantsAtelier = lignesProjet.filter(l => l.usage === "atelier" && l.statut === "à commander");
   return React.createElement("div", null, React.createElement("div", {
     style: {
       display: "flex",
@@ -15862,6 +15855,11 @@ function MetreProjet({
       marginLeft: 8
     }
   }, "· Estimé : ", totalEstime.toLocaleString("fr-FR"), " €")), React.createElement(Btn, {
+    secondary: true,
+    disabled: syncingTout,
+    onClick: syncTout,
+    title: "Recopie nom/fournisseur/prix depuis les devis et commandes liés, et retrouve une commande correspondant à un devis même si elle n'a pas été liée directement"
+  }, syncingTout ? "Synchronisation…" : "🔄 Sync tout"), React.createElement(Btn, {
     primary: true,
     onClick: openNew
   }, "+ Article")), React.createElement("div", {
@@ -15904,7 +15902,7 @@ function MetreProjet({
   }, "Aucun article dans le métré de ce projet.", React.createElement("br", null), "Note ici la quincaillerie et tout autre besoin matière à commander."), lignes.length > 0 && React.createElement(Bd, null, React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "1.6fr 70px 80px 0.9fr 80px 80px 90px 1fr 140px",
+      gridTemplateColumns: "1.6fr 70px 80px 0.9fr 90px 1fr 140px",
       gap: 6,
       padding: "6px 0",
       borderBottom: "1px solid #EEEEEE",
@@ -15913,7 +15911,7 @@ function MetreProjet({
       color: "#7A7A7A",
       textTransform: "uppercase"
     }
-  }, React.createElement("span", null, "Article"), React.createElement("span", null, "Besoin"), React.createElement("span", null, "Cmd."), React.createElement("span", null, "Fourn."), React.createElement("span", null, "Reçu"), React.createElement("span", null, "Stock rés."), React.createElement("span", null, "Total"), React.createElement("span", null, "Statut"), React.createElement("span", {
+  }, React.createElement("span", null, "Article"), React.createElement("span", null, "Besoin"), React.createElement("span", null, "Cmd."), React.createElement("span", null, "Fourn."), React.createElement("span", null, "Total"), React.createElement("span", null, "Statut"), React.createElement("span", {
     style: {
       textAlign: "right"
     }
@@ -15923,7 +15921,7 @@ function MetreProjet({
       key: l.id,
       style: {
         display: "grid",
-        gridTemplateColumns: "1.6fr 70px 80px 0.9fr 80px 80px 90px 1fr 140px",
+        gridTemplateColumns: "1.6fr 70px 80px 0.9fr 90px 1fr 140px",
         gap: 6,
         padding: "8px 0",
         borderBottom: "0.5px solid #F5F5F5",
@@ -15948,19 +15946,20 @@ function MetreProjet({
         color: "#7A7A7A",
         marginTop: 1
       }
-    }, l.note)), React.createElement("span", null, l.qty_besoin || 0, " ", l.unit), React.createElement("span", null, l.qty_commandee || "—"), React.createElement("span", {
+    }, l.note)), React.createElement("span", null, l.qty_besoin || 0, " ", l.unit), l.qty_commandee ? React.createElement("span", {
+      title: l.unit_commandee && l.unit_commandee !== l.unit ? `Commandé en ${l.unit_commandee}, besoin exprimé en ${l.unit} — vérifier la conversion (ex. m² ↔ ml de rouleau).` : undefined,
+      style: {
+        color: l.unit_commandee && l.unit_commandee !== l.unit ? "#CC8800" : "#3A3A3A",
+        fontWeight: l.unit_commandee && l.unit_commandee !== l.unit ? 700 : 400
+      }
+    }, l.unit_commandee && l.unit_commandee !== l.unit && "⚠ ", l.qty_commandee, " ", l.unit_commandee || l.unit) : React.createElement("span", null, "—"), React.createElement("span", {
       style: {
         color: "#3A3A3A",
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap"
       }
-    }, l.fourn || "—"), React.createElement(Inp, {
-      type: "number",
-      value: l.qty_recue || "",
-      onChange: e => updateRecue(l, e.target.value),
-      placeholder: "0"
-    }), React.createElement("span", null, l.stock_reserve ? `${l.stock_reserve} ${l.unit || ""}` : "—"), React.createElement("span", {
+    }, l.fourn || "—"), React.createElement("span", {
       style: {
         fontFamily: "'DM Mono',monospace",
         fontWeight: 600
@@ -15979,37 +15978,11 @@ function MetreProjet({
     }, React.createElement(Btn, {
       small: true,
       onClick: () => openEdit(l)
-    }, "Modifier"), (l.devis_id || l.commande_id) && React.createElement(Btn, {
-      small: true,
-      secondary: true,
-      onClick: async () => { await syncInfosLigne(l); },
-      title: "Recopier nom / fournisseur / prix depuis le devis ou la commande liée"
-    }, "🔄 Sync"), l.usage === "atelier" && React.createElement("button", {
-      title: "Statut de préparation atelier — cliquer pour changer (visible par le BE)",
-      onClick: async () => {
-        const next = l.statut_prep === "prêt" ? "manquant" : l.statut_prep === "manquant" ? "" : "prêt";
-        await metre.update(l.id, { ...l, statut_prep: next });
-      },
-      style: {
-        fontSize: 10,
-        padding: "3px 8px",
-        borderRadius: 10,
-        border: `1px solid ${l.statut_prep === "prêt" ? "#2A7A2A" : l.statut_prep === "manquant" ? "#CC2222" : "#DDDDDD"}`,
-        background: l.statut_prep === "prêt" ? "#EAF7EA" : l.statut_prep === "manquant" ? "#FFF0F0" : "#F2F0ED",
-        color: l.statut_prep === "prêt" ? "#2A7A2A" : l.statut_prep === "manquant" ? "#CC2222" : "#7A7A7A",
-        cursor: "pointer",
-        fontWeight: 600,
-        fontFamily: "'DM Sans',sans-serif"
-      }
-    }, l.statut_prep === "prêt" ? "✓ Prêt" : l.statut_prep === "manquant" ? "⚠ Manquant" : "À préparer"), (l.statut === "à commander" || l.statut === "devis en cours") && React.createElement(Btn, {
+    }, "Modifier"), (l.statut === "à commander" || l.statut === "devis en cours") && React.createElement(Btn, {
       small: true,
       secondary: true,
       onClick: () => openLink(l)
     }, "Commander"), React.createElement(Btn, {
-      small: true,
-      secondary: true,
-      onClick: () => openReserve(l)
-    }, "Stock"), React.createElement(Btn, {
       small: true,
       danger: true,
       onClick: () => removeLigne(l.id)
@@ -16063,7 +16036,14 @@ function MetreProjet({
     label: "Usage"
   }, React.createElement(Sel, {
     value: form.usage || "chantier",
-    onChange: e => f("usage", e.target.value)
+    onChange: e => {
+      const val = e.target.value;
+      setForm(x => ({
+        ...x,
+        usage: val,
+        statut: !editing && x.statut === "à commander" ? (val === "atelier" ? "à préparer" : "à commander") : x.statut
+      }));
+    }
   }, React.createElement("option", { value: "chantier" }, "🏗️ Chantier"), React.createElement("option", { value: "atelier" }, "🔧 Atelier (production)"))), form.usage === "atelier" && React.createElement(FG, {
     label: "Mission atelier liée"
   }, React.createElement(Sel, {
@@ -16156,12 +16136,6 @@ function MetreProjet({
     key: d.id,
     value: d.id
   }, d.titre, " — ", d.fourn)))), React.createElement(FG, {
-    label: "Référence stock (si applicable)"
-  }, React.createElement(Inp, {
-    value: form.stock_ref || "",
-    onChange: e => f("stock_ref", e.target.value),
-    placeholder: "Référence article dans le module Stocks"
-  })), React.createElement(FG, {
     label: "Note"
   }, React.createElement(Inp, {
     rows: 2,
@@ -16263,71 +16237,7 @@ function MetreProjet({
     primary: true,
     onClick: confirmLink,
     disabled: linkBusy || linkMode === "link" && !linkCommandeId
-  }, linkBusy ? "⟳ ..." : "Confirmer")))), reserving && React.createElement("div", {
-    style: {
-      position: "fixed",
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      background: "rgba(0,0,0,0.4)",
-      zIndex: 300,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center"
-    },
-    onClick: e => {
-      if (false /* clic sur le fond volontairement désactivé — évite la fermeture accidentelle et la perte de saisie */ && !reserveBusy) setReserving(null);
-    }
-  }, React.createElement("div", {
-    style: {
-      background: "#fff",
-      borderRadius: 12,
-      padding: 22,
-      width: 420,
-      maxWidth: "92vw"
-    }
-  }, React.createElement("div", {
-    style: {
-      fontSize: 14,
-      fontWeight: 700,
-      marginBottom: 4
-    }
-  }, "Réserver du stock libre"), React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: "#7A7A7A",
-      marginBottom: 12
-    }
-  }, "Pour « ", reserving.article, " ». Indique la référence exacte du stock (module Stocks) à déduire."), React.createElement(FG, {
-    label: "Référence stock"
-  }, React.createElement(Inp, {
-    value: reserving.stock_ref || reserving.article || "",
-    onChange: e => setReserving(x => ({
-      ...x,
-      stock_ref: e.target.value
-    }))
-  })), React.createElement(FG, {
-    label: "Quantité à réserver"
-  }, React.createElement(Inp, {
-    type: "number",
-    value: reserveQty,
-    onChange: e => setReserveQty(e.target.value)
-  })), React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "flex-end",
-      gap: 8,
-      marginTop: 14
-    }
-  }, React.createElement(Btn, {
-    onClick: () => setReserving(null),
-    disabled: reserveBusy
-  }, "Annuler"), React.createElement(Btn, {
-    primary: true,
-    onClick: confirmReserve,
-    disabled: reserveBusy || !reserveQty
-  }, reserveBusy ? "⟳ ..." : "Déduire du stock")))));
+  }, linkBusy ? "⟳ ..." : "Confirmer")))));
 }
 function Taches({
   sheet,
