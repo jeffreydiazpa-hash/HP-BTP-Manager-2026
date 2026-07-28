@@ -539,7 +539,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.15";
+const VERSION = "v4.7.17";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -11003,6 +11003,8 @@ function MissionDetailPanel({
   const etapes_m = (etapes?.rows || []).filter(r => String(r.mission_id) === String(m.id));
   const totalHeuresEtapes = etapes_m.reduce((s, e) => s + (Number(e.heures) || 0), 0);
   const nbEtapesAvecHeures = etapes_m.filter(e => Number(e.heures) > 0).length;
+  const etapesAvecHeuresReelles = etapes_m.filter(e => Number(e.heures) > 0);
+  const utiliserHeuresReelles = etapesAvecHeuresReelles.length > 0;
   const nbTerminees = etapes_m.filter(e => e.statut === "terminé").length;
   const lignesFab = (suiviFab?.rows || []).filter(r => String(r.mission_id) === String(m.id));
   const normOpLocal = s => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -11195,26 +11197,60 @@ function MissionDetailPanel({
   }, React.createElement("button", {
     onClick: async () => {
       let synced = 0;
+      let crees = 0;
+      const phasesVues = new Set();
+      const norme = s => String(s || "").trim().toLowerCase();
       for (const l of lignesFab) {
-        const nb = Number(l.nb_unites) || 0;
-        const vals = [];
-        try {
-          vals.push(...JSON.parse(l.valeurs || "[]"));
-        } catch (e) {}
-        const phaseTerminee = nb > 0 && vals.slice(0, nb).every(x => x === 1);
+        const keyGroup = `${l.famille}|||${l.phase}`;
+        if (phasesVues.has(keyGroup)) continue;
+        phasesVues.add(keyGroup);
+        const lignesPhase = lignesFab.filter(x => x.famille === l.famille && x.phase === l.phase);
+        const phaseTerminee = lignesPhase.every(x => {
+          const nb = Number(x.nb_unites) || 0;
+          const v = [];
+          try {
+            v.push(...JSON.parse(x.valeurs || "[]"));
+          } catch (e) {}
+          return nb > 0 && v.slice(0, nb).every(y => y === 1);
+        });
+        const auMoinsUneCoche = lignesPhase.some(x => {
+          const v = [];
+          try {
+            v.push(...JSON.parse(x.valeurs || "[]"));
+          } catch (e) {}
+          return v.some(y => y === 1);
+        });
         const key = `fab:${l.famille}|||${l.phase}`;
-        const norme = s => String(s || "").trim().toLowerCase();
         const etapeLiee = (etapes?.rows || []).find(e => String(e.mission_id) === String(m.id) && (String(e.note || "").includes(key) || norme(e.titre) === norme(`${l.phase}`) || norme(e.titre) === norme(`${l.famille} ${l.phase}`) || norme(e.titre) === norme(`${l.famille} / ${l.phase}`)));
-        if (etapeLiee && phaseTerminee && etapeLiee.statut !== "terminé") {
-          await etapes.update(etapeLiee.id, {
-            ...etapeLiee,
-            statut: "terminé"
+        if (!etapeLiee) {
+          await etapes.add({
+            mission_id: String(m.id),
+            module: moduleType,
+            titre: `${l.famille} — ${l.phase}`,
+            responsable: "",
+            dateDebut: TODAY,
+            dateFin: "",
+            statut: phaseTerminee ? "terminé" : auMoinsUneCoche ? "en cours" : "à faire",
+            note: key
           });
-          synced++;
+          crees++;
+        } else {
+          const nouveauStatut = phaseTerminee ? "terminé" : auMoinsUneCoche ? "en cours" : etapeLiee.statut;
+          if (etapeLiee.statut !== nouveauStatut) {
+            await etapes.update(etapeLiee.id, {
+              ...etapeLiee,
+              statut: nouveauStatut
+            });
+            synced++;
+          }
         }
       }
-      alert(synced > 0 ? `${synced} étape${synced > 1 ? "s" : ""} mise${synced > 1 ? "s" : ""} à jour.` : "Aucune étape à mettre à jour.");
+      const msgs = [];
+      if (crees > 0) msgs.push(`${crees} étape${crees > 1 ? "s" : ""} créée${crees > 1 ? "s" : ""}`);
+      if (synced > 0) msgs.push(`${synced} étape${synced > 1 ? "s" : ""} mise${synced > 1 ? "s" : ""} à jour`);
+      alert(msgs.length ? msgs.join(" · ") + "." : "Tout est déjà synchronisé.");
     },
+    title: "Crée les étapes manquantes pour les phases du Suivi et met à jour leur statut",
     style: {
       padding: "5px 12px",
       borderRadius: 4,
@@ -11603,7 +11639,7 @@ function MissionDetailPanel({
       color: "#7A7A7A",
       marginBottom: 10
     }
-  }, "Estimation : 7h/jour d'activité, partagées entre missions si coches simultanées."), React.createElement("div", {
+  }, utiliserHeuresReelles ? "Heures réelles mesurées sur les étapes liées au Suivi (démarrage/finalisation ou calcul par jour), complétées à la main pour les étapes sans phase liée." : "Estimation : 7h/jour d'activité, partagées entre missions si coches simultanées."), React.createElement("div", {
     style: {
       display: "flex",
       gap: 10,
@@ -11621,15 +11657,15 @@ function MissionDetailPanel({
     style: {
       fontSize: 18,
       fontWeight: 700,
-      color: "#CC8800"
+      color: utiliserHeuresReelles ? "#2A7A2A" : "#CC8800"
     }
-  }, Math.round(totalEstim * 10) / 10, "h"), React.createElement("div", {
+  }, Math.round((utiliserHeuresReelles ? totalHeuresEtapes : totalEstim) * 10) / 10, "h"), React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#7A7A7A",
       marginTop: 2
     }
-  }, "Total estimé")), React.createElement("div", {
+  }, utiliserHeuresReelles ? "Heures réelles" : "Total estimé")), React.createElement("div", {
     style: {
       flex: 1,
       padding: "10px 12px",
@@ -11643,13 +11679,82 @@ function MissionDetailPanel({
       fontWeight: 700,
       color: "#1A5DAB"
     }
-  }, Object.keys(heuresParMembre).length), React.createElement("div", {
+  }, utiliserHeuresReelles ? etapesAvecHeuresReelles.length : Object.keys(heuresParMembre).length), React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#7A7A7A",
       marginTop: 2
     }
-  }, "Membres actifs"))), Object.keys(heuresParMembre).length > 0 ? React.createElement("table", {
+  }, utiliserHeuresReelles ? "Étapes chiffrées" : "Membres actifs"))), utiliserHeuresReelles ? React.createElement("table", {
+    style: {
+      width: "100%",
+      borderCollapse: "collapse",
+      fontSize: 11
+    }
+  }, React.createElement("thead", null, React.createElement("tr", {
+    style: {
+      background: "#F9F9F9",
+      borderBottom: "1px solid #DDD"
+    }
+  }, React.createElement("th", {
+    style: {
+      padding: "5px 8px",
+      textAlign: "left",
+      fontWeight: 700
+    }
+  }, "Étape"), React.createElement("th", {
+    style: {
+      padding: "5px 8px",
+      textAlign: "right",
+      fontWeight: 700
+    }
+  }, "Heures"), React.createElement("th", {
+    style: {
+      padding: "5px 8px",
+      textAlign: "right",
+      fontWeight: 700
+    }
+  }, "Personnes"))), React.createElement("tbody", null, etapesAvecHeuresReelles.slice().sort((a, b) => (Number(b.heures) || 0) - (Number(a.heures) || 0)).map(e => React.createElement("tr", {
+    key: e.id,
+    style: {
+      borderBottom: "0.5px solid #EEE"
+    }
+  }, React.createElement("td", {
+    style: {
+      padding: "4px 8px"
+    }
+  }, e.titre), React.createElement("td", {
+    style: {
+      padding: "4px 8px",
+      textAlign: "right",
+      fontWeight: 700,
+      color: "#2A7A2A"
+    }
+  }, Math.round(Number(e.heures) * 10) / 10, "h"), React.createElement("td", {
+    style: {
+      padding: "4px 8px",
+      textAlign: "right",
+      color: "#7A7A7A"
+    }
+  }, e.nbPersonnes || "—"))), React.createElement("tr", {
+    key: "total-heures-reelles",
+    style: {
+      background: "#F2F0ED",
+      borderTop: "1px solid #DDD"
+    }
+  }, React.createElement("td", {
+    style: {
+      padding: "4px 8px",
+      fontWeight: 700
+    }
+  }, "TOTAL"), React.createElement("td", {
+    style: {
+      padding: "4px 8px",
+      textAlign: "right",
+      fontWeight: 700,
+      color: "#2A7A2A"
+    }
+  }, Math.round(totalHeuresEtapes * 10) / 10, "h"), React.createElement("td", null)))) : Object.keys(heuresParMembre).length > 0 ? React.createElement("table", {
     style: {
       width: "100%",
       borderCollapse: "collapse",
@@ -11724,7 +11829,7 @@ function MissionDetailPanel({
       fontStyle: "italic",
       padding: "12px 0"
     }
-  }, "Aucune coche enregistrée — les heures seront estimées au fur et à mesure.")), moisDispo.length > 0 && React.createElement(Bd, null, React.createElement(SecTitle, null, "Par mois"), React.createElement("table", {
+  }, "Aucune coche enregistrée — les heures seront estimées au fur et à mesure.")), !utiliserHeuresReelles && moisDispo.length > 0 && React.createElement(Bd, null, React.createElement(SecTitle, null, "Par mois"), React.createElement("table", {
     style: {
       width: "100%",
       borderCollapse: "collapse",
