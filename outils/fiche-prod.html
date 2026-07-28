@@ -146,6 +146,27 @@
   <div id="vueDetail" style="display:none;">
     <button class="linkbtn" id="btn-back" style="margin-bottom:14px;">← Retour à la liste</button>
 
+    <h2>Préparation matériaux <span class="count" id="materiauxProdCount"></span></h2>
+    <div class="card" id="materiauxProdCard" style="display:none;">
+      <div class="hint" style="margin-bottom:8px;">Matériaux nécessaires pour la mission atelier liée ci-dessous. Les quantités sont définies ici, pour cette production précise — ce n'est pas une lecture du stock disponible. Marquer "Prêt" ou "Manquant" prévient le Bureau d'Études.</div>
+      <table class="fl" id="materiauxProdTable"></table>
+      <div class="toolbar left" style="margin:10px 0 0;">
+        <button class="action" id="btn-add-materiau" type="button">+ Ajouter un matériau</button>
+      </div>
+      <div class="field-row" id="materiauAddRow" style="display:none;margin-top:8px;">
+        <div class="field"><label>Article</label><input type="text" id="materiau-article" placeholder="Ex : Rail alu DK-06"></div>
+        <div class="field small"><label>Quantité nécessaire</label><input type="number" id="materiau-qty" placeholder="0"></div>
+        <div class="field small"><label>Unité</label>
+          <select id="materiau-unit"><option>pcs</option><option>m</option><option>m²</option><option>ml</option><option>kg</option><option>L</option></select>
+        </div>
+        <div class="field small" style="display:flex;align-items:flex-end;gap:6px;">
+          <button class="btn-primary" id="btn-save-materiau" type="button">Ajouter</button>
+          <button class="linkbtn" id="btn-cancel-materiau" type="button">Annuler</button>
+        </div>
+      </div>
+    </div>
+    <div class="hint" id="materiauxProdEmpty" style="display:none;margin-bottom:16px;">Aucun matériau défini pour cette mission atelier pour l'instant — sélectionne d'abord une mission ci-dessous, puis ajoute les matériaux nécessaires.</div>
+
     <h2>Identification</h2>
     <div class="card">
       <div class="field-row">
@@ -270,7 +291,7 @@
 </footer>
 
 <script>
-const TOOL_VERSION = "1.3";
+const TOOL_VERSION = "1.5";
 document.getElementById('versionBadge').textContent = 'v' + TOOL_VERSION;
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -575,6 +596,7 @@ function afficherDetail(){
 
   creerZoneUpload('upzone-vue3d', 'vue3d', () => FICHE);
   creerZoneUpload('upzone-eclate', 'eclate', () => FICHE);
+  renderMateriauxProd();
   renderCouches();
   renderPieces();
   document.getElementById('saveStatus').textContent = '';
@@ -601,7 +623,7 @@ document.getElementById('f-releveLie').addEventListener('change', (e) => {
 });
 const TYPO_COUCHES_LOCAL = { "Simple peau":1, "Coussin 2 couches":2, "Coussin 3 couches":3, "Coussin 4 couches":4, "Coussin 5 couches":5 };
 
-document.getElementById('f-missionLie').addEventListener('change', e => FICHE.missionLie = e.target.value);
+document.getElementById('f-missionLie').addEventListener('change', e => { FICHE.missionLie = e.target.value; renderMateriauxProd(); });
 document.getElementById('f-metreLie').addEventListener('change', (e) => {
   FICHE.metreLie = e.target.value;
   if (!FICHE.metreLie) return;
@@ -774,6 +796,123 @@ async function sauvegarderFiche(silencieux){
   }
 }
 document.getElementById('btn-save').addEventListener('click', () => sauvegarderFiche(false));
+
+// ---------- Ajout direct d'un matériau nécessaire (depuis la fiche, pas depuis le Métré du BE) ----------
+document.getElementById('btn-add-materiau').addEventListener('click', () => {
+  document.getElementById('materiau-article').value = '';
+  document.getElementById('materiau-qty').value = '';
+  document.getElementById('materiau-unit').value = 'pcs';
+  document.getElementById('materiauAddRow').style.display = '';
+  document.getElementById('materiau-article').focus();
+});
+document.getElementById('btn-cancel-materiau').addEventListener('click', () => {
+  document.getElementById('materiauAddRow').style.display = 'none';
+});
+document.getElementById('btn-save-materiau').addEventListener('click', async () => {
+  const article = document.getElementById('materiau-article').value.trim();
+  const qty = +document.getElementById('materiau-qty').value || 0;
+  const unit = document.getElementById('materiau-unit').value;
+  if (!article) { alert('Le nom de l\u2019article est obligatoire.'); return; }
+  if (!FICHE.missionLie) { alert('Sélectionne d\u2019abord une mission atelier liée (dans Identification, ci-dessous).'); return; }
+  const btn = document.getElementById('btn-save-materiau');
+  btn.disabled = true;
+  try {
+    const r = await gasPost({
+      action: 'add', key: 'metre',
+      data: {
+        projet_id: FICHE.projet, article, qty_besoin: qty, unit,
+        usage: 'atelier', mission_id: FICHE.missionLie,
+        statut: 'à préparer',
+        fourn: '', prix_estime: '', devis_id: '', commande_id: '',
+        qty_commandee: '', qty_recue: '', unit_commandee: '',
+        note: '', tags: '', cat: '', specs: ''
+      }
+    });
+    if (r.data) ALL_METRE.push(r.data);
+    document.getElementById('materiauAddRow').style.display = 'none';
+    renderMateriauxProd();
+  } catch(e) {
+    alert('Échec de l\u2019ajout : ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------- Matériaux nécessaires (métré atelier rattaché à la mission liée) ----------
+function renderMateriauxProd(){
+  const lignes = FICHE.missionLie ? ALL_METRE.filter(m => m.usage === 'atelier' && String(m.mission_id) === String(FICHE.missionLie)) : [];
+  document.getElementById('materiauxProdCount').textContent = lignes.length ? '(' + lignes.length + ')' : '';
+  document.getElementById('materiauxProdCard').style.display = FICHE.missionLie ? '' : 'none';
+  document.getElementById('materiauxProdEmpty').style.display = FICHE.missionLie ? 'none' : '';
+  document.getElementById('btn-add-materiau').style.display = (FICHE.missionLie && !isBE) ? '' : 'none';
+  const tbl = document.getElementById('materiauxProdTable');
+  if (!lignes.length) { tbl.innerHTML = ''; return; }
+  const METRE_STATUTS_ATELIER = ['à préparer', 'disponible', 'à commander', 'devis en cours', 'commandé', 'partiellement reçu', 'reçu', 'annulé'];
+  const styleStatut = (s) => {
+    if (s === 'reçu' || s === 'disponible') return 'color:#2A7A2A;border-color:#2A7A2A;';
+    if (s === 'partiellement reçu') return 'color:#8A5A00;border-color:#8A5A00;';
+    if (s === 'commandé') return 'color:#1A5DAB;border-color:#1A5DAB;';
+    if (s === 'devis en cours') return 'color:#6A2DA8;border-color:#6A2DA8;';
+    if (s === 'à commander') return 'color:#CC2222;border-color:#CC2222;';
+    return 'color:#7A7A7A;border-color:#DDDDDD;';
+  };
+  tbl.innerHTML = '<tr><th style="text-align:left;">Article</th><th style="text-align:left;">Nécessaire</th><th style="text-align:left;">Statut</th><th></th></tr>' +
+    lignes.map(l => `<tr>
+      <td>${esc(l.article)}</td>
+      <td><input type="number" class="besoin-input" data-id="${esc(l.id)}" value="${esc(l.qty_besoin)}" style="width:70px;" ${isBE?'disabled':''}> ${esc(l.unit||'')}</td>
+      <td><select class="statut-select" data-id="${esc(l.id)}" style="border-radius:6px;padding:3px 8px;font-size:11px;font-weight:600;border-width:1px;${styleStatut(l.statut)}" ${isBE?'disabled title="Modifiable seulement depuis l atelier"':''}>${METRE_STATUTS_ATELIER.map(s => `<option value="${esc(s)}" ${s===(l.statut||'à préparer')?'selected':''}>${esc(s)}</option>`).join('')}</select></td>
+      <td>${isBE?'':'<button type="button" class="materiau-del" data-id="'+esc(l.id)+'" style="background:none;border:none;color:#CCCCCC;cursor:pointer;font-size:13px;">✕</button>'}</td>
+    </tr>`).join('');
+  tbl.querySelectorAll('.statut-select').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      if (isBE) return;
+      const id = sel.getAttribute('data-id');
+      const ligne = ALL_METRE.find(m => String(m.id) === id);
+      if (!ligne) return;
+      sel.disabled = true;
+      try {
+        await gasPost({ action: 'update', key: 'metre', id: ligne.id, data: { ...ligne, statut: sel.value } });
+        ligne.statut = sel.value;
+      } catch(e) {
+        alert('Échec de la mise à jour : ' + (e.message || e));
+      } finally {
+        sel.disabled = false;
+      }
+    });
+  });
+  tbl.querySelectorAll('.besoin-input').forEach(inp => {
+    inp.addEventListener('blur', async () => {
+      const id = inp.getAttribute('data-id');
+      const ligne = ALL_METRE.find(m => String(m.id) === id);
+      if (!ligne || String(ligne.qty_besoin) === inp.value) return;
+      inp.disabled = true;
+      try {
+        await gasPost({ action: 'update', key: 'metre', id: ligne.id, data: { ...ligne, qty_besoin: +inp.value || 0 } });
+        ligne.qty_besoin = +inp.value || 0;
+      } catch(e) {
+        alert('Échec de la mise à jour : ' + (e.message || e));
+      } finally {
+        inp.disabled = false;
+      }
+    });
+  });
+  tbl.querySelectorAll('.materiau-del').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Retirer ce matériau de la préparation ?')) return;
+      const id = btn.getAttribute('data-id');
+      btn.disabled = true;
+      try {
+        await gasPost({ action: 'delete', key: 'metre', id });
+        const idx = ALL_METRE.findIndex(m => String(m.id) === id);
+        if (idx >= 0) ALL_METRE.splice(idx, 1);
+        renderMateriauxProd();
+      } catch(e) {
+        alert('Échec de la suppression : ' + (e.message || e));
+        btn.disabled = false;
+      }
+    });
+  });
+}
 
 // ---------- Export PDF ----------
 // Convention imposée par le document de l'atelier : chaque page porte, en bas à droite, un cartouche
