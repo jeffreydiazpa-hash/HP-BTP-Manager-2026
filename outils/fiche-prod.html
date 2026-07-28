@@ -206,6 +206,44 @@
       <div class="hint" style="margin-top:8px;">Penser à exporter les fichiers de découpe à l'origine 0:0.</div>
     </div>
 
+    <h2>Détails de production — Soudure &amp; Pocket</h2>
+    <div class="card">
+      <div class="field-row">
+        <div class="field"><label>Type de soudure</label>
+          <select id="f-soudureType">
+            <option value="">— Non précisé —</option>
+            <option value="standard">Standard</option>
+            <option value="backstrip">Backstrip (films sérigraphiés)</option>
+            <option value="autre">Autre</option>
+          </select>
+        </div>
+        <div class="field"><label>Machine</label><input type="text" id="f-soudureMachine" placeholder="Ex : Machine 1"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Température (°C)</label><input type="text" id="f-soudureTemp" placeholder="Ex : 420"></div>
+        <div class="field"><label>Vitesse (m/min)</label><input type="text" id="f-soudureVitesse" placeholder="Ex : 2,5"></div>
+        <div class="field"><label>Pression (bar)</label><input type="text" id="f-soudurePression" placeholder="Ex : 3,2"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Notes soudure</label><textarea id="f-soudureNotes" placeholder="Ex : zones de chevauchement particulières, réglages spécifiques..."></textarea></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Type de pocket (keder)</label>
+          <select id="f-pocketType">
+            <option value="">— Non précisé —</option>
+            <option value="integree">Intégrée dans le film</option>
+            <option value="bande_dediee">Bande dédiée (Streifen)</option>
+            <option value="autre">Autre</option>
+          </select>
+        </div>
+        <div class="field"><label>Distance soudure–corde (mm)</label><input type="text" id="f-pocketDistanceCorde" placeholder="Ex : 20"></div>
+        <div class="field"><label>Épaisseur bande keder (µm)</label><input type="text" id="f-pocketEpaisseur" placeholder="Ex : 250"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Position / étendue du pocket</label><textarea id="f-pocketPosition" placeholder="Ex : périmètre complet, ou partiel — préciser les zones..."></textarea></div>
+      </div>
+    </div>
+
     <h2>Notes</h2>
     <div class="card">
       <div class="field-row">
@@ -232,7 +270,7 @@
 </footer>
 
 <script>
-const TOOL_VERSION = "1.2";
+const TOOL_VERSION = "1.3";
 document.getElementById('versionBadge').textContent = 'v' + TOOL_VERSION;
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -459,6 +497,8 @@ function nouvelleFicheVierge(){
     releveLie: '', missionLie: '', metreLie: '',
     dimensions: '', tolerances: '', lot: '', railsJoncsValves: '',
     couches: [], pieces: [],
+    soudureType: '', soudureMachine: '', soudureTemp: '', soudureVitesse: '', soudurePression: '', soudureNotes: '',
+    pocketType: '', pocketDistanceCorde: '', pocketEpaisseur: '', pocketPosition: '',
     notes: '', cheminReseau: ''
   };
 }
@@ -473,6 +513,8 @@ function ouvrirFiche(row){
       releveLie: d.releveLie || '', missionLie: d.missionLie || '', metreLie: d.metreLie || '',
       dimensions: d.dimensions || '', tolerances: d.tolerances || '', lot: d.lot || '', railsJoncsValves: d.railsJoncsValves || '',
       couches: d.couches || [], pieces: d.pieces || [],
+      soudureType: d.soudureType || '', soudureMachine: d.soudureMachine || '', soudureTemp: d.soudureTemp || '', soudureVitesse: d.soudureVitesse || '', soudurePression: d.soudurePression || '', soudureNotes: d.soudureNotes || '',
+      pocketType: d.pocketType || '', pocketDistanceCorde: d.pocketDistanceCorde || '', pocketEpaisseur: d.pocketEpaisseur || '', pocketPosition: d.pocketPosition || '',
       notes: d.notes || '', cheminReseau: d.cheminReseau || ''
     };
   } else {
@@ -497,6 +539,16 @@ function afficherDetail(){
   document.getElementById('f-tolerances').value = FICHE.tolerances; document.getElementById('f-tolerances').disabled = dis;
   document.getElementById('f-lot').value = FICHE.lot; document.getElementById('f-lot').disabled = dis;
   document.getElementById('f-railsJoncsValves').value = FICHE.railsJoncsValves; document.getElementById('f-railsJoncsValves').disabled = dis;
+  document.getElementById('f-soudureType').value = FICHE.soudureType; document.getElementById('f-soudureType').disabled = dis;
+  document.getElementById('f-soudureMachine').value = FICHE.soudureMachine; document.getElementById('f-soudureMachine').disabled = dis;
+  document.getElementById('f-soudureTemp').value = FICHE.soudureTemp; document.getElementById('f-soudureTemp').disabled = dis;
+  document.getElementById('f-soudureVitesse').value = FICHE.soudureVitesse; document.getElementById('f-soudureVitesse').disabled = dis;
+  document.getElementById('f-soudurePression').value = FICHE.soudurePression; document.getElementById('f-soudurePression').disabled = dis;
+  document.getElementById('f-soudureNotes').value = FICHE.soudureNotes; document.getElementById('f-soudureNotes').disabled = dis;
+  document.getElementById('f-pocketType').value = FICHE.pocketType; document.getElementById('f-pocketType').disabled = dis;
+  document.getElementById('f-pocketDistanceCorde').value = FICHE.pocketDistanceCorde; document.getElementById('f-pocketDistanceCorde').disabled = dis;
+  document.getElementById('f-pocketEpaisseur').value = FICHE.pocketEpaisseur; document.getElementById('f-pocketEpaisseur').disabled = dis;
+  document.getElementById('f-pocketPosition').value = FICHE.pocketPosition; document.getElementById('f-pocketPosition').disabled = dis;
   document.getElementById('f-notes').value = FICHE.notes; document.getElementById('f-notes').disabled = dis;
   document.getElementById('f-cheminReseau').value = FICHE.cheminReseau; document.getElementById('f-cheminReseau').disabled = dis;
   document.getElementById('btn-add-couche').style.display = isBE ? '' : 'none';
@@ -582,6 +634,16 @@ document.getElementById('f-dimensions').addEventListener('input', e => FICHE.dim
 document.getElementById('f-tolerances').addEventListener('input', e => FICHE.tolerances = e.target.value);
 document.getElementById('f-lot').addEventListener('input', e => FICHE.lot = e.target.value);
 document.getElementById('f-railsJoncsValves').addEventListener('input', e => FICHE.railsJoncsValves = e.target.value);
+document.getElementById('f-soudureType').addEventListener('change', e => FICHE.soudureType = e.target.value);
+document.getElementById('f-soudureMachine').addEventListener('input', e => FICHE.soudureMachine = e.target.value);
+document.getElementById('f-soudureTemp').addEventListener('input', e => FICHE.soudureTemp = e.target.value);
+document.getElementById('f-soudureVitesse').addEventListener('input', e => FICHE.soudureVitesse = e.target.value);
+document.getElementById('f-soudurePression').addEventListener('input', e => FICHE.soudurePression = e.target.value);
+document.getElementById('f-soudureNotes').addEventListener('input', e => FICHE.soudureNotes = e.target.value);
+document.getElementById('f-pocketType').addEventListener('change', e => FICHE.pocketType = e.target.value);
+document.getElementById('f-pocketDistanceCorde').addEventListener('input', e => FICHE.pocketDistanceCorde = e.target.value);
+document.getElementById('f-pocketEpaisseur').addEventListener('input', e => FICHE.pocketEpaisseur = e.target.value);
+document.getElementById('f-pocketPosition').addEventListener('input', e => FICHE.pocketPosition = e.target.value);
 document.getElementById('f-notes').addEventListener('input', e => FICHE.notes = e.target.value);
 document.getElementById('f-cheminReseau').addEventListener('input', e => FICHE.cheminReseau = e.target.value);
 
@@ -685,6 +747,10 @@ async function sauvegarderFiche(silencieux){
         releveLie: FICHE.releveLie, missionLie: FICHE.missionLie, metreLie: FICHE.metreLie,
         dimensions: FICHE.dimensions, tolerances: FICHE.tolerances, lot: FICHE.lot,
         railsJoncsValves: FICHE.railsJoncsValves, couches: FICHE.couches, pieces: FICHE.pieces,
+        soudureType: FICHE.soudureType, soudureMachine: FICHE.soudureMachine, soudureTemp: FICHE.soudureTemp,
+        soudureVitesse: FICHE.soudureVitesse, soudurePression: FICHE.soudurePression, soudureNotes: FICHE.soudureNotes,
+        pocketType: FICHE.pocketType, pocketDistanceCorde: FICHE.pocketDistanceCorde,
+        pocketEpaisseur: FICHE.pocketEpaisseur, pocketPosition: FICHE.pocketPosition,
         notes: FICHE.notes, cheminReseau: FICHE.cheminReseau
       }),
       photos: JSON.stringify(FICHE.photos),
@@ -824,10 +890,37 @@ function buildPDF(){
     doc.setFontSize(8); doc.setFont('helvetica','italic'); doc.setTextColor(...mid);
     doc.text('Penser à exporter les fichiers de découpe à l\u2019origine 0:0.', marginX, y+4);
   }
+  const aDesDetailsProd = FICHE.soudureType || FICHE.soudureMachine || FICHE.soudureTemp || FICHE.soudureVitesse || FICHE.soudurePression || FICHE.soudureNotes || FICHE.pocketType || FICHE.pocketDistanceCorde || FICHE.pocketEpaisseur || FICHE.pocketPosition;
+  if (aDesDetailsProd) {
+    newPage('5. Soudure & Pocket');
+    sectionTitle('5. Soudure & Pocket');
+    const labelsSoudureType = { standard: 'Standard', backstrip: 'Backstrip (films sérigraphiés)', autre: 'Autre' };
+    const labelsPocketType = { integree: 'Intégrée dans le film', bande_dediee: 'Bande dédiée (Streifen)', autre: 'Autre' };
+    champ('Type de soudure', labelsSoudureType[FICHE.soudureType] || FICHE.soudureType);
+    champ('Machine', FICHE.soudureMachine);
+    champ('Température (°C)', FICHE.soudureTemp);
+    champ('Vitesse (m/min)', FICHE.soudureVitesse);
+    champ('Pression (bar)', FICHE.soudurePression);
+    if (FICHE.soudureNotes) {
+      doc.setFontSize(9); doc.setTextColor(...mid); doc.text('Notes soudure :', marginX, y); y += 5;
+      doc.setTextColor(...dark);
+      const linesS = doc.splitTextToSize(pdfSafe(FICHE.soudureNotes), contentW);
+      doc.text(linesS, marginX, y); y += linesS.length * 5 + 2;
+    }
+    y += 3;
+    champ('Type de pocket', labelsPocketType[FICHE.pocketType] || FICHE.pocketType);
+    champ('Distance soudure–corde (mm)', FICHE.pocketDistanceCorde);
+    champ('Épaisseur bande keder (µm)', FICHE.pocketEpaisseur);
+    if (FICHE.pocketPosition) {
+      doc.setFontSize(9); doc.setTextColor(...mid); doc.text('Position / étendue du pocket :', marginX, y); y += 5;
+      doc.setTextColor(...dark);
+      const linesP = doc.splitTextToSize(pdfSafe(FICHE.pocketPosition), contentW);
+      doc.text(linesP, marginX, y); y += linesP.length * 5 + 2;
+    }
+  }
   if (FICHE.notes) {
-    y += 12;
-    sectionTitle('5. Notes');
-    currentLabel += ' & notes';
+    newPage('6. Notes');
+    sectionTitle('6. Notes');
     const lines = doc.splitTextToSize(pdfSafe(FICHE.notes), contentW);
     doc.setFontSize(9); doc.setFont('helvetica','normal'); doc.setTextColor(60,60,60);
     doc.text(lines, marginX, y);
