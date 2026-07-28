@@ -539,7 +539,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.8";
+const VERSION = "v4.7.15";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -556,6 +556,15 @@ const gasInit = async () => {
 };
 const TODAY = new Date().toISOString().split("T")[0];
 const todayDate = new Date(TODAY + "T00:00:00");
+// toISOString() renvoie toujours l'heure UTC, pas l'heure locale de l'utilisateur — à ne jamais utiliser
+// pour un horodatage affiché (ex. "coché à 10h15"), sous peine de décalage (ex. 8h15 affiché en France
+// l'été, alors que personne ne travaille à cette heure). Cette fonction donne l'heure locale du
+// navigateur, au format "YYYY-MM-DD HH:MM".
+function horodatageLocal() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 const MONTHS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
 const UC = {
   critique: {
@@ -2891,7 +2900,7 @@ function Dashboard({
       bg: sc.bg,
       color: sc.tx
     }));
-  })), React.createElement(Bd, null, React.createElement(SecTitle, null, "Atelier & Chantier — dépendances manquantes"), (() => {
+  })), user.role !== "atelier" && user.role !== "chantier" && React.createElement(Bd, null, React.createElement(SecTitle, null, "Atelier & Chantier — dépendances manquantes"), (() => {
     const isBoolD = v => v === true || v === "TRUE";
     const chantActifs = (atelierChantier?.rows || []).filter(m => (m.type === "chantier" || m.type === "atelier") && m.statut !== "terminé" && (user.role === "admin" || !m.projet || mesProjetsNoms.has(String(m.projet).trim().toLowerCase())));
     const alertes = chantActifs.flatMap(m => {
@@ -9995,8 +10004,7 @@ function SuiviFabComponent({
     try {
       historique = JSON.parse(ligne.historique_coches || "[]");
     } catch (e) {}
-    const now = new Date();
-    const horodatage = now.toISOString().slice(0, 16).replace("T", " ");
+    const horodatage = horodatageLocal();
     if (newVal === 1) {
       historique.push({
         idx,
@@ -10025,12 +10033,66 @@ function SuiviFabComponent({
       const etapeLiee = (etapes?.rows || []).find(e => String(e.mission_id) === String(mission.id) && String(e.note || "").includes(etapeKey));
       if (etapeLiee) {
         const nouveauStatut = phaseTerminee ? "terminé" : "en cours";
-        if (etapeLiee.statut !== nouveauStatut) {
+        // Heures calculées automatiquement, avec deux méthodes possibles :
+        // 1) Si la phase contient une opération "démarrage" ET une opération "finalisation" (marqueurs
+        //    volontairement posés par l'équipe), on prend l'écart entre la 1ère coche de "démarrage" et
+        //    la dernière coche de "finalisation" — c'est le signal le plus fiable, peu importe le nombre
+        //    de jours entre les deux.
+        // 2) Sinon (pas de marqueurs dédiés), repli sur l'ancienne heuristique : on additionne, jour par
+        //    jour, l'écart entre 1ère et dernière coche de la journée, toutes opérations confondues — ce
+        //    qui évite de compter les nuits/week-ends quand il n'y a pas de bornes explicites.
+        // Dans les deux cas, le résultat est multiplié par le nombre de personnes renseigné sur l'étape.
+        const normOp = s => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const whensDe = l => {
+          let hist = [];
+          try {
+            hist = JSON.parse(l.id === ligne.id ? JSON.stringify(historique) : l.historique_coches || "[]");
+          } catch (e) {}
+          return hist.map(h => h.when).filter(Boolean).map(w => new Date(String(w).replace(" ", "T"))).filter(d => !isNaN(d));
+        };
+        const ligneDemarrage = lignesPhase.find(l => normOp(l.operation) === "demarrage");
+        const ligneFinalisation = lignesPhase.find(l => normOp(l.operation) === "finalisation");
+        let nouvellesHeures = etapeLiee.heures;
+        if (ligneDemarrage && ligneFinalisation) {
+          const whensD = whensDe(ligneDemarrage);
+          const whensF = whensDe(ligneFinalisation);
+          if (whensD.length && whensF.length) {
+            const tD = Math.min(...whensD.map(d => d.getTime()));
+            const tF = Math.max(...whensF.map(d => d.getTime()));
+            if (tF > tD) {
+              const dureeHeures = (tF - tD) / 3600000;
+              const nbPers = Number(etapeLiee.nbPersonnes) || 1;
+              nouvellesHeures = Math.round(dureeHeures * nbPers * 100) / 100;
+            }
+          }
+        } else {
+          let tousLesWhen = [];
+          for (const l of lignesPhase) tousLesWhen.push(...whensDe(l));
+          if (tousLesWhen.length >= 2) {
+            const parJour = {};
+            for (const d of tousLesWhen) {
+              const jourKey = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+              if (!parJour[jourKey]) parJour[jourKey] = [];
+              parJour[jourKey].push(d.getTime());
+            }
+            let dureeHeures = 0;
+            for (const jourKey of Object.keys(parJour)) {
+              const times = parJour[jourKey];
+              if (times.length >= 2) dureeHeures += (Math.max(...times) - Math.min(...times)) / 3600000;
+            }
+            const nbPers = Number(etapeLiee.nbPersonnes) || 1;
+            nouvellesHeures = Math.round(dureeHeures * nbPers * 100) / 100;
+          }
+        }
+        const statutChange = etapeLiee.statut !== nouveauStatut;
+        const heuresChange = String(nouvellesHeures) !== String(etapeLiee.heures || "");
+        if (statutChange || heuresChange) {
           await etapes.update(etapeLiee.id, {
             ...etapeLiee,
-            statut: nouveauStatut
+            statut: nouveauStatut,
+            heures: nouvellesHeures
           });
-          if (phaseTerminee) await logAction(journal, user, `[${mission.description}] ✅ Phase terminée : ${ligne.famille} / ${ligne.phase}`, mission.projet || "");
+          if (phaseTerminee && statutChange) await logAction(journal, user, `[${mission.description}] ✅ Phase terminée : ${ligne.famille} / ${ligne.phase}`, mission.projet || "");
         }
       }
     }
@@ -10065,18 +10127,23 @@ function SuiviFabComponent({
         valeurs
       });
     }
-    if (newPhaseForm.deadline) {
-      const titreJalon = `${newPhaseForm.famille} — ${newPhaseForm.phase}`;
+    const etapeKey = `fab:${newPhaseForm.famille}|||${newPhaseForm.phase}`;
+    const etapeExistante = (etapes?.rows || []).find(e => String(e.mission_id) === String(mission.id) && String(e.note || "").includes(etapeKey));
+    if (!etapeExistante) {
+      const titreEtape = `${newPhaseForm.famille} — ${newPhaseForm.phase}`;
       await etapes.add({
         mission_id: String(mission.id),
         module: moduleType,
-        titre: titreJalon,
+        titre: titreEtape,
         responsable: "",
         dateDebut: TODAY,
-        dateFin: newPhaseForm.deadline,
+        dateFin: newPhaseForm.deadline || "",
         statut: "à faire",
-        note: `fab:${newPhaseForm.famille}|||${newPhaseForm.phase}`
+        note: etapeKey
       });
+    }
+    if (newPhaseForm.deadline) {
+      const titreJalon = `${newPhaseForm.famille} — ${newPhaseForm.phase}`;
       await events.add({
         title: `[Deadline] ${titreJalon}`,
         date: newPhaseForm.deadline,
@@ -10104,9 +10171,11 @@ function SuiviFabComponent({
       config = JSON.parse(t.config || "[]");
     } catch (e) {}
     setSaving(true);
+    const phasesVues = new Set();
     for (const item of config) {
       if (item.o && Array.isArray(item.o)) {
         const nb = item.n || 10;
+        phasesVues.add(`${item.f}|||${item.p}`);
         for (const operation of item.o) {
           await suiviFab.add({
             mission_id: String(mission.id),
@@ -10121,6 +10190,7 @@ function SuiviFabComponent({
         }
       } else {
         const nb = item.nb_unites || 10;
+        phasesVues.add(`${item.famille}|||${item.phase}`);
         await suiviFab.add({
           mission_id: String(mission.id),
           famille: item.famille,
@@ -10133,9 +10203,60 @@ function SuiviFabComponent({
         });
       }
     }
+    // Une étape liée par phase distincte du template (évite les doublons si plusieurs opérations
+    // partagent la même famille/phase, ex. le format verbeux qui liste une ligne par opération).
+    for (const key of phasesVues) {
+      const [fam, ph] = key.split("|||");
+      if (!fam || !ph) continue;
+      const etapeKey = `fab:${fam}|||${ph}`;
+      const etapeExistante = (etapes?.rows || []).find(e => String(e.mission_id) === String(mission.id) && String(e.note || "").includes(etapeKey));
+      if (!etapeExistante) {
+        await etapes.add({
+          mission_id: String(mission.id),
+          module: moduleType,
+          titre: `${fam} — ${ph}`,
+          responsable: "",
+          dateDebut: TODAY,
+          dateFin: "",
+          statut: "à faire",
+          note: etapeKey
+        });
+      }
+    }
     await logAction(journal, user, `[${mission.description}] 📋 Template appliqué : "${t.nom}"`, mission.projet || "");
     setSaving(false);
     setOnglet("grille");
+  }
+  function getEtapeLieePhase(fam, ph) {
+    const etapeKey = `fab:${fam}|||${ph}`;
+    return (etapes?.rows || []).find(e => String(e.mission_id) === String(mission.id) && String(e.note || "").includes(etapeKey));
+  }
+  async function deplacerPhase(fam, phasesTrieesNoms, index, direction) {
+    const cible = index + direction;
+    if (cible < 0 || cible >= phasesTrieesNoms.length) return;
+    const arr = [...phasesTrieesNoms];
+    [arr[index], arr[cible]] = [arr[cible], arr[index]];
+    for (let i = 0; i < arr.length; i++) {
+      const ph = arr[i];
+      let etapeLiee = getEtapeLieePhase(fam, ph);
+      if (!etapeLiee) {
+        // Phase créée avant la liaison automatique — on crée l'étape manquante à la volée pour
+        // pouvoir stocker son ordre.
+        etapeLiee = await etapes.add({
+          mission_id: String(mission.id),
+          module: moduleType,
+          titre: `${fam} — ${ph}`,
+          responsable: "",
+          dateDebut: TODAY,
+          dateFin: "",
+          statut: "à faire",
+          note: `fab:${fam}|||${ph}`,
+          ordre: i
+        });
+      } else if (Number(etapeLiee.ordre || 0) !== i) {
+        await etapes.update(etapeLiee.id, { ...etapeLiee, ordre: i });
+      }
+    }
   }
   async function sauvegarderTemplate() {
     if (!templateNom.trim()) {
@@ -10173,9 +10294,9 @@ function SuiviFabComponent({
   const pct = progressionGlobale();
   const familles = [...new Set(lignes.map(l => l.famille || "Sans famille"))];
   const lFamille = moduleType === "be" ? "Domaine" : "Famille";
-  const lPhase = moduleType === "be" ? "Étude" : "Phase";
+  const lPhase = moduleType === "be" ? "Étude" : moduleType === "chantier" ? "Étape" : "Phase";
   const lOperation = moduleType === "be" ? "Tâche" : "Opération";
-  const lSuivi = moduleType === "be" ? "Suivi d'études" : "Suivi de fabrication";
+  const lSuivi = moduleType === "be" ? "Suivi d'études" : moduleType === "chantier" ? "Suivi de montage" : "Suivi de fabrication";
   const templatesModule = (templates?.rows || []).filter(t => moduleType === "be" ? t.module === "be" || !t.module : t.module === moduleType || !t.module);
   return React.createElement("div", null, (() => {
     const phases = {};
@@ -10349,7 +10470,7 @@ function SuiviFabComponent({
         fontSize: 11,
         color: "#7A7A7A"
       }
-    }, nbPhases, " phase", nbPhases > 1 ? "s" : "", " · ", nbOps, " opération", nbOps > 1 ? "s" : "")), React.createElement("button", {
+    }, nbPhases, " ", lPhase.toLowerCase(), nbPhases > 1 ? "s" : "", " · ", nbOps, " opération", nbOps > 1 ? "s" : "")), React.createElement("button", {
       disabled: saving,
       onClick: () => appliquerTemplate(t),
       style: {
@@ -10436,7 +10557,7 @@ function SuiviFabComponent({
       marginBottom: 10,
       color: "#1C1C1C"
     }
-  }, "Ajouter une phase"), React.createElement("div", {
+  }, `Ajouter une ${lPhase.toLowerCase()}`), React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr 1fr",
@@ -10462,7 +10583,7 @@ function SuiviFabComponent({
     onChange: e => npf("phase", e.target.value),
     placeholder: "Ex: Découpe"
   })), React.createElement(FG, {
-    label: "Deadline phase"
+    label: `Deadline ${lPhase.toLowerCase()}`
   }, React.createElement(Inp, {
     type: "date",
     value: newPhaseForm.deadline,
@@ -10506,7 +10627,7 @@ function SuiviFabComponent({
       color: "#7A7A7A",
       marginBottom: 6
     }
-  }, "OPÉRATIONS DE CETTE PHASE"), newPhaseOps.map((op, i) => React.createElement("div", {
+  }, `OPÉRATIONS DE CETTE ${lPhase.toUpperCase()}`), newPhaseOps.map((op, i) => React.createElement("div", {
     key: i,
     style: {
       display: "flex",
@@ -10565,13 +10686,13 @@ function SuiviFabComponent({
       color: "#fff",
       fontWeight: 700
     }
-  }, saving ? "..." : "Enregistrer la phase →"))), lignes.length > 0 && React.createElement("div", null, React.createElement("div", {
+  }, saving ? "..." : `Enregistrer ${moduleType === "chantier" ? "l'" : "la "}${lPhase.toLowerCase()} →`))), lignes.length > 0 && React.createElement("div", null, React.createElement("div", {
     style: {
       fontSize: 12,
       fontWeight: 700,
       marginBottom: 10
     }
-  }, "Phases configurées"), (() => {
+  }, `${lPhase}s configurées`), (() => {
     const phases = {};
     for (const l of lignes) {
       const key = `${l.famille}|||${l.phase}`;
@@ -10644,7 +10765,13 @@ function SuiviFabComponent({
       paddingLeft: 8,
       marginBottom: 10
     }
-  }, famille), Object.entries(phases).map(([phase, ops]) => {
+  }, famille), Object.entries(phases).sort((a, b) => {
+    const oa = getEtapeLieePhase(famille, a[0])?.ordre;
+    const ob = getEtapeLieePhase(famille, b[0])?.ordre;
+    const na = oa !== undefined && oa !== "" ? Number(oa) : Infinity;
+    const nb = ob !== undefined && ob !== "" ? Number(ob) : Infinity;
+    return na - nb;
+  }).map(([phase, ops], idxPhase, phasesTrieesArr) => {
     const maxNb = Math.max(...ops.map(o => Number(o.nb_unites) || 0));
     const labels = getLabels(maxNb, ops[0]?.type_unite || "num");
     return React.createElement("div", {
@@ -10695,7 +10822,19 @@ function SuiviFabComponent({
           color: retard ? "#CC2222" : proche ? "#CC8800" : "#7A7A7A",
           border: `0.5px solid ${retard ? "#FFCCCC" : proche ? "#FFDD99" : "#DDDDDD"}`
         }
-      }, retard ? "⚠ " : "⏱ ", "Deadline : ", fmt(dl)));
+      }, retard ? "⚠ " : "⏱ ", "Deadline : ", fmt(dl)), React.createElement("div", {
+        style: { display: "flex", gap: 2, marginLeft: "auto" }
+      }, React.createElement("button", {
+        disabled: idxPhase === 0,
+        onClick: () => deplacerPhase(famille, phasesTrieesArr.map(p => p[0]), idxPhase, -1),
+        title: `Monter cette ${lPhase.toLowerCase()}`,
+        style: { background: "none", border: "1px solid #DDD", borderRadius: 4, cursor: idxPhase === 0 ? "default" : "pointer", fontSize: 11, padding: "1px 5px", opacity: idxPhase === 0 ? 0.35 : 1 }
+      }, "▲"), React.createElement("button", {
+        disabled: idxPhase === phasesTrieesArr.length - 1,
+        onClick: () => deplacerPhase(famille, phasesTrieesArr.map(p => p[0]), idxPhase, 1),
+        title: `Descendre cette ${lPhase.toLowerCase()}`,
+        style: { background: "none", border: "1px solid #DDD", borderRadius: 4, cursor: idxPhase === phasesTrieesArr.length - 1 ? "default" : "pointer", fontSize: 11, padding: "1px 5px", opacity: idxPhase === phasesTrieesArr.length - 1 ? 0.35 : 1 }
+      }, "▼")));
     })(), React.createElement("div", {
       style: {
         overflowX: "auto",
@@ -10853,14 +10992,30 @@ function MissionDetailPanel({
     dateDebut: TODAY,
     dateFin: "",
     statut: "à faire",
-    note: ""
+    note: "",
+    heures: "",
+    nbPersonnes: "",
+    commentaire: ""
   });
   const [showAddEtape, setShowAddEtape] = useState(false);
   const [savingEtape, setSavingEtape] = useState(false);
   const etapeColor = s => s === "terminé" ? "#2A7A2A" : s === "en cours" ? "#CC2222" : "#7A7A7A";
   const etapes_m = (etapes?.rows || []).filter(r => String(r.mission_id) === String(m.id));
+  const totalHeuresEtapes = etapes_m.reduce((s, e) => s + (Number(e.heures) || 0), 0);
+  const nbEtapesAvecHeures = etapes_m.filter(e => Number(e.heures) > 0).length;
   const nbTerminees = etapes_m.filter(e => e.statut === "terminé").length;
   const lignesFab = (suiviFab?.rows || []).filter(r => String(r.mission_id) === String(m.id));
+  const normOpLocal = s => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  function methodeHeures(e) {
+    const note = String(e.note || "");
+    if (!note.startsWith("fab:")) return null;
+    const [fam, ph] = note.slice(4).split("|||");
+    const lignesPh = lignesFab.filter(l => l.famille === fam && l.phase === ph);
+    if (!lignesPh.length) return null;
+    const aDemarrage = lignesPh.some(l => normOpLocal(l.operation) === "demarrage");
+    const aFinalisation = lignesPh.some(l => normOpLocal(l.operation) === "finalisation");
+    return aDemarrage && aFinalisation ? "bornes" : "jour";
+  }
   const avancementFab = (() => {
     if (!lignesFab.length) return null;
     let total = 0,
@@ -11000,7 +11155,7 @@ function MissionDetailPanel({
       borderBottom: "2px solid #EEEEEE",
       marginBottom: 12
     }
-  }, [["fab", moduleType === "be" ? "📋 Suivi d'études" : "📊 Suivi fab"], ...(user?.role !== "atelier" ? [["etapes", "📋 Étapes & jalons"]] : []), ["heures", "⏱ Heures"], ["notes", "📝 Notes"]].map(([id, lbl]) => React.createElement("button", {
+  }, [["fab", moduleType === "be" ? "📋 Suivi d'études" : moduleType === "chantier" ? "🏗️ Suivi montage" : "📊 Suivi fab"], ...(user?.role !== "atelier" ? [["etapes", "📋 Étapes & jalons"]] : []), ["heures", "⏱ Heures"], ["notes", "📝 Notes"]].map(([id, lbl]) => React.createElement("button", {
     key: id,
     onClick: () => setDetailOnglet(id),
     style: {
@@ -11084,7 +11239,18 @@ function MissionDetailPanel({
       color: "#fff",
       fontWeight: 700
     }
-  }, "+ Étape"))), showAddEtape && React.createElement("div", {
+  }, "+ Étape"))), totalHeuresEtapes > 0 && React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 16,
+      padding: "8px 12px",
+      background: "#FBF3EE",
+      border: "0.5px solid #EED9C7",
+      borderRadius: 8,
+      marginBottom: 10,
+      fontSize: 12
+    }
+  }, React.createElement("span", null, React.createElement("b", { style: { color: "#CC6600" } }, Math.round(totalHeuresEtapes * 10) / 10, "h"), " passées au total"), React.createElement("span", { style: { color: "#7A7A7A" } }, nbEtapesAvecHeures, " / ", etapes_m.length, " étape", etapes_m.length > 1 ? "s" : "", " chiffrée", nbEtapesAvecHeures > 1 ? "s" : "")), showAddEtape && React.createElement("div", {
     style: {
       background: "#F9F9F9",
       borderRadius: 8,
@@ -11174,6 +11340,46 @@ function MissionDetailPanel({
     key: s
   }, s))))), React.createElement("div", {
     style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 2fr",
+      gap: 8,
+      marginBottom: 8
+    }
+  }, React.createElement(FG, {
+    label: "Nb personnes"
+  }, React.createElement(Inp, {
+    type: "number",
+    min: 0,
+    step: 1,
+    value: etapeForm.nbPersonnes,
+    onChange: e => setEtapeForm(f => ({
+      ...f,
+      nbPersonnes: e.target.value
+    })),
+    placeholder: "Ex: 3"
+  })), React.createElement(FG, {
+    label: "Heures passées"
+  }, React.createElement(Inp, {
+    type: "number",
+    min: 0,
+    step: 0.5,
+    value: etapeForm.heures,
+    onChange: e => setEtapeForm(f => ({
+      ...f,
+      heures: e.target.value
+    })),
+    placeholder: "Ex: 14"
+  })), React.createElement(FG, {
+    label: "Commentaire"
+  }, React.createElement(Inp, {
+    value: etapeForm.commentaire,
+    onChange: e => setEtapeForm(f => ({
+      ...f,
+      commentaire: e.target.value
+    })),
+    placeholder: "Ex: vent fort le matin, retard"
+  }))), React.createElement("div", {
+    style: {
       display: "flex",
       gap: 8,
       justifyContent: "flex-end"
@@ -11218,7 +11424,10 @@ function MissionDetailPanel({
         dateDebut: TODAY,
         dateFin: "",
         statut: "à faire",
-        note: ""
+        note: "",
+        heures: "",
+        nbPersonnes: "",
+        commentaire: ""
       });
     },
     style: {
@@ -11239,16 +11448,22 @@ function MissionDetailPanel({
       textAlign: "center",
       padding: "16px 0"
     }
-  }, "Aucune étape configurée."), etapes_m.map(e => {
+  }, "Aucune étape configurée."), etapes_m.slice().sort((a, b) => {
+    const na = a.ordre !== undefined && a.ordre !== "" ? Number(a.ordre) : Infinity;
+    const nb = b.ordre !== undefined && b.ordre !== "" ? Number(b.ordre) : Infinity;
+    return na - nb;
+  }).map(e => {
     const retard = e.statut !== "terminé" && e.dateFin && toISO(e.dateFin) < TODAY;
+    const methode = methodeHeures(e);
     return React.createElement("div", {
       key: e.id,
       style: {
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         gap: 10,
         padding: "8px 0",
-        borderBottom: "0.5px solid #EEEEEE"
+        borderBottom: "0.5px solid #EEEEEE",
+        flexWrap: "wrap"
       }
     }, React.createElement("button", {
       onClick: async () => {
@@ -11267,7 +11482,8 @@ function MissionDetailPanel({
         flexShrink: 0,
         display: "flex",
         alignItems: "center",
-        justifyContent: "center"
+        justifyContent: "center",
+        marginTop: 2
       }
     }, e.statut === "terminé" && React.createElement("span", {
       style: {
@@ -11276,7 +11492,8 @@ function MissionDetailPanel({
       }
     }, "✓")), React.createElement("div", {
       style: {
-        flex: 1
+        flex: 1,
+        minWidth: 220
       }
     }, React.createElement("div", {
       style: {
@@ -11300,7 +11517,53 @@ function MissionDetailPanel({
         marginLeft: 4,
         color: retard ? "#CC2222" : "#7A7A7A"
       }
-    }, "→ ", fmt(e.dateFin), retard ? " ⚠" : ""))), React.createElement("select", {
+    }, "→ ", fmt(e.dateFin), retard ? " ⚠" : "")), React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 10,
+        alignItems: "center",
+        marginTop: 4,
+        flexWrap: "wrap"
+      }
+    }, React.createElement("span", {
+      style: { display: "flex", alignItems: "center", gap: 3 }
+    }, React.createElement("span", { style: { fontSize: 10 } }, "⏱"), React.createElement("input", {
+      type: "number",
+      min: 0,
+      step: 0.5,
+      defaultValue: e.heures || "",
+      placeholder: "0",
+      title: "Heures passées sur cette étape",
+      onBlur: async ev => { if (ev.target.value !== String(e.heures || "")) await etapes.update(e.id, { ...e, heures: ev.target.value }); },
+      style: { width: 42, padding: "2px 4px", borderRadius: 4, border: "1px solid #DDD", fontSize: 10, fontFamily: "'DM Sans',sans-serif" }
+    }), React.createElement("span", { style: { fontSize: 10, color: "#7A7A7A" } }, "h")), methode && React.createElement("span", {
+      title: methode === "bornes" ? "Heures calculées depuis les coches des opérations \"Démarrage\" et \"Finalisation\"" : "Heures calculées automatiquement, jour par jour, à partir des coches du Suivi",
+      style: {
+        fontSize: 9,
+        padding: "2px 6px",
+        borderRadius: 10,
+        background: methode === "bornes" ? "#E9F3EC" : "#EEF2FA",
+        color: methode === "bornes" ? "#2A7A2A" : "#1A5DAB",
+        fontWeight: 600
+      }
+    }, methode === "bornes" ? "🔖 Démarrage → Finalisation" : "📅 Auto (par jour)"), React.createElement("span", {
+      style: { display: "flex", alignItems: "center", gap: 3 }
+    }, React.createElement("span", { style: { fontSize: 10 } }, "👥"), React.createElement("input", {
+      type: "number",
+      min: 0,
+      step: 1,
+      defaultValue: e.nbPersonnes || "",
+      placeholder: "0",
+      title: "Nombre de personnes ayant participé",
+      onBlur: async ev => { if (ev.target.value !== String(e.nbPersonnes || "")) await etapes.update(e.id, { ...e, nbPersonnes: ev.target.value }); },
+      style: { width: 34, padding: "2px 4px", borderRadius: 4, border: "1px solid #DDD", fontSize: 10, fontFamily: "'DM Sans',sans-serif" }
+    })), React.createElement("input", {
+      defaultValue: e.commentaire || "",
+      placeholder: "💬 commentaire",
+      title: "Commentaire sur cette étape",
+      onBlur: async ev => { if (ev.target.value !== String(e.commentaire || "")) await etapes.update(e.id, { ...e, commentaire: ev.target.value }); },
+      style: { flex: 1, minWidth: 100, padding: "2px 6px", borderRadius: 4, border: "1px solid #DDD", fontSize: 10, fontFamily: "'DM Sans',sans-serif" }
+    }))), React.createElement("select", {
       value: e.statut,
       onChange: async ev => {
         await etapes.update(e.id, {
@@ -11760,7 +12023,23 @@ function GanttView({
     }
     return Math.max(1, Math.round((e - s) / 86400000 / totalJours * 100));
   };
-  const membresAvecMissions = team.rows.filter(t => toutesLesMs.some(m => getMembres(m).includes(t.nom)) || (conges?.rows || []).some(c => String(c.type) !== "fermeture" && String(c.membre || "").trim().toLowerCase() === String(t.nom).trim().toLowerCase()));
+  // Une mission ne "compte" pour le planning que si sa plage de dates chevauche la fenêtre visible du
+  // Gantt (start → end) — sinon une mission ancienne, jamais close, garderait indéfiniment la personne
+  // affichée sur le planning même si elle n'a plus rien de courant à faire. Sans date de fin, on
+  // considère la mission comme ouverte jusqu'à la fin de la fenêtre visible.
+  const missionDansFenetre = m => {
+    const debut = toDate(m.dateDebut);
+    if (!debut) return false;
+    const fin = toDate(m.dateFin) || end;
+    return debut <= end && fin >= start;
+  };
+  const congeDansFenetre = c => {
+    const debut = toDate(c.dateDebut);
+    const fin = toDate(c.dateFin);
+    if (!debut || !fin) return false;
+    return debut <= end && fin >= start;
+  };
+  const membresAvecMissions = team.rows.filter(t => toutesLesMs.some(m => getMembres(m).includes(t.nom) && missionDansFenetre(m)) || (conges?.rows || []).some(c => String(c.type) !== "fermeture" && String(c.membre || "").trim().toLowerCase() === String(t.nom).trim().toLowerCase() && congeDansFenetre(c)));
   const etapesMission = m => (etapes?.rows || []).filter(e => String(e.mission_id) === String(m.id));
   const todayPct = pct(TODAY);
   const etapeColor = s => s === "terminé" ? "#2A7A2A" : s === "en cours" ? "#CC2222" : "#7A7A7A";
@@ -13371,7 +13650,7 @@ function MissionModule({
         });
         if (suiviFab && suiviFab.rows) {
           const lignes = suiviFab.rows.filter(r => String(r.mission_id) === String(m.id));
-          const now = new Date().toISOString().replace("T", " ").substring(0, 19);
+          const now = horodatageLocal();
           const who = user || "—";
           for (const l of lignes) {
             let vals = [];
@@ -13406,7 +13685,7 @@ function MissionModule({
         }
         if (journal && journal.add) {
           const who = user || "—";
-          const now = new Date().toISOString().replace("T", " ").substring(0, 19);
+          const now = horodatageLocal();
           await journal.add({
             date: now,
             texte: `Mission terminée : "${m.description}" — marquée terminée par ${who}`,
@@ -14381,7 +14660,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
   }, "+ ", isMobile ? "Mission" : "Nouvelle mission"), !isMobile && moduleType === "atelier" && React.createElement(Btn, {
     onClick: () => genRapportHebdo(),
     "data-rapport-hebdo": "1"
-  }, "📊 Rapport hebdo"))), alertesAll.length > 0 && React.createElement("div", {
+  }, "📊 Rapport hebdo"))), !missionSelected && alertesAll.length > 0 && React.createElement("div", {
     style: {
       marginBottom: 14
     }
