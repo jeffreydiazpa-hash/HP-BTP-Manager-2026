@@ -148,7 +148,7 @@
 
     <h2>Préparation matériaux <span class="count" id="materiauxProdCount"></span></h2>
     <div class="card" id="materiauxProdCard" style="display:none;">
-      <div class="hint" style="margin-bottom:8px;">Matériaux nécessaires pour la mission atelier liée ci-dessous. Les quantités sont définies ici, pour cette production précise — ce n'est pas une lecture du stock disponible. Marquer "Prêt" ou "Manquant" prévient le Bureau d'Études.</div>
+      <div class="hint" style="margin-bottom:8px;">Matériaux nécessaires pour la mission atelier liée ci-dessous. Les quantités sont définies ici, pour cette production précise — ce n'est pas une lecture du stock disponible. Passer un article à "à commander" permet de le lier à une commande, qui mettra à jour son statut automatiquement (le BE voit ces changements aussi).</div>
       <table class="fl" id="materiauxProdTable"></table>
       <div class="toolbar left" style="margin:10px 0 0;">
         <button class="action" id="btn-add-materiau" type="button">+ Ajouter un matériau</button>
@@ -162,6 +162,24 @@
         <div class="field small" style="display:flex;align-items:flex-end;gap:6px;">
           <button class="btn-primary" id="btn-save-materiau" type="button">Ajouter</button>
           <button class="linkbtn" id="btn-cancel-materiau" type="button">Annuler</button>
+        </div>
+      </div>
+      <div class="card" id="commandeLinkPanel" style="display:none;margin-top:10px;background:var(--hp-light);">
+        <div style="font-weight:700;font-size:12px;margin-bottom:8px;" id="commandeLinkTitle"></div>
+        <div class="field-row">
+          <div class="field"><label>Commande</label>
+            <select id="commande-link-select">
+              <option value="__new__">— Créer une nouvelle commande —</option>
+            </select>
+          </div>
+        </div>
+        <div class="field-row" id="commandeLinkNewFields">
+          <div class="field"><label>Fournisseur</label><input type="text" id="commande-link-fourn" placeholder="Ex : Fournisseur X"></div>
+          <div class="field small"><label>Prix unitaire</label><input type="number" id="commande-link-prix" placeholder="0.00"></div>
+        </div>
+        <div class="toolbar left" style="margin-top:8px;">
+          <button class="btn-primary" id="btn-confirm-commande-link" type="button">Confirmer</button>
+          <button class="linkbtn" id="btn-cancel-commande-link" type="button">Annuler</button>
         </div>
       </div>
     </div>
@@ -291,7 +309,7 @@
 </footer>
 
 <script>
-const TOOL_VERSION = "1.5";
+const TOOL_VERSION = "1.6";
 document.getElementById('versionBadge').textContent = 'v' + TOOL_VERSION;
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -372,10 +390,16 @@ async function gasPost(body){
 let ALL_FORMULAIRES = [];
 let ALL_MISSIONS = [];
 let ALL_METRE = [];
+let ALL_ORDERS = [];
 let FICHE = null; // fiche actuellement ouverte en édition/consultation
 
 function isTruthy(v){ return v === true || v === 'TRUE' || v === 'true' || v === 1; }
 function normP(s){ return String(s||'').trim().toLowerCase(); }
+function normRefLocal(s) { return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+function getLignesLocal(o) {
+  if (o.lignes) { try { const p = JSON.parse(o.lignes); if (Array.isArray(p) && p.length) return p; } catch(e){} }
+  return [{ article: o.article||'', qty: String(o.qty||''), unit: o.unit||'pcs', prix: String(o.prix||''), cat: o.cat||'' }];
+}
 
 async function chargerTout(){
   const hasCtx = CTX.gas && CTX.email && CTX.token;
@@ -388,12 +412,13 @@ async function chargerTout(){
     const token = await getFreshToken();
     const r = await jsonpFetch(CTX.gas, {
       action: 'getbatch', email: CTX.email, token,
-      keys: JSON.stringify(['formulaires', 'atelierChantier', 'metre'])
+      keys: JSON.stringify(['formulaires', 'atelierChantier', 'metre', 'orders'])
     });
     if (!r.ok) throw new Error(r.msg || 'Échec du chargement');
     ALL_FORMULAIRES = r.data.formulaires || [];
     ALL_MISSIONS = r.data.atelierChantier || [];
     ALL_METRE = r.data.metre || [];
+    ALL_ORDERS = r.data.orders || [];
     document.getElementById('loadingNote').style.display = 'none';
     afficherListe();
   } catch(e) {
@@ -856,13 +881,23 @@ function renderMateriauxProd(){
     if (s === 'à commander') return 'color:#CC2222;border-color:#CC2222;';
     return 'color:#7A7A7A;border-color:#DDDDDD;';
   };
-  tbl.innerHTML = '<tr><th style="text-align:left;">Article</th><th style="text-align:left;">Nécessaire</th><th style="text-align:left;">Statut</th><th></th></tr>' +
-    lignes.map(l => `<tr>
+  tbl.innerHTML = '<tr><th style="text-align:left;">Article</th><th style="text-align:left;">Nécessaire</th><th style="text-align:left;">Statut</th><th style="text-align:left;">Commande</th><th></th></tr>' +
+    lignes.map(l => {
+      const cmdObj = l.commande_id ? ALL_ORDERS.find(o => String(o.id) === String(l.commande_id)) : null;
+      const cmdCell = cmdObj
+        ? `<span style="font-size:11px;color:#2A7A2A;">✓ ${esc(cmdObj.ref || cmdObj.article || ('#' + cmdObj.id))}</span>`
+        : (l.statut === 'à commander' && !isBE ? `<button type="button" class="btn-link-commande" data-id="${esc(l.id)}" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--hp-red);color:var(--hp-red);background:#fff;cursor:pointer;">🔗 Lier</button>` : '—');
+      return `<tr>
       <td>${esc(l.article)}</td>
       <td><input type="number" class="besoin-input" data-id="${esc(l.id)}" value="${esc(l.qty_besoin)}" style="width:70px;" ${isBE?'disabled':''}> ${esc(l.unit||'')}</td>
       <td><select class="statut-select" data-id="${esc(l.id)}" style="border-radius:6px;padding:3px 8px;font-size:11px;font-weight:600;border-width:1px;${styleStatut(l.statut)}" ${isBE?'disabled title="Modifiable seulement depuis l atelier"':''}>${METRE_STATUTS_ATELIER.map(s => `<option value="${esc(s)}" ${s===(l.statut||'à préparer')?'selected':''}>${esc(s)}</option>`).join('')}</select></td>
+      <td>${cmdCell}</td>
       <td>${isBE?'':'<button type="button" class="materiau-del" data-id="'+esc(l.id)+'" style="background:none;border:none;color:#CCCCCC;cursor:pointer;font-size:13px;">✕</button>'}</td>
-    </tr>`).join('');
+    </tr>`;
+    }).join('');
+  tbl.querySelectorAll('.btn-link-commande').forEach(btn => {
+    btn.addEventListener('click', () => ouvrirLienCommande(btn.getAttribute('data-id')));
+  });
   tbl.querySelectorAll('.statut-select').forEach(sel => {
     sel.addEventListener('change', async () => {
       if (isBE) return;
@@ -913,6 +948,76 @@ function renderMateriauxProd(){
     });
   });
 }
+
+// ---------- Liaison d'un matériau atelier à une commande (créée ici, ou déjà existante) ----------
+let LINKING_METRE_ID = null;
+function ouvrirLienCommande(id){
+  LINKING_METRE_ID = id;
+  const ligne = ALL_METRE.find(m => String(m.id) === id);
+  if (!ligne) return;
+  document.getElementById('commandeLinkTitle').textContent = 'Lier « ' + ligne.article + ' » à une commande';
+  const sel = document.getElementById('commande-link-select');
+  const commandesProjet = ALL_ORDERS.filter(o => normP(o.projet) === normP(FICHE.projet));
+  sel.innerHTML = '<option value="__new__">— Créer une nouvelle commande —</option>' +
+    commandesProjet.map(o => `<option value="${esc(o.id)}">${esc(o.ref || o.article || ('Commande #' + o.id))} — ${esc(o.fourn||'')}</option>`).join('');
+  document.getElementById('commande-link-fourn').value = ligne.fourn || '';
+  document.getElementById('commande-link-prix').value = ligne.prix_estime || '';
+  document.getElementById('commandeLinkNewFields').style.display = '';
+  document.getElementById('commandeLinkPanel').style.display = '';
+}
+document.getElementById('commande-link-select').addEventListener('change', (e) => {
+  document.getElementById('commandeLinkNewFields').style.display = e.target.value === '__new__' ? '' : 'none';
+});
+document.getElementById('btn-cancel-commande-link').addEventListener('click', () => {
+  document.getElementById('commandeLinkPanel').style.display = 'none';
+  LINKING_METRE_ID = null;
+});
+document.getElementById('btn-confirm-commande-link').addEventListener('click', async () => {
+  const ligne = ALL_METRE.find(m => String(m.id) === LINKING_METRE_ID);
+  if (!ligne) return;
+  const sel = document.getElementById('commande-link-select');
+  const btn = document.getElementById('btn-confirm-commande-link');
+  btn.disabled = true;
+  try {
+    let commandeId, qtyCommandee, uniteCommandee, fourn, prix;
+    if (sel.value === '__new__') {
+      fourn = document.getElementById('commande-link-fourn').value.trim();
+      prix = +document.getElementById('commande-link-prix').value || 0;
+      const r = await gasPost({
+        action: 'add', key: 'orders',
+        data: {
+          ref: '', fourn, article: ligne.article, qty: +ligne.qty_besoin || 0, unit: ligne.unit || 'pcs',
+          prix, cat: '', loc: '', date: new Date().toISOString().slice(0,10), dateLivraison: '',
+          lieuLivraison: 'La Rochelle', passee: false, recue: false, factureCompta: false,
+          projet: FICHE.projet, lignes: JSON.stringify([{ article: ligne.article, qty: ligne.qty_besoin, unit: ligne.unit || 'pcs', prix, cat: '' }]), tags: ''
+        }
+      });
+      if (!r.data) throw new Error('Création de la commande échouée');
+      ALL_ORDERS.push(r.data);
+      commandeId = r.data.id; qtyCommandee = ligne.qty_besoin; uniteCommandee = ligne.unit; 
+    } else {
+      const cmd = ALL_ORDERS.find(o => String(o.id) === sel.value);
+      if (!cmd) throw new Error('Commande introuvable');
+      const lignesCmd = getLignesLocal(cmd);
+      const ligneMatch = lignesCmd.find(x => normRefLocal(x.article) === normRefLocal(ligne.article)) || (lignesCmd.length === 1 ? lignesCmd[0] : null);
+      commandeId = cmd.id;
+      qtyCommandee = (ligneMatch && ligneMatch.qty) || cmd.qty || ligne.qty_besoin;
+      uniteCommandee = (ligneMatch && ligneMatch.unit) || cmd.unit || ligne.unit;
+      fourn = cmd.fourn || ligne.fourn;
+      prix = (ligneMatch && ligneMatch.prix) || cmd.prix || ligne.prix_estime;
+    }
+    const maj = { ...ligne, commande_id: commandeId, qty_commandee: qtyCommandee, unit_commandee: uniteCommandee, fourn, prix_estime: prix, statut: 'commandé' };
+    await gasPost({ action: 'update', key: 'metre', id: ligne.id, data: maj });
+    Object.assign(ligne, maj);
+    document.getElementById('commandeLinkPanel').style.display = 'none';
+    LINKING_METRE_ID = null;
+    renderMateriauxProd();
+  } catch(e) {
+    alert('Échec de la liaison : ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ---------- Export PDF ----------
 // Convention imposée par le document de l'atelier : chaque page porte, en bas à droite, un cartouche
