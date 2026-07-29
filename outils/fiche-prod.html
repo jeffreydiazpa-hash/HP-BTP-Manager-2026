@@ -146,9 +146,38 @@
   <div id="vueDetail" style="display:none;">
     <button class="linkbtn" id="btn-back" style="margin-bottom:14px;">← Retour à la liste</button>
 
+    <h2>Identification</h2>
+    <div class="card">
+      <div class="field-row">
+        <div class="field"><label>Projet</label><input type="text" id="f-projet" disabled></div>
+        <div class="field"><label>Coussin / repère <span style="color:var(--hp-red)">*</span></label><input type="text" id="f-coussinNom" placeholder="Ex : Coussin #19 Jussieu"></div>
+        <div class="field small"><label>Type</label>
+          <select id="f-typeProd"><option>ETFE</option><option>PVC</option><option>Mixte</option></select>
+        </div>
+        <div class="field small"><label>Statut</label>
+          <select id="f-statut"><option>Brouillon</option><option>Prête pour atelier</option><option>En cours</option><option>Terminée</option></select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Lier à un relevé de cotes existant (optionnel)</label>
+          <select id="f-releveLie"><option value="">— Aucun —</option></select>
+          <div class="hint" id="releveHint"></div>
+        </div>
+        <div class="field"><label>Lier à un article Métré — membrane (optionnel)</label>
+          <select id="f-metreLie"><option value="">— Aucun —</option></select>
+          <div class="hint">Reprend les couches/épaisseurs/teintes déjà saisies au métré du projet.</div>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Lier à une mission atelier (optionnel)</label>
+          <select id="f-missionLie"><option value="">— Aucune —</option></select>
+        </div>
+      </div>
+    </div>
+
     <h2>Préparation matériaux <span class="count" id="materiauxProdCount"></span></h2>
     <div class="card" id="materiauxProdCard" style="display:none;">
-      <div class="hint" style="margin-bottom:8px;">Matériaux nécessaires pour la mission atelier liée ci-dessous. Les quantités sont définies ici, pour cette production précise — ce n'est pas une lecture du stock disponible. Passer un article à "à commander" permet de le lier à une commande, qui mettra à jour son statut automatiquement (le BE voit ces changements aussi).</div>
+      <div class="hint" style="margin-bottom:8px;">Matériaux nécessaires pour la mission atelier liée ci-dessus. Les quantités sont définies ici, pour cette production précise — ce n'est pas une lecture du stock disponible. Passer un article à "à commander" permet de le lier à une commande, qui mettra à jour son statut automatiquement (le BE voit ces changements aussi).</div>
       <table class="fl" id="materiauxProdTable"></table>
       <div class="toolbar left" style="margin:10px 0 0;">
         <button class="action" id="btn-add-materiau" type="button">+ Ajouter un matériau</button>
@@ -183,36 +212,7 @@
         </div>
       </div>
     </div>
-    <div class="hint" id="materiauxProdEmpty" style="display:none;margin-bottom:16px;">Aucun matériau défini pour cette mission atelier pour l'instant — sélectionne d'abord une mission ci-dessous, puis ajoute les matériaux nécessaires.</div>
-
-    <h2>Identification</h2>
-    <div class="card">
-      <div class="field-row">
-        <div class="field"><label>Projet</label><input type="text" id="f-projet" disabled></div>
-        <div class="field"><label>Coussin / repère <span style="color:var(--hp-red)">*</span></label><input type="text" id="f-coussinNom" placeholder="Ex : Coussin #19 Jussieu"></div>
-        <div class="field small"><label>Type</label>
-          <select id="f-typeProd"><option>ETFE</option><option>PVC</option><option>Mixte</option></select>
-        </div>
-        <div class="field small"><label>Statut</label>
-          <select id="f-statut"><option>Brouillon</option><option>Prête pour atelier</option><option>En cours</option><option>Terminée</option></select>
-        </div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Lier à un relevé de cotes existant (optionnel)</label>
-          <select id="f-releveLie"><option value="">— Aucun —</option></select>
-          <div class="hint" id="releveHint"></div>
-        </div>
-        <div class="field"><label>Lier à un article Métré — membrane (optionnel)</label>
-          <select id="f-metreLie"><option value="">— Aucun —</option></select>
-          <div class="hint">Reprend les couches/épaisseurs/teintes déjà saisies au métré du projet.</div>
-        </div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Lier à une mission atelier (optionnel)</label>
-          <select id="f-missionLie"><option value="">— Aucune —</option></select>
-        </div>
-      </div>
-    </div>
+    <div class="hint" id="materiauxProdEmpty" style="display:none;margin-bottom:16px;">Aucun matériau défini pour cette mission atelier pour l'instant — sélectionne d'abord une mission ci-dessus, puis ajoute les matériaux nécessaires.</div>
 
     <h2>Matériaux &amp; vue d'ensemble</h2>
     <div class="card">
@@ -227,6 +227,9 @@
       <div class="field-row">
         <div class="field"><label>Vue d'ensemble 3D</label><div id="upzone-vue3d"></div></div>
         <div class="field"><label>Vue éclatée (strates)</label><div id="upzone-eclate"></div></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Plans (A3, images) — chacun devient une page dans le PDF</label><div id="upzone-plans"></div></div>
       </div>
     </div>
 
@@ -309,7 +312,7 @@
 </footer>
 
 <script>
-const TOOL_VERSION = "1.6";
+const TOOL_VERSION = "1.7";
 document.getElementById('versionBadge').textContent = 'v' + TOOL_VERSION;
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -521,7 +524,7 @@ async function uploaderFichier(file, categorie, getFiche, containerId){
       action: 'uploadPhoto', ref: fiche.ref, subfolder: categorie,
       filename: file.name, mimeType: file.type || 'application/octet-stream', dataB64
     });
-    fiche.photos[categorie].push({ nom: file.name, url: r.url, thumbnail: r.thumbnail || '' });
+    fiche.photos[categorie].push({ nom: file.name, url: r.url, thumbnail: r.thumbnail || '', id: r.id || '' });
   } catch(e) {
     alert('Échec de l\u2019envoi de "' + file.name + '" : ' + (e.message || e));
   }
@@ -621,6 +624,7 @@ function afficherDetail(){
 
   creerZoneUpload('upzone-vue3d', 'vue3d', () => FICHE);
   creerZoneUpload('upzone-eclate', 'eclate', () => FICHE);
+  creerZoneUpload('upzone-plans', 'plans', () => FICHE);
   renderMateriauxProd();
   renderCouches();
   renderPieces();
@@ -1028,35 +1032,45 @@ function pdfSafe(s){
     .replace(/≥/g, '>=').replace(/≤/g, '<=')
     .replace(/[\u00A0\u202F\u2009\u200A\u2007\u2002\u2003]/g, ' ');
 }
-function buildPDF(){
+async function buildPDF(){
   const { jsPDF } = jspdf;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-  const red=[204,34,34], dark=[28,28,28], mid=[122,122,122], light=[242,240,237];
+  const red=[204,34,34], dark=[28,28,28], mid=[122,122,122], gray=[58,58,58], light=[242,240,237], white=[255,255,255];
   const pageW=210, pageH=297, marginX=16, contentW=pageW-2*marginX;
-  let y = 16, pageIndex = 1;
-  let currentLabel = '1. Identification & matériaux';
+  const headerH = 26;
+  let y = headerH + 8, pageIndex = 1;
 
-  function cartouche(pageLabel){
-    const w = 78, h = 16, x = pageW - marginX - w, yBox = pageH - 20;
-    doc.setDrawColor(...dark); doc.setLineWidth(0.4);
-    doc.rect(x, yBox, w, h, 'S');
-    doc.line(x, yBox + h/2, x + w, yBox + h/2);
-    doc.setFontSize(8); doc.setFont('helvetica', 'bold'); doc.setTextColor(...dark);
-    doc.text(pdfSafe(FICHE.projet || CTX.projet || '—'), x + w/2, yBox + h/2 - 2.5, { align: 'center', maxWidth: w-4 });
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(...mid);
-    doc.text(pdfSafe(pageLabel), x + w/2, yBox + h/2 + 5, { align: 'center', maxWidth: w-4 });
-    doc.setFontSize(7); doc.text('Page ' + pageIndex, marginX, pageH - 10);
+  function header(){
+    doc.setFillColor(...dark);
+    doc.rect(0, 0, pageW, headerH, 'F');
+    doc.addImage(LOGO_B64, 'JPEG', marginX, 5, 26.7, 13.2);
+    doc.setFontSize(13); doc.setFont('helvetica', 'bold'); doc.setTextColor(...white);
+    doc.text('Fiche de production', pageW - marginX, 11, { align: 'right' });
+    doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(220, 220, 220);
+    doc.text(pdfSafe(FICHE.coussinNom || FICHE.projet || ''), pageW - marginX, 18, { align: 'right' });
+    doc.setDrawColor(...red); doc.setLineWidth(1.4);
+    doc.line(0, headerH, pageW, headerH);
   }
-  function newPage(nextLabel){
-    cartouche(currentLabel); doc.addPage(); pageIndex++; y = 16; currentLabel = nextLabel;
+  function footer(){
+    doc.setFontSize(7.5); doc.setFont('helvetica', 'normal'); doc.setTextColor(...mid);
+    doc.text(pdfSafe(FICHE.projet || CTX.projet || ''), marginX, pageH - 8);
+    doc.text('Page ' + pageIndex, pageW - marginX, pageH - 8, { align: 'right' });
+  }
+  function newPage(){
+    footer(); doc.addPage(); pageIndex++; header(); y = headerH + 8;
+  }
+  function ensureSpace(needed){
+    if (y + needed > pageH - 16) newPage();
   }
   function sectionTitle(t){
+    ensureSpace(12);
     doc.setDrawColor(...red); doc.setLineWidth(1.1);
     doc.line(marginX, y-3.2, marginX, y+1.2);
     doc.setFontSize(12); doc.setTextColor(...dark); doc.setFont('helvetica', 'bold');
     doc.text(pdfSafe(t), marginX+3.5, y); y += 8;
   }
   function champ(label, val){
+    ensureSpace(8);
     doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(...mid);
     doc.text(pdfSafe(label) + ' :', marginX, y);
     doc.setFont('helvetica', 'bold'); doc.setTextColor(...dark);
@@ -1064,20 +1078,71 @@ function buildPDF(){
     doc.text(lines, marginX + 58, y);
     y += Math.max(6, lines.length * 5);
   }
+  function badge(label, colFg, colBg, x, yPos){
+    doc.setFontSize(8.5); doc.setFont('helvetica', 'bold');
+    const w = doc.getTextWidth(pdfSafe(label)) + 6;
+    doc.setFillColor(...colBg);
+    doc.roundedRect(x, yPos - 4, w, 5.6, 1.4, 1.4, 'F');
+    doc.setTextColor(...colFg);
+    doc.text(pdfSafe(label), x + 3, yPos);
+    return w;
+  }
+  function mimeToFormat(mime){ return /png/i.test(mime||'') ? 'PNG' : 'JPEG'; }
+  async function embedImage(fileEntry, x, yPos, maxW, maxH){
+    if (!fileEntry || !fileEntry.id) return 0;
+    try {
+      const r = await gasPost({ action: 'getPhotoBase64', fileId: fileEntry.id });
+      if (!r || !r.dataB64 || !/image/i.test(r.mimeType || '')) return 0;
+      const format = mimeToFormat(r.mimeType);
+      const dataUri = 'data:' + r.mimeType + ';base64,' + r.dataB64;
+      const props = doc.getImageProperties(dataUri);
+      const ratio = props.width / props.height;
+      let w = maxW, h = w / ratio;
+      if (h > maxH) { h = maxH; w = h * ratio; }
+      doc.addImage(dataUri, format, x, yPos, w, h);
+      return h;
+    } catch(e) { return 0; }
+  }
+  async function embedGalerie(titre, fichiers){
+    if (!fichiers || !fichiers.length) return;
+    ensureSpace(14);
+    doc.setFontSize(9.5); doc.setFont('helvetica', 'bold'); doc.setTextColor(...gray);
+    doc.text(pdfSafe(titre), marginX, y); y += 6;
+    for (const f of fichiers) {
+      ensureSpace(70);
+      const h = await embedImage(f, marginX, y, contentW, 75);
+      if (h > 0) {
+        y += h + 2;
+        doc.setFontSize(7.5); doc.setFont('helvetica', 'italic'); doc.setTextColor(...mid);
+        doc.text(pdfSafe(f.nom || ''), marginX, y); y += 6;
+      } else {
+        doc.setFontSize(8.5); doc.setFont('helvetica', 'italic'); doc.setTextColor(...mid);
+        doc.text('(non intégrable directement : ' + pdfSafe(f.nom || '') + ' — voir le fichier partagé)', marginX, y, { maxWidth: contentW });
+        y += 6;
+      }
+    }
+  }
 
-  // Logo + titre (page de garde)
-  doc.addImage(LOGO_B64, 'JPEG', marginX, 8, 35.6, 17.6);
-  doc.setFontSize(16); doc.setFont('helvetica', 'bold'); doc.setTextColor(...dark);
-  doc.text('Fiche de production', pageW/2, 20, { align: 'center' });
-  doc.setDrawColor(...red); doc.setLineWidth(0.6); doc.line(marginX, 30, pageW-marginX, 30);
-  y = 42;
+  header();
+  doc.setFontSize(18); doc.setFont('helvetica', 'bold'); doc.setTextColor(...dark);
+  doc.text(pdfSafe(FICHE.coussinNom || 'Fiche de production'), marginX, y + 4);
+  y += 12;
 
   sectionTitle('1. Identification');
   champ('Projet', FICHE.projet);
   champ('Coussin / repère', FICHE.coussinNom);
   champ('Type', FICHE.typeProd);
-  champ('Statut', FICHE.statut);
-  y += 4;
+  const statutColors = {
+    'Brouillon': [gray, light],
+    'Prête pour atelier': [[26,93,171], [235,243,255]],
+    'En cours': [[138,90,0], [255,246,233]],
+    'Terminée': [[42,122,42], [234,247,234]]
+  };
+  const scStatut = statutColors[FICHE.statut] || statutColors['Brouillon'];
+  doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(...mid);
+  doc.text('Statut :', marginX, y);
+  badge(FICHE.statut || 'Brouillon', scStatut[0], scStatut[1], marginX + 58, y);
+  y += 9;
 
   sectionTitle('2. Matériaux & caractéristiques');
   champ('Dimensions finies', FICHE.dimensions);
@@ -1085,58 +1150,59 @@ function buildPDF(){
   champ('Lot à utiliser', FICHE.lot);
   champ('Nombre de couches', String(FICHE.couches.length));
   if (FICHE.railsJoncsValves) {
-    doc.setFontSize(9); doc.setTextColor(...mid); doc.text('Rails / joncs / valves :', marginX, y); y += 5;
+    ensureSpace(14);
+    doc.setFontSize(9); doc.setTextColor(...mid); doc.setFont('helvetica', 'normal'); doc.text('Rails / joncs / valves :', marginX, y); y += 5;
     doc.setTextColor(...dark);
-    const lines = doc.splitTextToSize(pdfSafe(FICHE.railsJoncsValves), contentW);
-    doc.text(lines, marginX, y); y += lines.length * 5 + 2;
+    const lines0 = doc.splitTextToSize(pdfSafe(FICHE.railsJoncsValves), contentW);
+    doc.text(lines0, marginX, y); y += lines0.length * 5 + 2;
   }
-  const vue3dCount = (FICHE.photos.vue3d||[]).length, eclateCount = (FICHE.photos.eclate||[]).length;
-  doc.setFontSize(8.5); doc.setTextColor(...mid); doc.setFont('helvetica','italic');
-  doc.text(`Vue 3D d'ensemble : ${vue3dCount} fichier(s) joint(s) — Vue éclatée : ${eclateCount} fichier(s) joint(s) (voir version numérique).`, marginX, y, { maxWidth: contentW });
+  y += 4;
+  await embedGalerie('Vue d\u2019ensemble 3D', FICHE.photos.vue3d);
+  await embedGalerie('Vue éclatée (strates)', FICHE.photos.eclate);
 
   // Une page par couche (§3 du document atelier)
-  FICHE.couches.forEach((c, i) => {
-    newPage(`3. Couche ${i+1} / ${FICHE.couches.length}`);
+  for (let i = 0; i < FICHE.couches.length; i++) {
+    const c = FICHE.couches[i];
+    newPage();
     sectionTitle(`3. Couche ${i+1} / ${FICHE.couches.length}`);
     champ('Grammage', c.grammage);
     champ('Orientation', c.orientation);
     champ('Sérigraphie', c.serigraphie);
     champ('Type d\u2019assemblage', c.typeAssemblage === 'Autre' ? c.typeAssemblageAutre : c.typeAssemblage);
     champ('Zonage / numérotation', c.zonage);
-    const nbPhotos = (c.photos||[]).length;
-    doc.setFontSize(8.5); doc.setTextColor(...mid); doc.setFont('helvetica','italic');
-    doc.text(`Vue du dessus annotée : ${nbPhotos} fichier(s) joint(s) (voir version numérique).`, marginX, y+2, { maxWidth: contentW });
-  });
+    y += 2;
+    await embedGalerie('Vue du dessus annotée', c.photos);
+  }
 
   // Fiche de découpe
-  newPage('4. Fiche de découpe');
+  newPage();
   sectionTitle('4. Fiche de découpe');
   if (!FICHE.pieces.length) {
-    doc.setFontSize(9); doc.setTextColor(...mid); doc.setFont('helvetica','italic');
+    doc.setFontSize(9); doc.setTextColor(...mid); doc.setFont('helvetica', 'italic');
     doc.text('Aucune pièce définie.', marginX, y);
   } else {
     doc.setFillColor(...light); doc.rect(marginX, y-4, contentW, 6, 'F');
     doc.setDrawColor(...red); doc.setLineWidth(0.4); doc.line(marginX, y+1.5, pageW-marginX, y+1.5);
-    doc.setFontSize(8); doc.setFont('helvetica','bold'); doc.setTextColor(...dark);
+    doc.setFontSize(8); doc.setFont('helvetica', 'bold'); doc.setTextColor(...dark);
     const cols = ['N° pièce','Couche','Dimensions','Qté','Fichier de découpe'], widths=[28,25,45,20,60];
     let x = marginX+2; cols.forEach((cl,ci) => { doc.text(cl, x, y); x += widths[ci]; });
     y += 6;
     FICHE.pieces.forEach((p, pi) => {
-      if (y > pageH - 30) { newPage('4. Fiche de découpe (suite)'); sectionTitle('4. Fiche de découpe (suite)'); y += 2; }
+      if (y > pageH - 30) { newPage(); sectionTitle('4. Fiche de découpe (suite)'); y += 2; }
       if (pi % 2 === 0) { doc.setFillColor(250,250,250); doc.rect(marginX, y-4, contentW, 6, 'F'); }
-      doc.setFontSize(8); doc.setFont('helvetica','normal'); doc.setTextColor(60,60,60);
+      doc.setFontSize(8); doc.setFont('helvetica', 'normal'); doc.setTextColor(60,60,60);
       let x2 = marginX+2;
       [p.numero, p.couche, p.dimensions, p.quantite, p.fichierDecoupe].forEach((val, ci) => {
         doc.text(pdfSafe(val || '—'), x2, y); x2 += widths[ci];
       });
       y += 6;
     });
-    doc.setFontSize(8); doc.setFont('helvetica','italic'); doc.setTextColor(...mid);
+    doc.setFontSize(8); doc.setFont('helvetica', 'italic'); doc.setTextColor(...mid);
     doc.text('Penser à exporter les fichiers de découpe à l\u2019origine 0:0.', marginX, y+4);
   }
   const aDesDetailsProd = FICHE.soudureType || FICHE.soudureMachine || FICHE.soudureTemp || FICHE.soudureVitesse || FICHE.soudurePression || FICHE.soudureNotes || FICHE.pocketType || FICHE.pocketDistanceCorde || FICHE.pocketEpaisseur || FICHE.pocketPosition;
   if (aDesDetailsProd) {
-    newPage('5. Soudure & Pocket');
+    newPage();
     sectionTitle('5. Soudure & Pocket');
     const labelsSoudureType = { standard: 'Standard', backstrip: 'Backstrip (films sérigraphiés)', autre: 'Autre' };
     const labelsPocketType = { integree: 'Intégrée dans le film', bande_dediee: 'Bande dédiée (Streifen)', autre: 'Autre' };
@@ -1146,6 +1212,7 @@ function buildPDF(){
     champ('Vitesse (m/min)', FICHE.soudureVitesse);
     champ('Pression (bar)', FICHE.soudurePression);
     if (FICHE.soudureNotes) {
+      ensureSpace(14);
       doc.setFontSize(9); doc.setTextColor(...mid); doc.text('Notes soudure :', marginX, y); y += 5;
       doc.setTextColor(...dark);
       const linesS = doc.splitTextToSize(pdfSafe(FICHE.soudureNotes), contentW);
@@ -1156,6 +1223,7 @@ function buildPDF(){
     champ('Distance soudure–corde (mm)', FICHE.pocketDistanceCorde);
     champ('Épaisseur bande keder (µm)', FICHE.pocketEpaisseur);
     if (FICHE.pocketPosition) {
+      ensureSpace(14);
       doc.setFontSize(9); doc.setTextColor(...mid); doc.text('Position / étendue du pocket :', marginX, y); y += 5;
       doc.setTextColor(...dark);
       const linesP = doc.splitTextToSize(pdfSafe(FICHE.pocketPosition), contentW);
@@ -1163,20 +1231,43 @@ function buildPDF(){
     }
   }
   if (FICHE.notes) {
-    newPage('6. Notes');
+    newPage();
     sectionTitle('6. Notes');
     const lines = doc.splitTextToSize(pdfSafe(FICHE.notes), contentW);
-    doc.setFontSize(9); doc.setFont('helvetica','normal'); doc.setTextColor(60,60,60);
+    doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(60,60,60);
     doc.text(lines, marginX, y);
   }
-  cartouche(currentLabel);
+
+  // Plans (A3, images) — chacun devient une page pleine dédiée
+  for (const plan of (FICHE.photos.plans || [])) {
+    newPage();
+    sectionTitle('Plan : ' + (plan.nom || ''));
+    const h = await embedImage(plan, marginX, y, contentW, pageH - y - 16);
+    if (h === 0) {
+      doc.setFontSize(9); doc.setFont('helvetica', 'italic'); doc.setTextColor(...mid);
+      doc.text('Fichier non intégrable directement dans le PDF (probablement un PDF plutôt qu\u2019une image) — voir le fichier partagé : ' + pdfSafe(plan.nom || ''), marginX, y, { maxWidth: contentW });
+    }
+  }
+
+  footer();
 
   return { doc, filename: `HP-fiche-prod-${(FICHE.coussinNom||'coussin').replace(/[^a-zA-Z0-9]+/g,'-')}-${FICHE.date}.pdf` };
 }
-document.getElementById('btn-pdf').addEventListener('click', () => {
+document.getElementById('btn-pdf').addEventListener('click', async () => {
   if (!FICHE) return;
-  const built = buildPDF();
-  built.doc.save(built.filename);
+  const btn = document.getElementById('btn-pdf');
+  const texteOriginal = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Génération du PDF…';
+  try {
+    const built = await buildPDF();
+    built.doc.save(built.filename);
+  } catch(e) {
+    alert('Échec de la génération du PDF : ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = texteOriginal;
+  }
 });
 
 chargerTout();
