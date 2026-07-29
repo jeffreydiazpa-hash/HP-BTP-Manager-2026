@@ -671,7 +671,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.31";
+const VERSION = "v4.7.32";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -15558,7 +15558,9 @@ const EM_METRE = {
   specs: "",
   usage: "chantier",
   mission_id: "",
-  statut_prep: ""
+  statut_prep: "",
+  unit_commandee: "",
+  qty_devis: ""
 };
 // Caractéristiques détaillées d'une membrane saisie au métré — même structure que celle utilisée par
 // la fiche de production (couches, épaisseurs, teintes) pour que celle-ci puisse la retrouver et la
@@ -15745,6 +15747,9 @@ function MetreProjet({
         const ligneMatch = lignesSource.find(x => normRef(x.article) === normRef(l.article)) || (lignesSource.length === 1 ? lignesSource[0] : null);
         const nouveauStatut = estCommande ? (estRecue ? "reçu" : "commandé") : l.statut === "à commander" ? "devis en cours" : l.statut;
         const qtyCommandeeTrouvee = estCommande ? (ligneMatch ? ligneMatch.qty : source.qty) || l.qty_besoin : l.qty_commandee;
+        // La quantité réellement chiffrée sur le devis peut être inférieure au besoin total (ex. besoin
+        // 1000, devis pour 650) — gardée à part pour ne pas laisser croire que tout le besoin est couvert.
+        const qtyDevisTrouvee = !estCommande ? (ligneMatch ? ligneMatch.qty : source.qty) || l.qty_devis : l.qty_devis;
         // L'unité réelle de la commande/devis peut différer de l'unité du besoin (ex. besoin en m²,
         // commande en ml de rouleau) — on la garde séparée plutôt que de supposer qu'elle correspond.
         const uniteCommandeeTrouvee = estCommande ? (ligneMatch ? ligneMatch.unit : source.unit) || l.unit : l.unit_commandee;
@@ -15755,6 +15760,7 @@ function MetreProjet({
           commande_id: commandeIdTrouvee,
           statut: nouveauStatut,
           qty_commandee: qtyCommandeeTrouvee,
+          qty_devis: qtyDevisTrouvee,
           unit_commandee: uniteCommandeeTrouvee,
           // La commande n'ayant qu'un statut reçu/pas reçu (pas de quantité partielle), on considère
           // que tout ce qui a été commandé a été reçu dès que "reçue" est cochée — évite d'avoir à
@@ -15946,7 +15952,11 @@ function MetreProjet({
         color: "#7A7A7A",
         marginTop: 1
       }
-    }, l.note)), React.createElement("span", null, l.qty_besoin || 0, " ", l.unit), l.qty_commandee ? React.createElement("span", {
+    }, l.note)), React.createElement("span", {
+      title: (l.qty_devis && Number(l.qty_devis) !== Number(l.qty_besoin)) ? `Devis chiffré pour ${l.qty_devis} ${l.unit || ""} seulement — le besoin total est de ${l.qty_besoin} ${l.unit || ""}.` : undefined
+    }, l.qty_besoin || 0, " ", l.unit, (l.qty_devis && Number(l.qty_devis) !== Number(l.qty_besoin)) && React.createElement("span", {
+      style: { color: "#CC8800", fontSize: 10, display: "block" }
+    }, "⚠ devis : ", l.qty_devis, " ", l.unit)), l.qty_commandee ? React.createElement("span", {
       title: l.unit_commandee && l.unit_commandee !== l.unit ? `Commandé en ${l.unit_commandee}, besoin exprimé en ${l.unit} — vérifier la conversion (ex. m² ↔ ml de rouleau).` : undefined,
       style: {
         color: l.unit_commandee && l.unit_commandee !== l.unit ? "#CC8800" : "#3A3A3A",
@@ -16127,6 +16137,7 @@ function MetreProjet({
         article: (ligneMatch && ligneMatch.article) || x.article,
         fourn: dv.fourn || x.fourn,
         prix_estime: (ligneMatch ? ligneMatch.prix : dv.prix) || x.prix_estime,
+        qty_devis: (ligneMatch && ligneMatch.qty) || x.qty_devis,
         statut: x.statut === "à commander" ? "devis en cours" : x.statut
       }));
     }
