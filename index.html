@@ -148,6 +148,39 @@ async function gasAction(action,key,data,id){
   }
   return r.data??r;
 }
+// Envoi en POST direct (pas de JSONP) — nécessaire pour les payloads trop volumineux pour tenir dans
+// une URL, typiquement un fichier en base64 pour l'import IA (Commandes/Devis/CR).
+async function gasPost(body){
+  const auth = await ensureAuth();
+  const res = await fetch(GAS_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ ...body, email: auth.email, token: auth.token })
+  });
+  const r = await res.json();
+  if(!r.ok){
+    if(r.msg&&r.msg.includes("Token")){ _authToken=null; _tokenExpiry=0; }
+    throw new Error(r.msg || "Erreur serveur");
+  }
+  return r;
+}
+// Lit un fichier (PDF/image) en base64 et l'envoie à Claude avec le prompt d'extraction fourni —
+// utilisé par l'import IA de Commandes, Devis et CR. Renvoie directement l'objet JSON extrait.
+function fileVersBase64(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = () => reject(new Error("Lecture du fichier impossible"));
+    reader.readAsDataURL(file);
+  });
+}
+async function appelImportIA(file, prompt, contexte){
+  if(!file) throw new Error("Aucun fichier sélectionné");
+  const fileBase64 = await fileVersBase64(file);
+  const mimeType = file.type || "application/pdf";
+  const r = await gasPost({ action: "aiExtractDocument", prompt, fileBase64, mimeType, contexte: contexte || "" });
+  return r.data;
+}
 async function addStockHistorique(stocks,ref,entry){
   const s=stocks.rows.find(x=>normRef(x.ref)===normRef(ref));
   if(!s)return;
@@ -671,7 +704,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.32";
+const VERSION = "v4.7.36";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -1210,8 +1243,10 @@ function useSheet(key) {
       setRows(fresh);
       lsSet(key, fresh);
       setError(null);
+      return fresh;
     } catch (e) {
       if (!lsGet(key)) setError(e.message || "Erreur de chargement");
+      return lsGet(key) || [];
     } finally {
       setLoading(false);
     }
@@ -4013,15 +4048,16 @@ function ParticipantsSelector({
     }
   }, "+")));
 }
-const IMPORT_AI_PROMPT_CR = `Tu es un assistant qui analyse des comptes-rendus de réunion BTP.
+const IMPORT_AI_PROMPT_CR = `Tu es un assistant qui analyse des comptes-rendus de réunion BTP pour High Point Structures.
 Extrais les informations suivantes et réponds UNIQUEMENT en JSON valide sans markdown :
 {
-  "titre": "titre de la réunion ou objet",
+  "titre": "objet de la réunion",
   "date": "YYYY-MM-DD ou vide",
-  "participants": ["Prénom Nom (Société / Rôle)", ...],
-  "contenu": "résumé des points discutés et décisions (texte libre)",
+  "participants": ["Prénom Nom (Société)", ...],
+  "contenu": "synthèse COURTE et utile en 2 à 4 phrases maximum : statut global de l'examen, avis rendus (AF/AS/AD...), points bloquants restants — ne pas lister exhaustivement toutes les observations",
   "actions": [{"texte": "description de l'action", "responsable": "prénom nom", "echeance": "YYYY-MM-DD ou vide"}, ...]
-}`;
+}
+Règle importante : dans "actions", n'inclure QUE les actions dont le responsable est High Point Structures (ou l'un de ses employés) — omettre toute action incombant à un autre intervenant (architecte, BET, maître d'ouvrage, autre entreprise...). Si aucune action ne concerne High Point, "actions" est un tableau vide.`;
 function ModuleCR({
   cr,
   projet,
@@ -4034,7 +4070,7 @@ function ModuleCR({
   const [vue, setVue] = useState("liste");
   const [selected, setSelected] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [aiText, setAiText] = useState("");
+  const [aiFile, setAiFile] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiPreview, setAiPreview] = useState(null);
   const [aiErr, setAiErr] = useState("");
@@ -4097,61 +4133,33 @@ function ModuleCR({
       });
     }
   }
-  function analyserIA() {
-    if (!aiText.trim()) {
-      setAiErr("Colle le texte généré par Claude.");
+  async function analyserIA() {
+    if (!aiFile) {
+      setAiErr("Sélectionne d'abord un fichier (PDF ou image).");
       return;
     }
     setAiErr("");
     setAiPreview(null);
+    setAiLoading(true);
     try {
-      const lines = aiText.split("\n").map(l => l.trim()).filter(Boolean);
-      const get = key => {
-        const l = lines.find(x => x.toUpperCase().startsWith(key.toUpperCase() + ":"));
-        return l ? l.slice(key.length + 1).trim() : "";
-      };
-      const parseDate = s => {
-        if (!s) return "";
-        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-        if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
-          const [d, m, y] = s.split("/");
-          return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-        }
-        return "";
-      };
-      const titre = get("TITRE");
-      const date = parseDate(get("DATE")) || TODAY;
-      const participants = get("PARTICIPANTS");
-      const contenu = get("CONTENU");
-      const actions = [];
-      let cur = null;
-      for (const line of lines) {
-        const u = line.toUpperCase();
-        if (u.startsWith("ACTION:")) {
-          if (cur) actions.push(cur);
-          cur = {
-            texte: line.slice(7).trim(),
-            responsable: "",
-            echeance: ""
-          };
-        } else if (cur) {
-          if (u.startsWith("RESPONSABLE:")) cur.responsable = line.slice(12).trim();else if (u.startsWith("ECHEANCE:")) cur.echeance = parseDate(line.slice(9).trim());
-        }
-      }
-      if (cur) actions.push(cur);
-      if (!titre && !participants && !contenu) {
-        setAiErr("Format non reconnu. Vérifie que le texte suit le format indiqué.");
-        return;
-      }
+      const data = await appelImportIA(aiFile, IMPORT_AI_PROMPT_CR, "cr");
+      const participants = Array.isArray(data.participants) ? data.participants.join(", ") : (data.participants || "");
+      const actions = (Array.isArray(data.actions) ? data.actions : []).map(a => ({
+        texte: a.texte || "",
+        responsable: a.responsable || "",
+        echeance: a.echeance || ""
+      }));
       setAiPreview({
-        titre,
-        date,
+        titre: data.titre || "",
+        date: data.date || TODAY,
         participants,
-        contenu,
+        contenu: data.contenu || "",
         actions
       });
     } catch (e) {
-      setAiErr("Erreur de parsing : " + e.message);
+      setAiErr(e.message || "Échec de l'analyse IA");
+    } finally {
+      setAiLoading(false);
     }
   }
   if (vue === "detail" && selected) {
@@ -4483,29 +4491,25 @@ function ModuleCR({
         marginBottom: 12,
         fontSize: 12,
         color: "#1A5DAB",
-        lineHeight: 1.7
+        lineHeight: 1.6
       }
-    }, React.createElement("div", {
-      style: {
-        fontWeight: 700,
-        marginBottom: 4
-      }
-    }, "Format attendu (généré par Claude)"), "TITRE: Réunion de chantier ALCOV", React.createElement("br", null), "DATE: 15/06/2026", React.createElement("br", null), "PARTICIPANTS: Jeffrey Diaz (High Point), Jean Dupont (MOE)", React.createElement("br", null), "CONTENU: Synthèse des points discutés...", React.createElement("br", null), "ACTION: Envoyer les plans révisés", React.createElement("br", null), "RESPONSABLE: Jean Dupont", React.createElement("br", null), "ECHEANCE: 20/06/2026"), React.createElement("textarea", {
-      value: aiText,
-      onChange: e => setAiText(e.target.value),
-      placeholder: "Coller le texte du CR ici...",
+    }, "Choisis le compte-rendu (PDF ou photo/scan) — Claude en extrait l'objet, les participants, une synthèse concise et les actions dont High Point Structures est responsable."), React.createElement("input", {
+      type: "file",
+      accept: "application/pdf,image/*",
+      onChange: e => { setAiFile(e.target.files[0] || null); setAiErr(""); },
+      disabled: aiLoading,
       style: {
         width: "100%",
-        height: 200,
         padding: "10px 12px",
         borderRadius: 6,
         border: "1px solid #DDD",
-        fontSize: 11,
-        fontFamily: "'DM Mono',monospace",
-        resize: "vertical",
+        fontSize: 12,
+        fontFamily: "'DM Sans',sans-serif",
         boxSizing: "border-box"
       }
-    }), aiErr && React.createElement("div", {
+    }), aiFile && React.createElement("div", {
+      style: { fontSize: 11, color: "#7A7A7A", marginTop: 6 }
+    }, "📎 ", aiFile.name), aiErr && React.createElement("div", {
       style: {
         fontSize: 12,
         color: "#CC2222",
@@ -4519,18 +4523,19 @@ function ModuleCR({
       }
     }, React.createElement("button", {
       onClick: analyserIA,
+      disabled: aiLoading || !aiFile,
       style: {
         padding: "8px 20px",
         borderRadius: 4,
         border: "none",
-        background: "#CC2222",
-        cursor: "pointer",
+        background: aiLoading || !aiFile ? "#DDD" : "#CC2222",
+        cursor: aiLoading || !aiFile ? "default" : "pointer",
         fontSize: 12,
         fontFamily: "'DM Sans',sans-serif",
         color: "#fff",
         fontWeight: 600
       }
-    }, "Analyser →"))), aiPreview && React.createElement(React.Fragment, null, React.createElement("div", {
+    }, aiLoading ? "⟳ Analyse en cours…" : "Analyser →"))), aiPreview && React.createElement(React.Fragment, null, React.createElement("div", {
       style: {
         fontSize: 13,
         fontWeight: 700,
@@ -4685,7 +4690,12 @@ function ModuleCR({
       gap: 8
     }
   }, React.createElement("button", {
-    onClick: () => setVue("nouveau_externe"),
+    onClick: () => {
+      setAiFile(null);
+      setAiPreview(null);
+      setAiErr("");
+      setVue("nouveau_externe");
+    },
     style: {
       padding: "5px 12px",
       borderRadius: 4,
@@ -15637,6 +15647,12 @@ function MetreProjet({
   const [linkCommandeId, setLinkCommandeId] = useState("");
   const [linkBusy, setLinkBusy] = useState(false);
   const [filterUsage, setFilterUsage] = useState("tout");
+  // Rafraîchissement à l'ouverture de l'onglet uniquement (pas de sondage en arrière-plan) — le
+  // rafraîchissement à la demande se fait via le bouton "Sync tout", corrigé ci-dessous pour relire
+  // vraiment le serveur avant de synchroniser.
+  useEffect(() => {
+    metre.reload();
+  }, []);
   const f = (k, v) => setForm(x => ({
     ...x,
     [k]: v
@@ -15719,18 +15735,24 @@ function MetreProjet({
     let maj = 0,
       lies = 0;
     try {
-      for (const l of lignesProjet) {
+      // Recharge vraiment depuis le serveur avant de synchroniser — sinon on ne fait que pousser des
+      // infos sur des données déjà en mémoire, potentiellement obsolètes si un changement a été fait
+      // depuis un autre contexte (ex. la fiche de prod, côté atelier).
+      const [freshMetre, freshOrders, freshDevis] = await Promise.all([metre.reload(), orders.reload(), devis.reload()]);
+      const lignesProjetFraiches = (freshMetre || []).filter(l => String(l.projet_id) === String(projet?.name) || String(l.projet_id) === String(projet?.id));
+      const projOrdersFrais = (freshOrders || []).filter(o => o.projet === projet?.name || o.projet === String(projet?.id));
+      for (const l of lignesProjetFraiches) {
         let source = null,
           lignesSource = [],
           commandeIdTrouvee = l.commande_id || "";
         if (l.commande_id) {
-          source = projOrders.find(o => String(o.id) === String(l.commande_id));
+          source = projOrdersFrais.find(o => String(o.id) === String(l.commande_id));
         }
         if (!source && l.devis_id) {
-          const dv = (devis?.rows || []).find(d => String(d.id) === String(l.devis_id));
+          const dv = (freshDevis || []).find(d => String(d.id) === String(l.devis_id));
           if (dv) {
             const lignesDevis = getLignes(dv);
-            const matchCmd = projOrders.find(o => normRef(o.fourn) === normRef(dv.fourn) || getLignes(o).some(x => lignesDevis.some(y => normRef(x.article) === normRef(y.article))));
+            const matchCmd = projOrdersFrais.find(o => normRef(o.fourn) === normRef(dv.fourn) || getLignes(o).some(x => lignesDevis.some(y => normRef(x.article) === normRef(y.article))));
             if (matchCmd) {
               source = matchCmd;
               commandeIdTrouvee = matchCmd.id;
@@ -24114,6 +24136,37 @@ const EL = {
   prix: "",
   cat: ""
 };
+const IMPORT_AI_PROMPT_COMMANDE = `Tu es un assistant expert en extraction de données de documents commerciaux (factures, bons de commande, devis, accusés de réception) pour High Point Structures, entreprise française de structures légères ETFE et membranes textiles.
+
+Analyse le document fourni et réponds UNIQUEMENT en JSON valide, sans markdown, sans texte avant ou après :
+{
+  "fourn": "nom du fournisseur",
+  "ref": "numéro de facture/BC/devis, vide si absent",
+  "titre": "objet court, pour un devis",
+  "projet": "nom du projet si mentionné, sinon vide",
+  "date": "YYYY-MM-DD — date du document",
+  "dateLivraison": "YYYY-MM-DD — date d'expédition confirmée, ou la plus tardive si plusieurs ; vide si absente",
+  "lieuLivraison": "La Rochelle par défaut sauf indication contraire",
+  "delai": "délai de validité/réalisation, texte libre (surtout pour un devis)",
+  "poids": "poids total si mentionné",
+  "criteres": "garanties ou critères notables",
+  "articles": [{"article": "désignation complète", "qty": "quantité", "unit": "pcs/m²/ml/kg/UN/etc.", "prix": "prix unitaire final HT, frais annexes inclus", "cat": "catégorie ci-dessous"}],
+  "verification": "détail du calcul de vérification : somme(qté×prix) = X € vs total HT document = Y €",
+  "alertes": ["toute incohérence à vérifier : total qui ne tombe pas juste, unités contradictoires, TVA étrangère, prix TTC vs HT, poste ambigu, etc. — tableau vide si tout est cohérent"]
+}
+
+Catégories disponibles : Visserie & fixations, Profilés aluminium, Membranes ETFE, Acier structure, Structure bois, Étanchéité & joints, Câblerie & électricité, Plomberie & fluides, Revêtements & finitions, Matériaux isolants, Consommables atelier, Outillage, EPI & sécurité, Fournitures de bureau, Transport & logistique, Autre.
+
+Règles métier :
+- Articles physiques vs frais annexes : transport/port/surcharge gasoil, éco-contribution/taxe PMCB/Energ., forfaits de transformation (découpe, rabotage, mise à longueur, usinage, taillage), traitement de surface, emballage NE SONT PAS des articles de stock — répartis sur les articles physiques : (montant article + frais annexes) / quantité si un seul article ; au prorata des surfaces/montants si plusieurs articles de même nature ; à parts égales si articles distincts. Arrondir à 2 décimales (écarts < 1€ acceptables).
+- Prix toujours HT. TTC→HT : France 20%, Espagne 21%, Allemagne 19% ; livraison intracommunautaire vers la France (TVA FR64534544093) → exonération, HT = Netto directement.
+- Vérifier que somme(qté×prix) = Total HT du document ; si l'écart dépasse 0,10€ (hors cumul d'arrondis sur de nombreuses lignes), le signaler dans "alertes".
+- Ne jamais inclure de postes explicitement annulés/remplacés — utiliser uniquement les postes actifs.
+- Cohérence des unités avec les commandes habituelles du même type d'article. Membranes ETFE/textiles : conversion m²↔ml possible si la largeur de rouleau est connue (ml = m² / largeur, €/ml = €/m² × largeur) — sinon garder l'unité du document.
+- Postes à 0€ (port offert, remise 100%) : frais annexes = 0, pas d'impact. Commande remboursée par codes promo : utiliser les prix catalogue HT normaux, pas 0€.
+- Sur les documents PARTEDIS : TOTAL MARCHANDISE = articles + certains frais de transformation ; TOTAL HORS TAXES = MARCHANDISE + Port + Energ. + Eco Taxe (l'Eco Taxe en pied de page = éco-contribution PMCB déjà en ligne article, pas de doublon).
+- Si une info est absente du document, laisser une chaîne vide plutôt que d'inventer.`;
+const IMPORT_AI_PROMPT_DEVIS = IMPORT_AI_PROMPT_COMMANDE;
 function ModuleDevis({
   devis,
   fournisseurs,
@@ -24132,7 +24185,8 @@ function ModuleDevis({
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [aiOpen, setAiOpen] = useState(false);
-  const [aiText, setAiText] = useState("");
+  const [aiFile, setAiFile] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
   const [aiPreview, setAiPreview] = useState(null);
   const [aiErr, setAiErr] = useState("");
   const [aiTitreLock, setAiTitreLock] = useState("");
@@ -24238,49 +24292,44 @@ function ModuleDevis({
       cat: ""
     }];
   }
-  function parseDevisIA(txt) {
-    const lines = txt.split("\n").map(s => s.trim()).filter(Boolean);
-    const get = k => {
-      const l = lines.find(x => x.toUpperCase().startsWith(k + ":"));
-      return l ? l.slice(k.length + 1).trim() : "";
-    };
-    const formData = {
-      titre: get("TITRE") || get("OBJET") || "",
-      fourn: get("FOURNISSEUR") || get("FOURN") || "",
-      projet: get("PROJET") || "",
-      date: get("DATE") || TODAY,
-      delai: get("DELAI") || "",
-      note: get("NOTE") || "",
-      tags: get("TAGS") || "",
-      poids: get("POIDS") || "",
-      delaiLivraison: get("LIVRAISON") || get("DELAILIVRAISON") || "",
-      criteres: get("CRITERES") || get("CRITÈRES") || get("AUTRE") || ""
-    };
-    const articles = [];
-    let cur = null;
-    for (const line of lines) {
-      const u = line.toUpperCase();
-      if (u.startsWith("ARTICLE:")) {
-        cur = {
-          article: line.slice(8).trim(),
-          qty: "1",
-          unit: "pcs",
-          prix: "",
-          cat: ""
-        };
-        articles.push(cur);
-      } else if (cur) {
-        if (u.startsWith("QTE:") || u.startsWith("QTÉ:")) cur.qty = line.split(":")[1].trim();else if (u.startsWith("UNITE:") || u.startsWith("UNITÉ:")) cur.unit = line.split(":")[1].trim();else if (u.startsWith("PRIX:")) cur.prix = line.split(":")[1].trim();else if (u.startsWith("CAT:")) cur.cat = line.split(":")[1].trim();
-      }
-    }
-    if (!articles.length) {
-      setAiErr("Aucun article détecté. Vérifiez le format.");
+  async function analyserDevisIA() {
+    if (!aiFile) {
+      setAiErr("Sélectionne d'abord un fichier (PDF ou image).");
       return;
     }
-    setAiPreview({
-      formData,
-      articles
-    });
+    setAiErr("");
+    setAiLoading(true);
+    try {
+      const data = await appelImportIA(aiFile, IMPORT_AI_PROMPT_DEVIS, "devis");
+      const formData = {
+        titre: data.titre || "",
+        fourn: data.fourn || "",
+        projet: data.projet || "",
+        date: data.date || TODAY,
+        delai: data.delai || "",
+        note: data.note || "",
+        tags: data.tags || "",
+        poids: data.poids || "",
+        delaiLivraison: data.delaiLivraison || "",
+        criteres: data.criteres || ""
+      };
+      const articles = (Array.isArray(data.articles) ? data.articles : []).map(a => ({
+        article: a.article || "",
+        qty: a.qty || "1",
+        unit: a.unit || "pcs",
+        prix: a.prix || "",
+        cat: a.cat || ""
+      }));
+      if (!articles.length) {
+        setAiErr("Aucun article détecté dans le document.");
+        return;
+      }
+      setAiPreview({ formData, articles });
+    } catch (e) {
+      setAiErr(e.message || "Échec de l'analyse IA");
+    } finally {
+      setAiLoading(false);
+    }
   }
   async function validerIA() {
     if (!aiPreview || aiApplyingDevis) return;
@@ -24311,7 +24360,7 @@ function ModuleDevis({
       setLignesForm(aiPreview.articles);
       setAiOpen(false);
       setAiPreview(null);
-      setAiText("");
+      setAiFile(null);
       setAiErr("");
       setNewFournDevis(false);
       setAiTitreLock("");
@@ -24351,7 +24400,7 @@ function ModuleDevis({
     onClick: () => {
       setAiTitreLock("");
       setNewFournDevis(false);
-      setAiText("");
+      setAiFile(null);
       setAiPreview(null);
       setAiErr("");
       setAiOpen(true);
@@ -24493,7 +24542,7 @@ function ModuleDevis({
       setAiOpen(false);
       setAiPreview(null);
       setAiErr("");
-      setAiText("");
+      setAiFile(null);
       setNewFournDevis(false);
       setAiTitreLock("");
     },
@@ -24512,29 +24561,25 @@ function ModuleDevis({
       marginBottom: 12,
       fontSize: 12,
       color: "#1A5DAB",
-      lineHeight: 1.7
+      lineHeight: 1.6
     }
-  }, React.createElement("div", {
-    style: {
-      fontWeight: 700,
-      marginBottom: 4
-    }
-  }, "Format attendu :"), "TITRE: Scotch étanchéité ALCOV", React.createElement("br", null), "FOURNISSEUR: Rubans du Sud Ouest", React.createElement("br", null), "PROJET: ALCOV", React.createElement("br", null), "DELAI: 5 jours", React.createElement("br", null), "LIVRAISON: 2 semaines", React.createElement("br", null), "POIDS: 12 kg", React.createElement("br", null), "CRITERES: Garantie 2 ans · Origine France", React.createElement("br", null), "ARTICLE: S.F. étanchéité blanc ionomère", React.createElement("br", null), "QTE: 12", React.createElement("br", null), "UNITE: pcs", React.createElement("br", null), "PRIX: 93.05"), React.createElement("textarea", {
-    value: aiText || "",
-    onChange: e => setAiText(e.target.value),
-    placeholder: "Colle ici le texte du devis...",
+  }, "Choisis le devis (PDF ou photo/scan) — Claude en extrait automatiquement le fournisseur, les articles, quantités et prix."), React.createElement("input", {
+    type: "file",
+    accept: "application/pdf,image/*",
+    onChange: e => { setAiFile(e.target.files[0] || null); setAiErr(""); },
+    disabled: aiLoading,
     style: {
       width: "100%",
-      height: 200,
       padding: "10px 12px",
       borderRadius: 6,
       border: "1px solid #DDD",
-      fontSize: 11,
-      fontFamily: "'DM Mono',monospace",
-      resize: "vertical",
+      fontSize: 12,
+      fontFamily: "'DM Sans',sans-serif",
       boxSizing: "border-box"
     }
-  }), aiErr && React.createElement("div", {
+  }), aiFile && React.createElement("div", {
+    style: { fontSize: 11, color: "#7A7A7A", marginTop: 6 }
+  }, "📎 ", aiFile.name), aiErr && React.createElement("div", {
     style: {
       marginTop: 8,
       fontSize: 12,
@@ -24550,19 +24595,20 @@ function ModuleDevis({
       marginTop: 10
     }
   }, React.createElement("button", {
-    onClick: () => parseDevisIA(aiText),
+    onClick: analyserDevisIA,
+    disabled: aiLoading || !aiFile,
     style: {
       padding: "8px 20px",
       borderRadius: 4,
       border: "none",
-      background: "#CC2222",
-      cursor: "pointer",
+      background: aiLoading || !aiFile ? "#DDD" : "#CC2222",
+      cursor: aiLoading || !aiFile ? "default" : "pointer",
       fontSize: 12,
       fontFamily: "'DM Sans',sans-serif",
       color: "#fff",
       fontWeight: 600
     }
-  }, "Analyser →"))), aiPreview && React.createElement(React.Fragment, null, React.createElement("div", {
+  }, aiLoading ? "⟳ Analyse en cours…" : "Analyser →"))), aiPreview && React.createElement(React.Fragment, null, React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 700,
@@ -24723,7 +24769,7 @@ function ModuleDevis({
         e.stopPropagation();
         setAiTitreLock(titre);
         setNewFournDevis(false);
-        setAiText("");
+        setAiFile(null);
         setAiPreview(null);
         setAiErr("");
         setAiOpen(true);
@@ -25184,6 +25230,10 @@ function Commandes({
   hideFinances = false
 }) {
   const [onglet, setOnglet] = useState("commandes");
+  // Rafraîchissement à l'ouverture de l'onglet uniquement — pas de sondage en arrière-plan.
+  useEffect(() => {
+    sheet.reload();
+  }, []);
   const [filterProjet, setFilterProjet] = useState("");
   const [filterFamille, setFilterFamille] = useState(FAMILLE_DEFAUT_USER);
   const [filterTag, setFilterTag] = useState("");
@@ -25199,7 +25249,8 @@ function Commandes({
   const [aiOpen, setAiOpen] = useState(false);
   const [aiErr, setAiErr] = useState("");
   const [aiPreview, setAiPreview] = useState(null);
-  const [aiText, setAiText] = useState("");
+  const [aiFile, setAiFile] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
   const [newFourn, setNewFourn] = useState(false);
   const [aiApplying, setAiApplying] = useState(false);
   const f = (k, v) => setForm(x => ({
@@ -25312,73 +25363,47 @@ function Commandes({
     if (nc.includes("cable") || nc.includes("electr")) return "Câblerie & électricité";
     return "Autre";
   }
-  function parseTexteIA(texte) {
-    const lines = texte.split("\n").map(l => l.trim()).filter(Boolean);
-    const get = key => {
-      const l = lines.find(x => x.toUpperCase().startsWith(key.toUpperCase() + ":"));
-      return l ? l.slice(key.length + 1).trim() : "";
-    };
-    const parseDate = s => {
-      if (!s) return "";
-      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
-        const [d, m, y] = s.split("/");
-        return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-      }
-      return "";
-    };
-    const formData = {
-      ref: get("REF"),
-      fourn: get("FOURNISSEUR"),
-      date: parseDate(get("DATE")) || TODAY,
-      dateLivraison: parseDate(get("DATE_LIVRAISON")),
-      lieuLivraison: get("LIEU_LIVRAISON") || "La Rochelle",
-      projet: get("PROJET"),
-      loc: "",
-      cat: "",
-      article: "",
-      qty: "",
-      unit: "pcs",
-      prix: "",
-      lignes: ""
-    };
-    const lignes = [];
-    let cur = null;
-    for (const line of lines) {
-      if (line.toUpperCase().startsWith("ARTICLE:")) {
-        if (cur) lignes.push(cur);
-        cur = {
-          article: line.slice(8).trim(),
-          qty: "",
-          unit: "pcs",
-          prix: "",
-          cat: ""
-        };
-      } else if (cur) {
-        if (line.toUpperCase().startsWith("QTE:")) cur.qty = line.slice(4).trim().replace(",", ".");else if (line.toUpperCase().startsWith("UNITE:")) cur.unit = line.slice(6).trim();else if (line.toUpperCase().startsWith("PRIX:")) cur.prix = line.slice(5).trim().replace(",", ".");else if (line.toUpperCase().startsWith("CAT:")) cur.cat = matchCat(line.slice(4).trim());
-      }
+  async function analyserCommandeIA() {
+    if (!aiFile) {
+      setAiErr("Sélectionne d'abord un fichier (PDF ou image).");
+      return;
     }
-    if (cur) lignes.push(cur);
-    if (!lignes.length) return null;
-    return {
-      formData,
-      lignes
-    };
-  }
-  function parseAndPreview() {
     setAiErr("");
-    setAiPreview(null);
-    const texte = aiText.trim();
-    if (texte.length < 10) {
-      setAiErr("Colle d'abord le texte généré par Claude.");
-      return;
+    setAiLoading(true);
+    try {
+      const data = await appelImportIA(aiFile, IMPORT_AI_PROMPT_COMMANDE, "commande");
+      const formData = {
+        ref: data.ref || "",
+        fourn: data.fourn || "",
+        date: data.date || TODAY,
+        dateLivraison: data.dateLivraison || "",
+        lieuLivraison: data.lieuLivraison || "La Rochelle",
+        projet: data.projet || "",
+        loc: "",
+        cat: "",
+        article: "",
+        qty: "",
+        unit: "pcs",
+        prix: "",
+        lignes: ""
+      };
+      const lignes = (Array.isArray(data.articles) ? data.articles : []).map(a => ({
+        article: a.article || "",
+        qty: a.qty || "",
+        unit: a.unit || "pcs",
+        prix: a.prix || "",
+        cat: matchCat(a.cat || "")
+      }));
+      if (!lignes.length) {
+        setAiErr("Aucun article détecté dans le document.");
+        return;
+      }
+      setAiPreview({ formData, lignes, verification: data.verification || "", alertes: Array.isArray(data.alertes) ? data.alertes : [] });
+    } catch (e) {
+      setAiErr(e.message || "Échec de l'analyse IA");
+    } finally {
+      setAiLoading(false);
     }
-    const result = parseTexteIA(texte);
-    if (!result || !result.lignes.length) {
-      setAiErr("Format non reconnu. Vérifie que le texte suit le format indiqué.");
-      return;
-    }
-    setAiPreview(result);
   }
   async function applyAiPreview() {
     if (!aiPreview || aiApplying) return;
@@ -25407,7 +25432,7 @@ function Commandes({
       })));
       setAiOpen(false);
       setAiPreview(null);
-      setAiText("");
+      setAiFile(null);
       setNewFourn(false);
       setErr("");
       setEditing(null);
@@ -26021,7 +26046,7 @@ function Commandes({
         setAiOpen(false);
         setAiPreview(null);
         setAiErr("");
-        setAiText("");
+        setAiFile(null);
         setNewFourn(false);
       }
     }
@@ -26054,7 +26079,7 @@ function Commandes({
       setAiOpen(false);
       setAiPreview(null);
       setAiErr("");
-      setAiText("");
+      setAiFile(null);
       setNewFourn(false);
     },
     style: {
@@ -26072,31 +26097,25 @@ function Commandes({
       marginBottom: 12,
       fontSize: 12,
       color: "#1A5DAB",
-      lineHeight: 1.7
+      lineHeight: 1.6
     }
-  }, React.createElement("div", {
-    style: {
-      fontWeight: 700,
-      marginBottom: 4
-    }
-  }, "Comment ça marche :"), "1. Envoie l'image de ta facture/BL dans cette conversation Claude", React.createElement("br", null), "2. Demande : \"Génère le texte d'import pour High Point Manager\"", React.createElement("br", null), "3. Copie le texte généré et colle-le ci-dessous"), React.createElement("textarea", {
-    value: aiText || "",
-    onChange: e => setAiText(e.target.value),
-    placeholder: "Colle ici le texte généré par Claude...\n\nFormat attendu :\nFOURNISSEUR: Tecsound\nREF: 13014323\nDATE: 06/05/2026\n\nARTICLE: STICKSON COUPE 8KG/M2\nQTE: 38\nUNITE: m²\nPRIX: 13.25\nCAT: Membranes ETFE",
+  }, "Choisis la facture, le bon de commande ou l'accusé de réception (PDF ou photo/scan) — Claude en extrait les articles, répartit les frais annexes et convertit en HT automatiquement."), React.createElement("input", {
+    type: "file",
+    accept: "application/pdf,image/*",
+    onChange: e => { setAiFile(e.target.files[0] || null); setAiErr(""); },
+    disabled: aiLoading,
     style: {
       width: "100%",
-      height: 200,
       padding: "10px 12px",
       borderRadius: 6,
       border: "1px solid #DDDDDD",
-      fontSize: 11,
-      fontFamily: "'DM Mono',monospace",
-      resize: "vertical",
-      boxSizing: "border-box",
-      color: "#1C1C1C",
-      lineHeight: 1.6
+      fontSize: 12,
+      fontFamily: "'DM Sans',sans-serif",
+      boxSizing: "border-box"
     }
-  }), aiErr && React.createElement("div", {
+  }), aiFile && React.createElement("div", {
+    style: { fontSize: 11, color: "#7A7A7A", marginTop: 6 }
+  }, "📎 ", aiFile.name), aiErr && React.createElement("div", {
     style: {
       marginTop: 8,
       fontSize: 12,
@@ -26112,19 +26131,30 @@ function Commandes({
       marginTop: 10
     }
   }, React.createElement("button", {
-    onClick: parseAndPreview,
+    onClick: analyserCommandeIA,
+    disabled: aiLoading || !aiFile,
     style: {
       padding: "8px 20px",
       borderRadius: 4,
       border: "none",
-      background: "#CC2222",
-      cursor: "pointer",
+      background: aiLoading || !aiFile ? "#DDD" : "#CC2222",
+      cursor: aiLoading || !aiFile ? "default" : "pointer",
       fontSize: 12,
       fontFamily: "'DM Sans',sans-serif",
       color: "#fff",
       fontWeight: 600
     }
-  }, "Analyser →"))), aiPreview && React.createElement(React.Fragment, null, React.createElement("div", {
+  }, aiLoading ? "⟳ Analyse en cours…" : "Analyser →"))), aiPreview && React.createElement(React.Fragment, null, aiPreview.alertes && aiPreview.alertes.length > 0 && React.createElement("div", {
+    style: {
+      background: "#FFF8E8",
+      border: "0.5px solid #F0D890",
+      borderRadius: 6,
+      padding: "8px 12px",
+      marginBottom: 10,
+      fontSize: 11,
+      color: "#8A5A00"
+    }
+  }, React.createElement("b", null, "⚠ À vérifier :"), React.createElement("ul", { style: { margin: "4px 0 0", paddingLeft: 18 } }, aiPreview.alertes.map((a, i) => React.createElement("li", { key: i }, a)))), React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 700,
