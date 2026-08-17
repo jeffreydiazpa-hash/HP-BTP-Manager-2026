@@ -181,6 +181,22 @@ async function appelImportIA(file, prompt, contexte){
   const r = await gasPost({ action: "aiExtractDocument", prompt, fileBase64, mimeType, contexte: contexte || "" });
   return r.data;
 }
+// Archive le fichier source (PDF/photo) d'une commande ou d'un devis sur Drive, une fois l'enregistrement
+// confirmé — classé par projet > fournisseur, avec rattachement croisé par tag si renseignés. Échoue
+// silencieusement (log console) : l'échec de l'archivage ne doit jamais empêcher la commande/le devis
+// d'être enregistré, qui est l'action prioritaire pour l'utilisateur.
+async function sauvegarderDocumentDrive(file, docType, projet, fournisseur, tags){
+  if (!file) return null;
+  try {
+    const fileBase64 = await fileVersBase64(file);
+    const mimeType = file.type || "application/pdf";
+    const r = await gasPost({ action: "uploadDocumentCommercial", docType, projet: projet || "", fournisseur: fournisseur || "", tags: tags || "", filename: file.name, mimeType, fileBase64 });
+    return r.data;
+  } catch (e) {
+    console.error("Échec de l'archivage du document sur Drive (non bloquant) :", e);
+    return null;
+  }
+}
 async function addStockHistorique(stocks,ref,entry){
   const s=stocks.rows.find(x=>normRef(x.ref)===normRef(ref));
   if(!s)return;
@@ -198,17 +214,6 @@ function getTagsProjet(projetNom, projects){
   if(!projetNom||!projects)return[];
   const p=projects.rows.find(x=>x.name===projetNom);
   return(p?.tags||"").split(",").map(t=>t.trim()).filter(Boolean);
-}
-function statutBadge(s){
-  const m={
-    "retard":{bg:"#FFF0F0",tx:"#CC2222"},
-    "finition":{bg:"#F0FFF0",tx:"#2A7A2A"},
-    "démarrage":{bg:"#F2F0ED",tx:"#3A3A3A"},
-    "terminé":{bg:"#F0FFF0",tx:"#2A7A2A"},
-    "en cours":{bg:"#F2F0ED",tx:"#3A3A3A"},
-    "en pause":{bg:"#F2F0ED",tx:"#7A7A7A"},
-  };
-  return m[s]||{bg:"#F2F0ED",tx:"#3A3A3A"};
 }
 function statutColor(s){return STATUT_COLORS[s]||{bg:"#F2F0ED",tx:"#3A3A3A",dot:"#3A3A3A"};}
 
@@ -704,7 +709,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.36";
+const VERSION = "v4.7.39";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -9716,57 +9721,61 @@ function PhaseItem({
     }
   }, "Annuler"), React.createElement("button", {
     onClick: async () => {
-      const newNb = editForm.nb_unites;
-      for (const op of editOps) {
-        if (op._delete && op.id) {
-          await suiviFab.remove(op.id);
-        } else if (!op._delete && op.id) {
-          const l = ph.ops.find(x => x.id === op.id);
-          if (!l) continue;
-          let vals = [];
-          try {
-            vals = [...JSON.parse(l.valeurs || "[]")];
-          } catch (e) {}
-          if (newNb > ph.nb_unites) {
-            while (vals.length < newNb) vals.push(0);
-          } else if (newNb < ph.nb_unites) {
-            vals = vals.slice(0, newNb);
+      const newNb = Number(editForm.nb_unites) || 0;
+      try {
+        for (const op of editOps) {
+          if (op._delete && op.id) {
+            await suiviFab.remove(op.id);
+          } else if (!op._delete && op.id) {
+            const l = ph.ops.find(x => x.id === op.id);
+            if (!l) continue;
+            let vals = [];
+            try {
+              vals = [...JSON.parse(l.valeurs || "[]")];
+            } catch (e) {}
+            if (newNb > ph.nb_unites) {
+              while (vals.length < newNb) vals.push(0);
+            } else if (newNb < ph.nb_unites) {
+              vals = vals.slice(0, newNb);
+            }
+            await suiviFab.update(op.id, {
+              ...l,
+              famille: editForm.famille,
+              phase: editForm.phase,
+              deadline: editForm.deadline,
+              nb_unites: newNb,
+              type_unite: editForm.type_unite,
+              operation: op.operation,
+              valeurs: JSON.stringify(vals)
+            });
+          } else if (!op._delete && !op.id && (op.operation || "").trim()) {
+            await suiviFab.add({
+              mission_id: ph.ops[0]?.mission_id || "",
+              famille: editForm.famille,
+              phase: editForm.phase,
+              deadline: editForm.deadline,
+              nb_unites: newNb,
+              type_unite: editForm.type_unite,
+              operation: op.operation,
+              valeurs: JSON.stringify(Array(newNb).fill(0))
+            });
           }
-          await suiviFab.update(op.id, {
-            ...l,
-            famille: editForm.famille,
-            phase: editForm.phase,
-            deadline: editForm.deadline,
-            nb_unites: newNb,
-            type_unite: editForm.type_unite,
-            operation: op.operation,
-            valeurs: JSON.stringify(vals)
-          });
-        } else if (!op._delete && !op.id && op.operation.trim()) {
-          await suiviFab.add({
-            mission_id: ph.ops[0]?.mission_id || "",
-            famille: editForm.famille,
-            phase: editForm.phase,
-            deadline: editForm.deadline,
-            nb_unites: newNb,
-            type_unite: editForm.type_unite,
-            operation: op.operation,
-            valeurs: JSON.stringify(Array(newNb).fill(0))
-          });
         }
+        const opsAdded = editOps.filter(op => !op._delete && !op.id && (op.operation || "").trim()).map(op => op.operation);
+        const opsDeleted = editOps.filter(op => op._delete && op.id).map(op => {
+          const orig = ph.ops.find(x => x.id === op.id);
+          return orig?.operation || "?";
+        });
+        let logDetail = `[${mission?.description || "?"}] ✎ Phase modifiée : ${editForm.famille} / ${editForm.phase}`;
+        if (editForm.deadline !== ph.deadline) logDetail += ` · deadline ${ph.deadline || "—"}→${editForm.deadline || "—"}`;
+        if (newNb !== ph.nb_unites) logDetail += ` · unités ${ph.nb_unites}→${newNb}`;
+        if (opsAdded.length) logDetail += ` · +${opsAdded.length} opération(s) : ${opsAdded.join(", ")}`;
+        if (opsDeleted.length) logDetail += ` · −${opsDeleted.length} opération(s) : ${opsDeleted.join(", ")}`;
+        await logAction(journal, user, logDetail, mission?.projet || "");
+        setEditing(false);
+      } catch (e) {
+        alert("Échec de l'enregistrement de la phase : " + (e.message || e) + "\n\nLa page n'a pas besoin d'être rechargée — tu peux réessayer.");
       }
-      const opsAdded = editOps.filter(op => !op._delete && !op.id && op.operation.trim()).map(op => op.operation);
-      const opsDeleted = editOps.filter(op => op._delete && op.id).map(op => {
-        const orig = ph.ops.find(x => x.id === op.id);
-        return orig?.operation || "?";
-      });
-      let logDetail = `[${mission?.description || "?"}] ✎ Phase modifiée : ${editForm.famille} / ${editForm.phase}`;
-      if (editForm.deadline !== ph.deadline) logDetail += ` · deadline ${ph.deadline || "—"}→${editForm.deadline || "—"}`;
-      if (editForm.nb_unites !== ph.nb_unites) logDetail += ` · unités ${ph.nb_unites}→${editForm.nb_unites}`;
-      if (opsAdded.length) logDetail += ` · +${opsAdded.length} opération(s) : ${opsAdded.join(", ")}`;
-      if (opsDeleted.length) logDetail += ` · −${opsDeleted.length} opération(s) : ${opsDeleted.join(", ")}`;
-      await logAction(journal, user, logDetail, mission?.projet || "");
-      setEditing(false);
     },
     style: {
       padding: "5px 12px",
@@ -9874,205 +9883,6 @@ function PhaseItem({
       color: "#7A7A7A"
     }
   }, ph.ops.map(o => o.operation).join(" · ")));
-}
-function OperationItem({
-  l,
-  suiviFab,
-  journal,
-  user,
-  mission
-}) {
-  const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState({
-    famille: l.famille,
-    phase: l.phase,
-    operation: l.operation,
-    nb_unites: Number(l.nb_unites) || 10,
-    type_unite: l.type_unite || "num"
-  });
-  if (editing) return React.createElement("div", {
-    style: {
-      border: "1px solid #CC2222",
-      borderRadius: 6,
-      padding: "10px",
-      marginBottom: 6,
-      background: "#FFF8F8"
-    }
-  }, React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr",
-      gap: 6,
-      marginBottom: 6
-    }
-  }, React.createElement(FG, {
-    label: "Famille"
-  }, React.createElement(Inp, {
-    value: editForm.famille,
-    onChange: e => setEditForm(f => ({
-      ...f,
-      famille: e.target.value
-    }))
-  })), React.createElement(FG, {
-    label: "Phase"
-  }, React.createElement(Inp, {
-    value: editForm.phase,
-    onChange: e => setEditForm(f => ({
-      ...f,
-      phase: e.target.value
-    }))
-  }))), React.createElement(FG, {
-    label: "Opération"
-  }, React.createElement(Inp, {
-    value: editForm.operation,
-    onChange: e => setEditForm(f => ({
-      ...f,
-      operation: e.target.value
-    }))
-  })), React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr",
-      gap: 6,
-      marginBottom: 8
-    }
-  }, React.createElement(FG, {
-    label: "Nb unités"
-  }, React.createElement(Inp, {
-    type: "number",
-    value: editForm.nb_unites,
-    onChange: e => setEditForm(f => ({
-      ...f,
-      nb_unites: +e.target.value || 10
-    })),
-    min: "1",
-    max: "100"
-  })), React.createElement(FG, {
-    label: "Type"
-  }, React.createElement("select", {
-    value: editForm.type_unite,
-    onChange: e => setEditForm(f => ({
-      ...f,
-      type_unite: e.target.value
-    })),
-    style: {
-      width: "100%",
-      padding: "7px 10px",
-      borderRadius: 6,
-      border: "1px solid #DDD",
-      fontSize: 12,
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, React.createElement("option", {
-    value: "num"
-  }, "Numérique"), React.createElement("option", {
-    value: "alpha"
-  }, "Alphabétique")))), React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      justifyContent: "flex-end"
-    }
-  }, React.createElement("button", {
-    onClick: () => setEditing(false),
-    style: {
-      padding: "4px 10px",
-      borderRadius: 4,
-      border: "1px solid #DDD",
-      background: "#fff",
-      cursor: "pointer",
-      fontSize: 11,
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, "Annuler"), React.createElement("button", {
-    onClick: async () => {
-      const oldNb = Number(l.nb_unites) || 0;
-      const newNb = editForm.nb_unites;
-      let vals = [];
-      try {
-        vals = [...JSON.parse(l.valeurs || "[]")];
-      } catch (e) {}
-      if (newNb > oldNb) {
-        while (vals.length < newNb) vals.push(0);
-      } else if (newNb < oldNb) {
-        vals = vals.slice(0, newNb);
-      }
-      await suiviFab.update(l.id, {
-        ...l,
-        ...editForm,
-        valeurs: JSON.stringify(vals)
-      });
-      setEditing(false);
-    },
-    style: {
-      padding: "4px 10px",
-      borderRadius: 4,
-      border: "none",
-      background: "#CC2222",
-      cursor: "pointer",
-      fontSize: 11,
-      fontFamily: "'DM Sans',sans-serif",
-      color: "#fff",
-      fontWeight: 700
-    }
-  }, "Enregistrer")));
-  return React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "6px 10px",
-      border: "0.5px solid #EEEEEE",
-      borderRadius: 4,
-      marginBottom: 4,
-      background: "#fff"
-    }
-  }, React.createElement("div", {
-    style: {
-      flex: 1,
-      fontSize: 11
-    }
-  }, React.createElement("span", {
-    style: {
-      color: "#7A7A7A"
-    }
-  }, l.famille, " → ", l.phase, " → "), React.createElement("span", {
-    style: {
-      fontWeight: 600,
-      color: "#1C1C1C"
-    }
-  }, l.operation), React.createElement("span", {
-    style: {
-      color: "#AAAAAA",
-      marginLeft: 8
-    }
-  }, l.nb_unites, " unités ", l.type_unite === "alpha" ? "(A-Z)" : "(1-N)")), React.createElement("button", {
-    onClick: () => setEditing(true),
-    style: {
-      background: "none",
-      border: "1px solid #DDDDDD",
-      borderRadius: 4,
-      cursor: "pointer",
-      fontSize: 11,
-      padding: "2px 8px",
-      color: "#3A3A3A",
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, "Mod."), React.createElement("button", {
-    onClick: async () => {
-      if (confirm("Supprimer cette opération ?")) {
-        await suiviFab.remove(l.id);
-        await logAction(journal, user, `[${mission?.description || "?"}] − Opération supprimée : ${l.famille} / ${l.phase} / ${l.operation}`, mission?.projet || "");
-      }
-    },
-    style: {
-      background: "none",
-      border: "none",
-      cursor: "pointer",
-      fontSize: 12,
-      color: "#CCCCCC"
-    }
-  }, "✕"));
 }
 function SuiviFabComponent({
   mission,
@@ -10398,9 +10208,17 @@ function SuiviFabComponent({
     if (cible < 0 || cible >= phasesTrieesNoms.length) return;
     const arr = [...phasesTrieesNoms];
     [arr[index], arr[cible]] = [arr[cible], arr[index]];
+    // L'ordre doit rester cohérent GLOBALEMENT (toutes familles confondues), car l'onglet "Étapes &
+    // jalons" affiche une liste plate triée par ordre — si chaque famille repartait de 0, deux familles
+    // différentes pouvaient se retrouver avec le même ordre et s'afficher dans le désordre là-bas.
+    // Chaque famille reçoit donc un bloc dédié dans l'espace des ordres (famille triée alphabétiquement
+    // × 1000 + position dans la famille), ce qui élimine les collisions tout en gardant les familles
+    // groupées de façon prévisible.
+    const famillesTriees = [...new Set(lignes.map(l => l.famille))].sort();
+    const famIndex = Math.max(0, famillesTriees.indexOf(fam));
     for (let i = 0; i < arr.length; i++) {
       const ph = arr[i];
-      const lignesPhase = lignes.filter(l => l.famille === fam && l.phase === ph);
+      const ordreGlobal = famIndex * 1000 + i;
       let etapeLiee = getEtapeLieePhase(fam, ph);
       if (!etapeLiee) {
         // Phase créée avant la liaison automatique — on crée l'étape manquante à la volée pour
@@ -10414,11 +10232,11 @@ function SuiviFabComponent({
           dateFin: "",
           statut: "à faire",
           note: `fab:${fam}|||${ph}`,
-          ordre: i
+          ordre: ordreGlobal
         });
       } else {
-        if (Number(etapeLiee.ordre || 0) !== i) {
-          await etapes.update(etapeLiee.id, { ...etapeLiee, ordre: i });
+        if (Number(etapeLiee.ordre || 0) !== ordreGlobal) {
+          await etapes.update(etapeLiee.id, { ...etapeLiee, ordre: ordreGlobal });
         }
       }
     }
@@ -19705,38 +19523,42 @@ function Calendrier({
       setYear(y => y + 1);
     } else setMonth(m => m + 1);
   };
+  const fmtLocal = d => {
+    const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
   const [weekStart, setWeekStart] = useState(() => {
     const d = new Date(TODAY + "T00:00:00");
     const dow = d.getDay() === 0 ? 6 : d.getDay() - 1;
     d.setDate(d.getDate() - dow);
-    return d.toISOString().split("T")[0];
+    return fmtLocal(d);
   });
   const weekDays = Array.from({
     length: 7
   }, (_, i) => {
     const d = new Date(weekStart + "T00:00:00");
     d.setDate(d.getDate() + i);
-    return d.toISOString().split("T")[0];
+    return fmtLocal(d);
   });
   const prevW = () => {
     const d = new Date(weekStart + "T00:00:00");
     d.setDate(d.getDate() - 7);
-    setWeekStart(d.toISOString().split("T")[0]);
+    setWeekStart(fmtLocal(d));
   };
   const nextW = () => {
     const d = new Date(weekStart + "T00:00:00");
     d.setDate(d.getDate() + 7);
-    setWeekStart(d.toISOString().split("T")[0]);
+    setWeekStart(fmtLocal(d));
   };
   const prevD = () => {
     const d = new Date(selectedDay + "T00:00:00");
     d.setDate(d.getDate() - 1);
-    setSelectedDay(d.toISOString().split("T")[0]);
+    setSelectedDay(fmtLocal(d));
   };
   const nextD = () => {
     const d = new Date(selectedDay + "T00:00:00");
     d.setDate(d.getDate() + 1);
-    setSelectedDay(d.toISOString().split("T")[0]);
+    setSelectedDay(fmtLocal(d));
   };
   async function save() {
     if (!form.title || !form.date) return;
@@ -20945,6 +20767,18 @@ const EM = {
   note: ""
 };
 const AVATARS_BG = ["#F2F0ED:#CC2222", "#FFF0F0:#CC2222", "#F0FFF0:#2A7A2A", "#F2F0ED:#3A3A3A", "#FFF0F0:#CC2222", "#F0FFF0:#2A7A2A"];
+// Répartit un nombre d'heures entre le projet principal et jusqu'à 4 projets additionnels (5 au total).
+// sp.extras est la liste des projets additionnels avec leur %, le projet principal recevant le reste.
+function repartirHeures(heures, proj1, sp) {
+  const extrasValides = (sp?.extras || []).filter(e => e.proj && e.pct > 0);
+  if (!extrasValides.length) return [{ proj: proj1, heures }];
+  const sommeExtras = extrasValides.reduce((s, e) => s + (e.pct || 0), 0);
+  const pctPrincipal = Math.max(0, 100 - sommeExtras);
+  const out = [];
+  if (pctPrincipal > 0) out.push({ proj: proj1, heures: heures * pctPrincipal / 100 });
+  for (const e of extrasValides) out.push({ proj: e.proj, heures: heures * e.pct / 100 });
+  return out;
+}
 function ImportExcelHeures({
   timesheets,
   projets,
@@ -20973,11 +20807,8 @@ function ImportExcelHeures({
       const proj1 = newMap[l.projet] || l.projet;
       if (!proj1) continue;
       const sp = newSplitMap[l.projet];
-      if (sp && sp.proj2 && sp.pct > 0 && sp.pct < 100) {
-        hRecalc[proj1] = (hRecalc[proj1] || 0) + l.heures * (100 - sp.pct) / 100;
-        hRecalc[sp.proj2] = (hRecalc[sp.proj2] || 0) + l.heures * sp.pct / 100;
-      } else {
-        hRecalc[proj1] = (hRecalc[proj1] || 0) + l.heures;
+      for (const part of repartirHeures(l.heures, proj1, sp)) {
+        hRecalc[part.proj] = (hRecalc[part.proj] || 0) + part.heures;
       }
     }
     const out = {};
@@ -21069,72 +20900,92 @@ function ImportExcelHeures({
       return;
     }
     setSaving(true);
-    const mapping = {};
     try {
-      const s = localStorage.getItem("hp_projet_mapping");
-      if (s) Object.assign(mapping, JSON.parse(s));
-    } catch (e) {}
-    for (const [nom, mapped] of Object.entries(matchMap)) {
-      if (mapped) mapping[normProjet(nom)] = mapped;
-    }
-    try {
-      localStorage.setItem("hp_projet_mapping", JSON.stringify(mapping));
-    } catch (e) {}
-    const toDelete = (timesheets?.rows || []).filter(r => r.membre === uploadMembre && r.mois === uploadMois && r.type === "import");
-    for (const r of toDelete) await timesheets.remove(r.id);
-    // Regroupe les lignes par projet en conservant les heures RÉELLES de chaque jour.
-    // Gère aussi le split (répartition sur 2 projets) et l'exclusion (ignoreMap).
-    const parProjet = {};
-    for (const l of parsedLignes) {
-      if (ignoreMap[l.projet]) continue;
-      const proj1 = matchMap[l.projet] || l.projet;
-      if (!proj1) continue;
-      const sp = splitMap[l.projet];
-      const hasSp = sp && sp.proj2 && sp.pct > 0 && sp.pct < 100;
-      const parts = hasSp
-        ? [{ proj: proj1, heures: l.heures * (100 - sp.pct) / 100 }, { proj: sp.proj2, heures: l.heures * sp.pct / 100 }]
-        : [{ proj: proj1, heures: l.heures }];
-      for (const part of parts) {
-        if (!parProjet[part.proj]) parProjet[part.proj] = { entries: [], totalExcel: 0 };
-        parProjet[part.proj].entries.push({ date: l.date, heures: part.heures, rd: l.rd, note: l.note });
-        parProjet[part.proj].totalExcel += part.heures;
+      const mapping = {};
+      try {
+        const s = localStorage.getItem("hp_projet_mapping");
+        if (s) Object.assign(mapping, JSON.parse(s));
+      } catch (e) {}
+      for (const [nom, mapped] of Object.entries(matchMap)) {
+        if (mapped) mapping[normProjet(nom)] = mapped;
       }
-    }
-    for (const [proj, data] of Object.entries(parProjet)) {
-      if (!data.entries.length) continue;
-      const pObj = (projets?.rows || []).find(p => normL(p.name) === normL(proj));
-      const totalExcel = Math.round(data.totalExcel * 100) / 100;
-      const totalFinal = heuresFinales[proj] ?? totalExcel;
-      // Facteur de correction proportionnel : ne s'applique que si l'utilisateur a
-      // ajusté manuellement le total à l'écran de matching (totalFinal ≠ totalExcel).
-      // Sinon (cas normal) on garde les heures exactes de chaque jour telles que lues dans le fichier.
-      const ratio = totalExcel > 0 ? totalFinal / totalExcel : 1;
-      for (const entry of data.entries) {
-        const heuresAjustees = Math.round(entry.heures * ratio * 100) / 100;
-        if (heuresAjustees <= 0) continue;
-        await timesheets.add({
-          membre: uploadMembre,
-          date: entry.date,
-          projet: proj,
-          heures: heuresAjustees,
-          type: "import",
-          mois: uploadMois,
-          note: entry.note,
-          rd: entry.rd ? "oui" : "",
-          projet_id: pObj ? String(pObj.id) : ""
-        });
+      try {
+        localStorage.setItem("hp_projet_mapping", JSON.stringify(mapping));
+      } catch (e) {}
+      // Regroupe les lignes par projet en conservant les heures RÉELLES de chaque jour.
+      // Gère aussi le split (répartition sur jusqu'à 5 projets) et l'exclusion (ignoreMap).
+      const parProjet = {};
+      for (const l of parsedLignes) {
+        if (ignoreMap[l.projet]) continue;
+        const proj1 = matchMap[l.projet] || l.projet;
+        if (!proj1) continue;
+        const sp = splitMap[l.projet];
+        const parts = repartirHeures(l.heures, proj1, sp);
+        for (const part of parts) {
+          if (!parProjet[part.proj]) parProjet[part.proj] = { entries: [], totalExcel: 0 };
+          parProjet[part.proj].entries.push({ date: l.date, heures: part.heures, rd: l.rd, note: l.note });
+          parProjet[part.proj].totalExcel += part.heures;
+        }
       }
+      // IMPORTANT : on écrit d'abord toutes les NOUVELLES lignes, et on ne supprime les anciennes
+      // qu'une fois l'écriture intégralement réussie. Si une erreur survient pendant l'écriture
+      // (réseau, crash, timeout GAS), les anciennes heures restent intactes au lieu d'être perdues —
+      // avant, la suppression avait lieu EN PREMIER, donc le moindre pépin pendant la ré-écriture
+      // effaçait les heures du mois sans les remplacer correctement.
+      const nouvellesLignesAjoutees = [];
+      for (const [proj, data] of Object.entries(parProjet)) {
+        if (!data.entries.length) continue;
+        const pObj = (projets?.rows || []).find(p => normL(p.name) === normL(proj));
+        const totalExcel = Math.round(data.totalExcel * 100) / 100;
+        const totalFinal = heuresFinales[proj] ?? totalExcel;
+        // Facteur de correction proportionnel : ne s'applique que si l'utilisateur a
+        // ajusté manuellement le total à l'écran de matching (totalFinal ≠ totalExcel).
+        // Sinon (cas normal) on garde les heures exactes de chaque jour telles que lues dans le fichier.
+        const ratio = totalExcel > 0 ? totalFinal / totalExcel : 1;
+        for (const entry of data.entries) {
+          const heuresAjustees = Math.round(entry.heures * ratio * 100) / 100;
+          if (heuresAjustees <= 0) continue;
+          const cree = await timesheets.add({
+            membre: uploadMembre,
+            date: entry.date,
+            projet: proj,
+            heures: heuresAjustees,
+            type: "import",
+            mois: uploadMois,
+            note: entry.note,
+            rd: entry.rd ? "oui" : "",
+            projet_id: pObj ? String(pObj.id) : ""
+          });
+          nouvellesLignesAjoutees.push(cree);
+        }
+      }
+      // Maintenant que la ré-écriture est confirmée réussie, on peut supprimer en toute sécurité
+      // les anciennes lignes "import" de ce membre/mois (celles d'AVANT cette nouvelle importation).
+      const toDelete = (timesheets?.rows || []).filter(r => r.membre === uploadMembre && r.mois === uploadMois && r.type === "import" && !nouvellesLignesAjoutees.some(n => n.id === r.id));
+      for (const r of toDelete) {
+        try {
+          await timesheets.remove(r.id);
+        } catch (e) {
+          // Une ancienne ligne résiduelle qui ne se supprime pas n'est pas grave (double emploi
+          // visible et corrigeable à la main) — ce n'est PAS une perte de données, donc on continue
+          // plutôt que de faire échouer tout l'import déjà réussi.
+          console.error("Échec de suppression d'une ancienne ligne d'heures", r.id, e);
+        }
+      }
+      setUploadState("done");
+      setTimeout(() => {
+        setUploadState("idle");
+        setOpen(false);
+        setParsedLignes([]);
+        setHeuresFinales({});
+        setSplitMap({});
+        setIgnoreMap({});
+      }, 2000);
+    } catch (e) {
+      alert("Échec de l'enregistrement des heures : " + (e.message || e) + "\n\nAucune heure existante n'a été supprimée — tu peux réessayer sans risque de doublon ni de perte.");
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
-    setUploadState("done");
-    setTimeout(() => {
-      setUploadState("idle");
-      setOpen(false);
-      setParsedLignes([]);
-      setHeuresFinales({});
-      setSplitMap({});
-      setIgnoreMap({});
-    }, 2000);
   };
   const genRapportHeures = moisFiltre => {
     const tsRows = timesheets?.rows || [];
@@ -21502,9 +21353,24 @@ function ImportExcelHeures({
   }, "1. Correspondance des projets"), Object.keys(matchMap).map(nom => {
     const isIgnored = !!ignoreMap[nom];
     const sp = splitMap[nom] || null;
-    const splitActif = !!sp;              // le bouton ⇄ a été cliqué (slider visible)
-    const hasSplit = !!(sp && sp.proj2);  // split réellement appliqué (2e projet choisi)
+    const splitActif = !!sp;
+    const extras = sp?.extras || [];
+    const nbTotal = 1 + extras.length; // projet principal + extras
+    const sommeExtras = extras.reduce((s, e) => s + (Number(e.pct) || 0), 0);
+    const pctPrincipal = Math.max(0, 100 - sommeExtras);
     const hExcel = Math.round(parsedLignes.filter(l => l.projet === nom).reduce((s, l) => s + l.heures, 0) * 10) / 10;
+    const majSplit = ns => { setSplitMap(ns); setHeuresFinales(recalcHeuresTout(matchMap, ns, ignoreMap, parsedLignes)); };
+    const ajouterProjet = () => {
+      const nbApres = nbTotal + 1;
+      const pctEqual = Math.round(100 / nbApres);
+      const newExtras = [...extras.map(e => ({ ...e, pct: pctEqual })), { proj: "", pct: pctEqual }];
+      majSplit({ ...splitMap, [nom]: { extras: newExtras } });
+    };
+    const retirerProjet = i => {
+      const newExtras = extras.filter((_, j) => j !== i);
+      if (!newExtras.length) { const ns = { ...splitMap }; delete ns[nom]; majSplit(ns); return; }
+      majSplit({ ...splitMap, [nom]: { extras: newExtras } });
+    };
     return React.createElement("div", { key: nom, style: { padding: "7px 0", borderBottom: "0.5px solid #EEE", opacity: isIgnored ? 0.45 : 1 } },
       React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr auto 1fr auto auto", gap: 6, alignItems: "center" } },
         React.createElement("div", { style: { fontSize: 11, fontWeight: 600, textDecoration: isIgnored ? "line-through" : "none", color: isIgnored ? "#AAAAAA" : "#1C1C1C" } }, nom, React.createElement("span", { style: { fontWeight: 400, color: "#AAAAAA", marginLeft: 5 } }, hExcel + "h")),
@@ -21512,15 +21378,18 @@ function ImportExcelHeures({
         React.createElement("select", { value: matchMap[nom] || "", disabled: isIgnored, onChange: e => { const newMap = { ...matchMap, [nom]: e.target.value }; setMatchMap(newMap); setHeuresFinales(recalcHeuresTout(newMap, splitMap, ignoreMap, parsedLignes)); }, style: { padding: "3px 6px", borderRadius: 4, border: "1px solid #DDD", fontSize: 11, fontFamily: "'DM Sans',sans-serif", background: isIgnored ? "#F5F5F5" : "#fff" } },
           React.createElement("option", { value: "" }, "\u2014 Non mapp\u00e9 \u2014"),
           (projets?.rows || []).map(p => React.createElement("option", { key: p.id, value: p.name }, p.name))),
-        React.createElement("button", { title: splitActif ? "Supprimer le split" : "R\u00e9partir sur 2 projets", disabled: isIgnored, onClick: () => { const ns = { ...splitMap }; if (splitActif) delete ns[nom]; else ns[nom] = { proj2: "", pct: 50 }; setSplitMap(ns); setHeuresFinales(recalcHeuresTout(matchMap, ns, ignoreMap, parsedLignes)); }, style: { padding: "3px 7px", borderRadius: 4, border: "1px solid " + (splitActif ? "#1A5DAB" : "#DDD"), background: splitActif ? "#EEF4FF" : "#fff", color: splitActif ? "#1A5DAB" : "#7A7A7A", cursor: "pointer", fontSize: 11, fontFamily: "'DM Sans',sans-serif", whiteSpace: "nowrap" } }, splitActif ? "\u21c4 Split" : "\u21c4"),
+        React.createElement("button", { title: splitActif ? "Supprimer le split" : "R\u00e9partir sur plusieurs projets", disabled: isIgnored, onClick: () => { if (splitActif) { const ns = { ...splitMap }; delete ns[nom]; majSplit(ns); } else { majSplit({ ...splitMap, [nom]: { extras: [{ proj: "", pct: 50 }] } }); } }, style: { padding: "3px 7px", borderRadius: 4, border: "1px solid " + (splitActif ? "#1A5DAB" : "#DDD"), background: splitActif ? "#EEF4FF" : "#fff", color: splitActif ? "#1A5DAB" : "#7A7A7A", cursor: "pointer", fontSize: 11, fontFamily: "'DM Sans',sans-serif", whiteSpace: "nowrap" } }, splitActif ? "\u21c4 Split" : "\u21c4"),
         React.createElement("button", { title: isIgnored ? "R\u00e9int\u00e9grer" : "Ignorer ces heures", onClick: () => { const ni = { ...ignoreMap, [nom]: !isIgnored }; setIgnoreMap(ni); setHeuresFinales(recalcHeuresTout(matchMap, splitMap, ni, parsedLignes)); }, style: { padding: "3px 7px", borderRadius: 4, border: "1px solid " + (isIgnored ? "#CC8800" : "#DDD"), background: isIgnored ? "#FFF8EC" : "#fff", color: isIgnored ? "#CC8800" : "#7A7A7A", cursor: "pointer", fontSize: 11, fontFamily: "'DM Sans',sans-serif", whiteSpace: "nowrap" } }, isIgnored ? "\u21a9 R\u00e9tablir" : "\u2715 Ignorer")),
-      splitActif && !isIgnored && React.createElement("div", { style: { display: "grid", gridTemplateColumns: "auto 1fr auto 90px", gap: 6, alignItems: "center", marginTop: 5, background: "#F0F5FF", borderRadius: 4, padding: "6px 10px" } },
-        React.createElement("span", { style: { fontSize: 10.5, color: "#7A7A7A", whiteSpace: "nowrap" } }, (100 - (sp.pct || 50)) + "% \u2192 " + (matchMap[nom] || "\u2014")),
-        React.createElement("input", { type: "range", min: 5, max: 95, step: 5, value: sp.pct || 50, onChange: e => { const ns = { ...splitMap, [nom]: { ...splitMap[nom], pct: +e.target.value } }; setSplitMap(ns); setHeuresFinales(recalcHeuresTout(matchMap, ns, ignoreMap, parsedLignes)); }, style: { width: "100%", accentColor: "#1A5DAB" } }),
-        React.createElement("span", { style: { fontSize: 10.5, color: "#7A7A7A", whiteSpace: "nowrap" } }, (sp.pct || 50) + "% \u2192"),
-        React.createElement("select", { value: sp.proj2 || "", onChange: e => { const ns = { ...splitMap, [nom]: { ...splitMap[nom], proj2: e.target.value } }; setSplitMap(ns); setHeuresFinales(recalcHeuresTout(matchMap, ns, ignoreMap, parsedLignes)); }, style: { padding: "3px 6px", borderRadius: 4, border: "1px solid #1A5DAB", fontSize: 11, fontFamily: "'DM Sans',sans-serif" } },
-          React.createElement("option", { value: "" }, "\u2014 2e projet \u2014"),
-          (projets?.rows || []).filter(p => p.name !== matchMap[nom]).map(p => React.createElement("option", { key: p.id, value: p.name }, p.name)))));
+      splitActif && !isIgnored && React.createElement("div", { style: { background: "#F0F5FF", borderRadius: 4, padding: "8px 10px", marginTop: 5 } },
+        React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 } },
+          React.createElement("span", { style: { fontSize: 10.5, color: "#1A5DAB", fontWeight: 700 } }, pctPrincipal + "% \u2192 " + (matchMap[nom] || "\u2014")),
+          nbTotal < 5 && React.createElement("button", { onClick: ajouterProjet, style: { padding: "2px 8px", borderRadius: 4, border: "1px solid #1A5DAB", background: "#fff", color: "#1A5DAB", cursor: "pointer", fontSize: 10.5, fontFamily: "'DM Sans',sans-serif" } }, "+ projet (", nbTotal, "/5)")),
+        extras.map((ex, i) => React.createElement("div", { key: i, style: { display: "grid", gridTemplateColumns: "60px 1fr auto", gap: 6, alignItems: "center", marginBottom: i < extras.length - 1 ? 4 : 0 } },
+          React.createElement("input", { type: "number", min: 1, max: 99, value: ex.pct, onChange: e => { const ne = [...extras]; ne[i] = { ...ne[i], pct: +e.target.value || 0 }; majSplit({ ...splitMap, [nom]: { extras: ne } }); }, style: { width: "100%", padding: "3px 6px", borderRadius: 4, border: "1px solid #1A5DAB", fontSize: 11, fontFamily: "'DM Sans',sans-serif" } }),
+          React.createElement("select", { value: ex.proj || "", onChange: e => { const ne = [...extras]; ne[i] = { ...ne[i], proj: e.target.value }; majSplit({ ...splitMap, [nom]: { extras: ne } }); }, style: { padding: "3px 6px", borderRadius: 4, border: "1px solid #1A5DAB", fontSize: 11, fontFamily: "'DM Sans',sans-serif" } },
+            React.createElement("option", { value: "" }, "\u2014 projet \u2014"),
+            (projets?.rows || []).filter(p => p.name !== matchMap[nom]).map(p => React.createElement("option", { key: p.id, value: p.name }, p.name))),
+          React.createElement("button", { onClick: () => retirerProjet(i), title: "Retirer ce projet", style: { padding: "3px 7px", borderRadius: 4, border: "1px solid #DDD", background: "#fff", color: "#AAAAAA", cursor: "pointer", fontSize: 11 } }, "\u2715")))));
   }), React.createElement("div", {
     style: {
       fontSize: 11,
@@ -21595,11 +21464,8 @@ function ImportExcelHeures({
       const proj1 = matchMap[l.projet] || l.projet;
       if (!proj1) continue;
       const sp = splitMap[l.projet];
-      if (sp && sp.proj2 && sp.pct > 0 && sp.pct < 100) {
-        excelParProjet[proj1] = (excelParProjet[proj1] || 0) + l.heures * (100 - sp.pct) / 100;
-        excelParProjet[sp.proj2] = (excelParProjet[sp.proj2] || 0) + l.heures * sp.pct / 100;
-      } else {
-        excelParProjet[proj1] = (excelParProjet[proj1] || 0) + l.heures;
+      for (const part of repartirHeures(l.heures, proj1, sp)) {
+        excelParProjet[part.proj] = (excelParProjet[part.proj] || 0) + part.heures;
       }
     }
     const tousProj = [...new Set([...Object.keys(excelParProjet), ...Object.keys(heuresFinales)])];
@@ -21781,6 +21647,9 @@ function Equipes({
   suiviFab
 }) {
   const [open, setOpen] = useState(false);
+  const [expandedHeuresMembre, setExpandedHeuresMembre] = useState(null);
+  const MOIS_FR_EQ = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+  const moisActuelEq = MOIS_FR_EQ[new Date().getMonth()];
   const [form, setForm] = useState(EM);
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -22248,7 +22117,31 @@ function Equipes({
         marginTop: 2,
         fontFamily: "'DM Mono',monospace"
       }
-    }, m.tel))));
+    }, m.tel), (() => {
+      const heuresMois = (timesheets?.rows || []).filter(t => t.membre === m.nom && t.mois === moisActuelEq);
+      const totalMois = Math.round(heuresMois.reduce((s, t) => s + (Number(t.heures) || 0), 0) * 10) / 10;
+      if (!totalMois) return null;
+      const estOuvert = expandedHeuresMembre === m.id;
+      const parProjetMois = {};
+      for (const t of heuresMois) {
+        const p = t.projet || "—";
+        parProjetMois[p] = (parProjetMois[p] || 0) + (Number(t.heures) || 0);
+      }
+      return React.createElement("div", { style: { marginTop: 6 } },
+        React.createElement("div", {
+          onClick: () => setExpandedHeuresMembre(estOuvert ? null : m.id),
+          style: {
+            display: "flex", alignItems: "center", gap: 5, cursor: "pointer",
+            fontSize: 11, color: "#1A5DAB", fontWeight: 600
+          }
+        }, "⏱ ", totalMois, "h ce mois-ci (", moisActuelEq, ") ", estOuvert ? "▴" : "▾"),
+        estOuvert && React.createElement("div", {
+          style: { marginTop: 4, background: "#F8F8F8", borderRadius: 4, padding: "6px 8px" }
+        }, Object.entries(parProjetMois).sort((a, b) => b[1] - a[1]).map(([proj, h]) => React.createElement("div", {
+          key: proj,
+          style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: "#3A3A3A", padding: "2px 0" }
+        }, React.createElement("span", null, proj), React.createElement("span", { style: { fontWeight: 600 } }, Math.round(h * 10) / 10, "h")))));
+    })())));
   })), conges && React.createElement("div", {
     style: {
       marginBottom: 14
@@ -24186,6 +24079,7 @@ function ModuleDevis({
   const [err, setErr] = useState("");
   const [aiOpen, setAiOpen] = useState(false);
   const [aiFile, setAiFile] = useState(null);
+  const [pendingDocFile, setPendingDocFile] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiPreview, setAiPreview] = useState(null);
   const [aiErr, setAiErr] = useState("");
@@ -24262,6 +24156,10 @@ function ModuleDevis({
       prix: lignesForm.reduce((s, l) => (+l.prix || 0) * (+l.qty || 1) + s, 0) || form.prix || 0
     };
     if (editing) await devis.update(editing, item);else await devis.add(item);
+    if (pendingDocFile) {
+      sauvegarderDocumentDrive(pendingDocFile, "devis", form.projet, form.fourn, form.tags);
+      setPendingDocFile(null);
+    }
     setFormOpen(false);
     setSaving(false);
   }
@@ -24324,6 +24222,7 @@ function ModuleDevis({
         setAiErr("Aucun article détecté dans le document.");
         return;
       }
+      setPendingDocFile(aiFile);
       setAiPreview({ formData, articles });
     } catch (e) {
       setAiErr(e.message || "Échec de l'analyse IA");
@@ -25250,6 +25149,7 @@ function Commandes({
   const [aiErr, setAiErr] = useState("");
   const [aiPreview, setAiPreview] = useState(null);
   const [aiFile, setAiFile] = useState(null);
+  const [pendingDocFile, setPendingDocFile] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [newFourn, setNewFourn] = useState(false);
   const [aiApplying, setAiApplying] = useState(false);
@@ -25398,6 +25298,7 @@ function Commandes({
         setAiErr("Aucun article détecté dans le document.");
         return;
       }
+      setPendingDocFile(aiFile);
       setAiPreview({ formData, lignes, verification: data.verification || "", alertes: Array.isArray(data.alertes) ? data.alertes : [] });
     } catch (e) {
       setAiErr(e.message || "Échec de l'analyse IA");
@@ -25679,6 +25580,10 @@ function Commandes({
             prix: pmp > 0 ? pmp : nouveauPrix
           });
         }
+      }
+      if (pendingDocFile) {
+        sauvegarderDocumentDrive(pendingDocFile, "commande", form.projet, form.fourn, form.tags);
+        setPendingDocFile(null);
       }
       setOpen(false);
       setEditing(null);
@@ -26144,7 +26049,32 @@ function Commandes({
       color: "#fff",
       fontWeight: 600
     }
-  }, aiLoading ? "⟳ Analyse en cours…" : "Analyser →"))), aiPreview && React.createElement(React.Fragment, null, aiPreview.alertes && aiPreview.alertes.length > 0 && React.createElement("div", {
+  }, aiLoading ? "⟳ Analyse en cours…" : "Analyser →")), React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginTop: 14,
+      paddingTop: 10,
+      borderTop: "0.5px solid #EEEEEE"
+    }
+  }, React.createElement("button", {
+    onClick: () => {
+      setAiOpen(false);
+      setErr("");
+      setEditing(null);
+      setForm(EO);
+      setLignesForm([{ ...EL }]);
+      setOpen(true);
+    },
+    style: {
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 11,
+      color: "#7A7A7A",
+      textDecoration: "underline",
+      fontFamily: "'DM Sans',sans-serif"
+    }
+  }, "Ou remplir manuellement →"))), aiPreview && React.createElement(React.Fragment, null, aiPreview.alertes && aiPreview.alertes.length > 0 && React.createElement("div", {
     style: {
       background: "#FFF8E8",
       border: "0.5px solid #F0D890",
@@ -26517,26 +26447,6 @@ function Commandes({
       gap: 8
     }
   }, React.createElement("button", {
-    onClick: () => {
-      setAiPreview(null);
-      setAiErr("");
-      setAiOpen(true);
-    },
-    style: {
-      padding: "6px 12px",
-      borderRadius: 4,
-      border: "1px solid #CC2222",
-      background: "#FFF0F0",
-      cursor: "pointer",
-      fontSize: 12,
-      fontFamily: "'DM Sans',sans-serif",
-      color: "#CC2222",
-      fontWeight: 600,
-      display: "flex",
-      alignItems: "center",
-      gap: 5
-    }
-  }, "🤖 Import IA"), React.createElement("button", {
     onClick: exportPDFCommandes,
     title: "Exporter les commandes affichées en PDF",
     style: {
@@ -26556,10 +26466,10 @@ function Commandes({
   }, "📄 Export PDF"), React.createElement(Btn, {
     primary: true,
     onClick: () => {
-      setErr("");
-      setEditing(null);
-      setForm(EO);
-      setOpen(true);
+      setAiPreview(null);
+      setAiErr("");
+      setAiFile(null);
+      setAiOpen(true);
     }
   }, "+ Nouvelle commande"))), !encours.length && React.createElement("div", {
     style: {
@@ -28094,9 +28004,6 @@ function AppContent({
       fontFamily: "'DM Sans',sans-serif"
     }
   }, "HIGH POINT — 17 rue Robert Geffré — 17000 La Rochelle — FRANCE — SARL au capital de 32 000 € — SIRET : 53454409300030"));
-}
-function AppOuter() {
-  return React.createElement(App, null);
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(ErrorBoundary, null, React.createElement(App, null)));
 </script>
