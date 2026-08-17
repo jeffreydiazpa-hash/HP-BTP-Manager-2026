@@ -52,7 +52,7 @@
   }
   .btn:hover{opacity:.9}
   .btn:disabled{opacity:.5;cursor:wait}
-  .btn-sec{background:var(--anthracite)}
+  .btn-sec{background:transparent;border:1.5px solid var(--rouge);color:var(--rouge)}
   .btn-ok{background:var(--vert)}
 
   /* Résultat */
@@ -83,7 +83,7 @@
   .seg{display:flex;gap:4px;flex-wrap:wrap}
   .seg-btn{flex:1;min-width:160px;padding:9px;border:1.5px solid #ddd;border-radius:7px;background:#fff;
     font-family:inherit;font-size:12px;font-weight:500;color:var(--gris-moyen);cursor:pointer}
-  .seg-btn.active{background:var(--anthracite);color:#fff;border-color:var(--anthracite)}
+  .seg-btn.active{background:var(--rouge);color:#fff;border-color:var(--rouge)}
   .samples-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
   @media(max-width:560px){.samples-grid{grid-template-columns:repeat(2,1fr)}}
   .samples-grid input{padding:10px;border:1.5px solid #ddd;border-radius:7px;font-family:'DM Mono',monospace;font-size:15px}
@@ -116,9 +116,9 @@
 
   /* Bloc analyse IA — redesigné */
   .ia-block{border:1px solid #e5e3df;border-radius:12px;overflow:hidden;margin:16px 0;background:#fff}
-  .ia-head{display:flex;align-items:center;gap:8px;padding:11px 16px;background:linear-gradient(to right,#1C1C1C,#2a2a2a)}
+  .ia-head{display:flex;align-items:center;gap:8px;padding:11px 16px;background:var(--blanc-casse);border-left:3px solid var(--rouge)}
   .ia-dot{width:8px;height:8px;border-radius:50%;background:var(--rouge);box-shadow:0 0 0 3px rgba(204,34,34,.25)}
-  .ia-title{color:#fff;font-weight:700;font-size:14px}
+  .ia-title{color:var(--anthracite);font-weight:700;font-size:14px}
   .ia-tag{margin-left:auto;font-size:10px;color:#bbb;text-transform:uppercase;letter-spacing:.05em;border:1px solid #444;border-radius:20px;padding:2px 9px}
   .ia-body{padding:16px;font-size:14px;line-height:1.65;white-space:pre-wrap}
   .ia-body strong,.ia-body b{color:var(--anthracite)}
@@ -141,7 +141,7 @@
   .tabs{display:flex;gap:4px;margin-bottom:18px}
   .tab{flex:1;padding:11px;text-align:center;background:var(--blanc);border:none;border-radius:8px;
        font-family:inherit;font-size:14px;font-weight:500;color:var(--gris-moyen);cursor:pointer}
-  .tab.active{background:var(--anthracite);color:#fff}
+  .tab.active{background:var(--rouge);color:#fff}
 </style>
 </head>
 <body>
