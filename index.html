@@ -724,7 +724,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.41";
+const VERSION = "v4.7.44";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -4977,29 +4977,32 @@ function SuiviHeuresProjet({
   const genRapportProjet = () => {
     const pct = budgetTotal > 0 ? Math.min(999, Math.round(totalConsomme / budgetTotal * 100)) : null;
     const restant = budgetTotal > 0 ? Math.round((budgetTotal - totalConsomme) * 10) / 10 : null;
-    const couleurPct = pct === null ? "#7A7A7A" : pct > 100 ? "#CC2222" : pct > 80 ? "#CC8800" : "#2A7A2A";
+    const couleurPct = pct === null ? "#CC2222" : pct > 100 ? "#CC2222" : pct > 80 ? "#CC8800" : "#2A7A2A";
     let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-      @page{size:A4;margin:15mm 12mm;}
+      @page{size:A4;margin:12mm 14mm;}
       *{box-sizing:border-box;margin:0;padding:0;}
-      body{font-family:Arial,sans-serif;font-size:9pt;color:#1C1C1C;}
-      .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:8px;border-bottom:2px solid #CC2222;}
-      .hdr img{height:32px;}
-      .t1{font-size:13pt;font-weight:700;}.t2{font-size:8pt;color:#7A7A7A;margin-top:2px;}
-      h2{font-size:11pt;font-weight:700;border-left:3px solid #CC2222;padding-left:8px;margin:12px 0 8px;}
-      h3{font-size:9pt;font-weight:700;color:#7A7A7A;margin:10px 0 4px;text-transform:uppercase;}
-      table{border-collapse:collapse;width:100%;font-size:8.5pt;margin-bottom:8px;}
-      th{background:#1C1C1C;color:#fff;padding:4px 8px;text-align:left;}
-      td{padding:4px 8px;border-bottom:0.5px solid #EEE;}
-      .total-row td{font-weight:700;background:#F2F0ED!important;border-top:1px solid #DDD;}
-      .kpis{display:flex;gap:10px;margin-bottom:12px;}
-      .kpi{flex:1;padding:8px 10px;border-radius:6px;border:0.5px solid #EEE;}
-      .kpi-val{font-size:16pt;font-weight:700;}.kpi-lbl{font-size:7.5pt;color:#7A7A7A;margin-top:2px;}
-      .prog-bar{height:8px;background:#EEE;border-radius:4px;overflow:hidden;margin-bottom:12px;}
-      .prog-fill{height:8px;border-radius:4px;}
+      body{font-family:'DM Sans',Arial,sans-serif;font-size:9pt;color:#1C1C1C;background:#F2F0ED;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+      .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:10px 14px;background:#fff;border-radius:8px;border-bottom:3px solid #CC2222;}
+      .hdr img{height:46px;}
+      .t1{font-size:14pt;font-weight:800;color:#1C1C1C;}
+      .t2{font-size:7.5pt;color:#7A7A7A;margin-top:2px;}
+      h2{font-size:11pt;font-weight:800;border-left:3px solid #CC2222;padding-left:8px;margin:14px 0 8px;color:#1C1C1C;}
+      table{border-collapse:collapse;width:100%;font-size:8.5pt;margin-bottom:10px;background:#fff;border-radius:8px;overflow:hidden;border:0.5px solid #EEEEEE;}
+      th{background:#F2F0ED;color:#1C1C1C;padding:6px 10px;text-align:left;font-weight:700;}
+      td{padding:6px 10px;border-bottom:0.5px solid #EEEEEE;}
+      tr:last-child td{border-bottom:none;}
+      .total-row td{font-weight:800;background:#F2F0ED!important;border-top:1px solid #DDD;}
+      .kpis{display:flex;gap:0;margin-bottom:12px;background:#fff;border-radius:8px;overflow:hidden;border:0.5px solid #EEEEEE;}
+      .kpi{flex:1;padding:9px 14px;border-right:1px solid #EEEEEE;}
+      .kpi:last-child{border-right:none;}
+      .kpi-val{font-size:18pt;font-weight:800;line-height:1;}
+      .kpi-lbl{font-size:7pt;color:#7A7A7A;margin-top:3px;}
+      .prog-bar{height:6px;background:rgba(0,0,0,0.08);border-radius:3px;overflow:hidden;margin-bottom:14px;}
+      .prog-fill{height:6px;border-radius:3px;}
       .retard{color:#CC2222;font-weight:700;}.warn{color:#CC8800;font-weight:600;}.ok{color:#2A7A2A;}
-      .footer{font-size:7pt;color:#AAA;margin-top:12px;text-align:right;border-top:0.5px solid #EEE;padding-top:6px;}
+      .footer{font-size:6.5pt;color:#AAAAAA;margin-top:10px;text-align:right;border-top:0.5px solid #DDDDDD;padding-top:6px;}
     </style></head><body>
-    <div class="hdr"><img src="${LOGO_B64}"/><div>
+    <div class="hdr"><img src="${LOGO_B64}"/><div style="flex:1;margin-left:12px;">
       <div class="t1">Suivi des heures — ${projet.name || "Projet"}</div>
       <div class="t2">Généré le ${new Date().toLocaleDateString("fr-FR", {
       weekday: "long",
@@ -5010,7 +5013,7 @@ function SuiviHeuresProjet({
     </div></div>
     <div class="kpis">
       <div class="kpi"><div class="kpi-val" style="color:#CC2222;">${Math.round(totalConsomme * 10) / 10}h</div><div class="kpi-lbl">Heures consommées</div></div>
-      <div class="kpi"><div class="kpi-val" style="color:${budgetTotal > 0 ? "#1A5DAB" : "#AAA"};">${budgetTotal > 0 ? budgetTotal + "h" : "—"}</div><div class="kpi-lbl">Budget total</div>${budgetPool > 0 ? `<div style="font-size:7pt;color:#7A7A7A;">dont ${budgetPool}h pool</div>` : ""}</div>
+      <div class="kpi"><div class="kpi-val" style="color:${budgetTotal > 0 ? "#1A5DAB" : "#AAA"};">${budgetTotal > 0 ? budgetTotal + "h" : "—"}</div><div class="kpi-lbl">Budget total${budgetPool > 0 ? ` · dont ${budgetPool}h pool` : ""}</div></div>
       <div class="kpi"><div class="kpi-val" style="color:${couleurPct};">${pct !== null ? pct + "%" : "—"}</div><div class="kpi-lbl">Consommé${restant !== null ? ` · Restant : ${restant}h` : ""}</div></div>
       ${heuresEstimAtelier > 0 ? `<div class="kpi"><div class="kpi-val" style="color:#CC8800;">~${heuresEstimAtelier}h</div><div class="kpi-lbl">Estimation atelier (coches)</div></div>` : ""}
     </div>`;
@@ -12560,7 +12563,7 @@ function GanttView({
                 *{box-sizing:border-box;margin:0;padding:0;}
                 body{font-family:'DM Sans',Arial,sans-serif;font-size:9pt;color:#1C1C1C;background:#F2F0ED;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
                 .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding:10px 14px;background:#fff;border-radius:8px;border-bottom:3px solid #CC2222;}
-                .hdr img{height:30px;}
+                .hdr img{height:46px;}
                 .t1{font-size:13pt;font-weight:800;color:#1C1C1C;}
                 .t2{font-size:7.5pt;color:#7A7A7A;margin-top:2px;}
                 .gantt{border-radius:8px;overflow:hidden;width:${totalW}px;box-shadow:0 2px 8px rgba(0,0,0,0.08);}
@@ -13136,61 +13139,6 @@ function MissionModule({
   const [detailOngletList, setDetailOngletList] = useState("fab");
   const [deps, setDeps] = useState([]);
   const [noteTexte, setNoteTexte] = useState("");
-  // ── Onglet "Fiches de prod" (atelier uniquement) — même convention d'iframe que l'onglet Outils du
-  // BE : postMessage "hp-tool-resize" pour ajuster la hauteur, iframeRefFP pour distinguer ce message
-  // de ceux d'autres iframes potentiellement ouvertes ailleurs sur la page.
-  const [iframeSrcFP, setIframeSrcFP] = useState("");
-  const [iframeHeightFP, setIframeHeightFP] = useState(500);
-  const iframeRefFP = useRef(null);
-  useEffect(() => {
-    if (moduleType !== "atelier") return;
-    let alive = true;
-    (async () => {
-      try {
-        const auth = await ensureAuth();
-        if (!alive) return;
-        const params = new URLSearchParams({ mode: "atelier", email: auth.email, token: auth.token, gas: GAS_URL });
-        setIframeSrcFP("outils/fiche-prod.html?" + params.toString());
-      } catch (e) { if (alive) setIframeSrcFP(""); }
-    })();
-    return () => { alive = false; };
-  }, [moduleType]);
-  useEffect(() => {
-    const onMsg = e => {
-      if (!e.data || e.data.type !== "hp-tool-resize") return;
-      if (iframeRefFP.current && e.source !== iframeRefFP.current.contentWindow) return;
-      setIframeHeightFP(Math.max(300, Math.ceil(e.data.height) + 4));
-    };
-    window.addEventListener("message", onMsg);
-    return () => window.removeEventListener("message", onMsg);
-  }, []);
-  // ── Onglet "Soudure ETFE" (atelier uniquement) — outil indépendant déposé dans outils/, même
-  // convention d'iframe que Fiches de prod (postMessage "hp-tool-resize" pour la hauteur).
-  const [iframeSrcSoudure, setIframeSrcSoudure] = useState("");
-  const [iframeHeightSoudure, setIframeHeightSoudure] = useState(500);
-  const iframeRefSoudure = useRef(null);
-  useEffect(() => {
-    if (moduleType !== "atelier") return;
-    let alive = true;
-    (async () => {
-      try {
-        const auth = await ensureAuth();
-        if (!alive) return;
-        const params = new URLSearchParams({ mode: "atelier", email: auth.email, token: auth.token, gas: GAS_URL });
-        setIframeSrcSoudure("outils/soudure-etfe.html?" + params.toString());
-      } catch (e) { if (alive) setIframeSrcSoudure(""); }
-    })();
-    return () => { alive = false; };
-  }, [moduleType]);
-  useEffect(() => {
-    const onMsg = e => {
-      if (!e.data || e.data.type !== "hp-tool-resize") return;
-      if (iframeRefSoudure.current && e.source !== iframeRefSoudure.current.contentWindow) return;
-      setIframeHeightSoudure(Math.max(300, Math.ceil(e.data.height) + 4));
-    };
-    window.addEventListener("message", onMsg);
-    return () => window.removeEventListener("message", onMsg);
-  }, []);
   const f = (k, v) => setForm(x => ({
     ...x,
     [k]: v
@@ -13235,7 +13183,7 @@ function MissionModule({
       .prog-bar{height:8px;background:#EEE;border-radius:4px;margin:4px 0;}
       .prog-fill{height:8px;border-radius:4px;}
       table{border-collapse:collapse;width:100%;margin-bottom:10px;font-size:9pt;}
-      th{background:#CC2222;color:#fff;padding:5px 8px;text-align:left;font-size:9pt;}
+      th{background:#F2F0ED;color:#1C1C1C;padding:5px 8px;text-align:left;font-size:9pt;font-weight:700;}
       td{padding:4px 8px;border-bottom:0.5px solid #EEE;}
       tr:nth-child(even) td{background:#FAFAFA;}
       .cell-done{background:#2A7A2A;color:#fff;text-align:center;}
@@ -13243,7 +13191,7 @@ function MissionModule({
       .journal-item{padding:5px 8px;border-left:2px solid #DDDDDD;margin-bottom:4px;font-size:9pt;}
       @media print{body{margin:15px;}h2{page-break-before:auto;}}
     </style></head><body>`;
-    html += `<img src="${LOGO_B64}" height="40" style="margin-bottom:12px;"/>`;
+    html += `<img src="${LOGO_B64}" height="48" style="margin-bottom:12px;"/>`;
     html += `<h1>${m.description}</h1>`;
     html += `<div class="meta">Module : ${moduleType} · Projet : ${m.projet || "—"} · Statut : <strong>${m.statut}</strong><br>`;
     html += `Membres : ${membres.join(", ") || "—"} · ${fmt(m.dateDebut)} → ${fmt(m.dateFin)}</div>`;
@@ -13468,7 +13416,7 @@ function MissionModule({
       *{box-sizing:border-box;margin:0;padding:0;}
       body{font-family:'DM Sans',Arial,sans-serif;font-size:9pt;color:#1C1C1C;background:#F2F0ED;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
       .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:10px 14px;background:#fff;border-radius:8px;border-bottom:3px solid #CC2222;}
-      .hdr img{height:30px;}
+      .hdr img{height:46px;}
       .hdr-title{font-size:14pt;font-weight:800;color:#1C1C1C;}
       .hdr-sub{font-size:7.5pt;color:#7A7A7A;margin-top:2px;}
       .kpis{display:flex;gap:0;margin-bottom:12px;background:#fff;border-radius:8px;overflow:hidden;border:0.5px solid #EEEEEE;}
@@ -14931,7 +14879,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
       borderRadius: 6,
       overflow: "hidden"
     }
-  }, [["liste", "≡ Liste"], ["planning", "▦ Vue planning"], ...(moduleType === "atelier" ? [["fichesProd", "📄 Fiches de prod"], ["soudureEtfe", "🔥 Soudure ETFE"]] : [])].map(([v, l]) => React.createElement("button", {
+  }, [["liste", "≡ Liste"], ["planning", "▦ Vue planning"]].map(([v, l]) => React.createElement("button", {
     key: v,
     onClick: () => setVue(v),
     style: {
@@ -15392,23 +15340,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
     journal: journal,
     user: user,
     conges: conges
-  }), vue === "fichesProd" && moduleType === "atelier" && React.createElement("div", null,
-    !iframeSrcFP && React.createElement("div", { style: { fontSize: 13, color: "#7A7A7A", padding: 20, textAlign: "center" } }, "Chargement…"),
-    iframeSrcFP && React.createElement("iframe", {
-      ref: iframeRefFP,
-      src: iframeSrcFP,
-      style: { width: "100%", height: iframeHeightFP, border: "none", display: "block", overflow: "hidden" },
-      scrolling: "no"
-    })
-  ), vue === "soudureEtfe" && moduleType === "atelier" && React.createElement("div", null,
-    !iframeSrcSoudure && React.createElement("div", { style: { fontSize: 13, color: "#7A7A7A", padding: 20, textAlign: "center" } }, "Chargement…"),
-    iframeSrcSoudure && React.createElement("iframe", {
-      ref: iframeRefSoudure,
-      src: iframeSrcSoudure,
-      style: { width: "100%", height: iframeHeightSoudure, border: "none", display: "block", overflow: "hidden" },
-      scrolling: "no"
-    })
-  ));
+  }));
 }
 const ET = {
   text: "",
@@ -17132,13 +17064,13 @@ function PlanificateurGeneral({
       .meta-label{font-size:7.5pt;color:#7A7A7A;text-transform:uppercase;letter-spacing:.04em;}
       .meta-val{font-size:9.5pt;font-weight:600;color:#1C1C1C;}
       table{border-collapse:collapse;width:100%;margin-bottom:16px;}
-      th{background:#1C1C1C;color:#fff;padding:5px 8px;text-align:left;font-size:8.5pt;}
+      th{background:#F2F0ED;color:#1C1C1C;padding:5px 8px;text-align:left;font-size:8.5pt;font-weight:700;}
       .section-title{font-size:11pt;font-weight:700;color:#1C1C1C;border-left:4px solid #CC2222;padding-left:10px;margin:16px 0 8px;}
       .footer{margin-top:24px;padding-top:10px;border-top:0.5px solid #DDDDDD;font-size:7.5pt;color:#7A7A7A;text-align:center;}
       @media print{body{padding:12px;} @page{margin:15mm;}}
     </style></head><body>
     <div class="hp-header">
-      <img src="${LOGO_B64}" style="height:40px;object-fit:contain;"/>
+      <img src="${LOGO_B64}" style="height:46px;object-fit:contain;"/>
       <div class="doc-title">
         <h1>Planificateur Général</h1>
         <p>${projetSel.name}${infoRef ? " — Réf. " + infoRef : ""}</p>
@@ -19251,6 +19183,85 @@ function ChantierWrapper({ missionProps, camions, kilometrage, formulaires, team
     sub === "formulaire" && React.createElement(FormulairesModule, { formulaires: formulaires, projets: missionProps.projects, team: team, user: user, isMobile: isMobile })
   );
 }
+// ═══ Équivalent Atelier de ChantierWrapper — même structure, même style d'onglets (soulignement
+// rouge), pour garder la cohérence visuelle entre les deux modules comme demandé. Les deux outils
+// externes (Fiches de prod, Soudure ETFE) sont des HTML indépendants déposés dans outils/, chargés
+// en iframe avec la même convention "hp-tool-resize" que l'onglet Outils du BE.
+function AtelierWrapper({ missionProps, isMobile }) {
+  const [sub, setSub] = useState("missions");
+  const [iframeSrcFP, setIframeSrcFP] = useState("");
+  const [iframeHeightFP, setIframeHeightFP] = useState(500);
+  const iframeRefFP = useRef(null);
+  const [iframeSrcSoudure, setIframeSrcSoudure] = useState("");
+  const [iframeHeightSoudure, setIframeHeightSoudure] = useState(500);
+  const iframeRefSoudure = useRef(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const auth = await ensureAuth();
+        if (!alive) return;
+        const params = new URLSearchParams({ mode: "atelier", email: auth.email, token: auth.token, gas: GAS_URL });
+        setIframeSrcFP("outils/fiche-prod.html?" + params.toString());
+        setIframeSrcSoudure("outils/soudure-etfe.html?" + params.toString());
+      } catch (e) { if (alive) { setIframeSrcFP(""); setIframeSrcSoudure(""); } }
+    })();
+    return () => { alive = false; };
+  }, []);
+  useEffect(() => {
+    const onMsg = e => {
+      if (!e.data || e.data.type !== "hp-tool-resize") return;
+      if (iframeRefFP.current && e.source === iframeRefFP.current.contentWindow) {
+        setIframeHeightFP(Math.max(300, Math.ceil(e.data.height) + 4));
+      } else if (iframeRefSoudure.current && e.source === iframeRefSoudure.current.contentWindow) {
+        setIframeHeightSoudure(Math.max(300, Math.ceil(e.data.height) + 4));
+      }
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+  const tab = (id, label) => React.createElement("button", {
+    key: id,
+    onClick: () => setSub(id),
+    style: {
+      padding: "8px 16px",
+      border: "none",
+      background: "none",
+      cursor: "pointer",
+      fontSize: 14,
+      fontFamily: "'DM Sans',sans-serif",
+      fontWeight: sub === id ? 700 : 400,
+      color: sub === id ? "#CC2222" : "#7A7A7A",
+      borderBottom: sub === id ? "2.5px solid #CC2222" : "2.5px solid transparent"
+    }
+  }, label);
+  return React.createElement("div", null,
+    React.createElement("div", { style: { display: "flex", gap: 4, borderBottom: "1px solid #EEEEEE", marginBottom: 16, flexWrap: "wrap" } },
+      tab("missions", "Missions atelier"),
+      tab("fichesProd", "📄 Fiches de prod"),
+      tab("soudureEtfe", "🔥 Assistant soudure ETFE")
+    ),
+    sub === "missions" && React.createElement(MissionModule, missionProps),
+    sub === "fichesProd" && React.createElement("div", { style: { background: "#F2F0ED", borderRadius: 8, padding: 4 } },
+      !iframeSrcFP && React.createElement("div", { style: { fontSize: 13, color: "#7A7A7A", padding: 20, textAlign: "center" } }, "Chargement…"),
+      iframeSrcFP && React.createElement("iframe", {
+        ref: iframeRefFP,
+        src: iframeSrcFP,
+        style: { width: "100%", height: iframeHeightFP, border: "none", display: "block", overflow: "hidden" },
+        scrolling: "no"
+      })
+    ),
+    sub === "soudureEtfe" && React.createElement("div", { style: { background: "#F2F0ED", borderRadius: 8, padding: 4 } },
+      !iframeSrcSoudure && React.createElement("div", { style: { fontSize: 13, color: "#7A7A7A", padding: 20, textAlign: "center" } }, "Chargement…"),
+      iframeSrcSoudure && React.createElement("iframe", {
+        ref: iframeRefSoudure,
+        src: iframeSrcSoudure,
+        style: { width: "100%", height: iframeHeightSoudure, border: "none", display: "block", overflow: "hidden" },
+        scrolling: "no"
+      })
+    )
+  );
+}
 // ═══ Module Suivi des véhicules (Chantier) — v4.6.33 : rappel relevé km déplacé à l'édition (✎), onglet Sheets renommé Kilometrage → SuiviVehicules (cf. Code.gs setupV333) ═══
 function Kilometrage({ camions, kilometrage, team = null, user = null, isMobile = false }) {
   const membresActifs = (team && team.rows || []).filter(t => t.statut !== "inactif");
@@ -21087,104 +21098,6 @@ function ImportExcelHeures({
       setSaving(false);
     }
   };
-  const genRapportHeures = moisFiltre => {
-    const tsRows = timesheets?.rows || [];
-    const tsFiltre = moisFiltre ? tsRows.filter(r => r.mois === moisFiltre) : tsRows;
-    const budgetsRows = budgetHeures?.rows || [];
-    const projetsRows = projets?.rows || [];
-    const totalGlobal = tsFiltre.reduce((a, t) => a + Number(t.heures || 0), 0);
-    const projetsAvecBudget = new Set(budgetsRows.map(b => b.projet_id));
-    const consoParProjetMembre = {};
-    for (const t of tsFiltre) {
-      const pid = t.projet_id || "";
-      if (!consoParProjetMembre[pid]) consoParProjetMembre[pid] = {};
-      consoParProjetMembre[pid][t.membre] = (consoParProjetMembre[pid][t.membre] || 0) + Number(t.heures || 0);
-    }
-    const tousProjetIds = [...new Set([...projetsAvecBudget, ...Object.keys(consoParProjetMembre)])];
-    let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-      @page{size:A4;margin:15mm 12mm;}
-      *{box-sizing:border-box;margin:0;padding:0;}
-      body{font-family:Arial,sans-serif;font-size:9pt;color:#1C1C1C;}
-      .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:8px;border-bottom:2px solid #CC2222;}
-      .hdr img{height:32px;}
-      .t1{font-size:13pt;font-weight:700;}.t2{font-size:8pt;color:#7A7A7A;margin-top:2px;}
-      h2{font-size:11pt;font-weight:700;border-left:3px solid #CC2222;padding-left:8px;margin:14px 0 8px;}
-      h3{font-size:9pt;font-weight:700;color:#7A7A7A;margin:10px 0 4px;text-transform:uppercase;letter-spacing:.03em;}
-      table{border-collapse:collapse;width:100%;font-size:8.5pt;margin-bottom:6px;}
-      th{background:#1C1C1C;color:#fff;padding:4px 8px;text-align:left;}
-      td{padding:4px 8px;border-bottom:0.5px solid #EEE;}
-      .prog{height:6px;background:#EEE;border-radius:3px;display:inline-block;width:60px;vertical-align:middle;}
-      .prog-fill{height:6px;border-radius:3px;}
-      .retard{color:#CC2222;font-weight:700;}
-      .ok{color:#2A7A2A;}
-      .warn{color:#CC8800;}
-      .total-row td{font-weight:700;background:#F2F0ED!important;border-top:1px solid #DDD;}
-      .kpi-row{display:flex;gap:12px;margin-bottom:12px;}
-      .kpi{flex:1;padding:8px 10px;border-radius:6px;border:0.5px solid #EEE;}
-      .kpi-val{font-size:16pt;font-weight:700;}.kpi-lbl{font-size:7.5pt;color:#7A7A7A;}
-      .footer{font-size:7pt;color:#AAA;margin-top:12px;text-align:right;border-top:0.5px solid #EEE;padding-top:6px;}
-    </style></head><body>
-    <div class="hdr"><img src="${LOGO_B64}"/><div>
-      <div class="t1">Rapport heures de travail — High Point Structures</div>
-      <div class="t2">${moisFiltre || "Période complète"} · Total consommé : ${Math.round(totalGlobal * 10) / 10}h · Généré le ${new Date().toLocaleDateString("fr-FR")}</div>
-    </div></div>`;
-    for (const pid of tousProjetIds) {
-      const projet = projetsRows.find(p => String(p.id) === pid);
-      const nomProjet = projet?.name || (Object.values(consoParProjetMembre[pid] || {}).length ? tsFiltre.find(t => t.projet_id === pid)?.projet : "Projet " + pid) || "—";
-      const budgets = budgetsRows.filter(b => b.projet_id === pid);
-      const budgetTotal = budgets.reduce((a, b) => a + Number(b.heures || 0), 0);
-      const budgetPool = budgets.find(b => !b.membre)?.heures || 0;
-      const consoMembres = consoParProjetMembre[pid] || {};
-      const consoTotal = Object.values(consoMembres).reduce((a, b) => a + b, 0);
-      const pct = budgetTotal > 0 ? Math.min(999, Math.round(consoTotal / budgetTotal * 100)) : null;
-      const restant = budgetTotal > 0 ? Math.round((budgetTotal - consoTotal) * 10) / 10 : null;
-      const couleurPct = pct === null ? "#7A7A7A" : pct > 100 ? "#CC2222" : pct > 80 ? "#CC8800" : "#2A7A2A";
-      html += `<h2>${nomProjet}</h2>`;
-      html += `<div class="kpi-row">
-        <div class="kpi"><div class="kpi-val" style="color:#CC2222;">${Math.round(consoTotal * 10) / 10}h</div><div class="kpi-lbl">Heures consommées</div></div>
-        <div class="kpi"><div class="kpi-val" style="color:${budgetTotal > 0 ? "#1A5DAB" : "#AAAAAA"};">${budgetTotal > 0 ? budgetTotal + "h" : "—"}</div><div class="kpi-lbl">Budget alloué</div></div>
-        <div class="kpi"><div class="kpi-val" style="color:${couleurPct};">${pct !== null ? pct + "%" : "—"}</div><div class="kpi-lbl">Consommé${restant !== null ? ` · Restant : ${restant}h` : ""}</div></div>
-      </div>`;
-      if (pct !== null) {
-        html += `<div style="margin-bottom:8px;">
-          <div style="height:8px;background:#EEE;border-radius:4px;overflow:hidden;">
-            <div style="height:8px;width:${Math.min(100, pct)}%;background:${couleurPct};border-radius:4px;"></div>
-          </div>
-        </div>`;
-      }
-      html += `<h3>Détail par membre</h3>
-      <table><thead><tr><th>Membre</th><th style="text-align:right;">Consommé</th><th style="text-align:right;">Budget</th><th style="text-align:right;">Restant</th><th style="text-align:right;">%</th></tr></thead><tbody>`;
-      const membresBudget = budgets.filter(b => b.membre);
-      const tousLesMemb = [...new Set([...membresBudget.map(b => b.membre), ...Object.keys(consoMembres)])];
-      for (const m of tousLesMemb) {
-        const budM = Number(budgets.find(b => b.membre === m)?.heures || 0);
-        const consoM = Math.round((consoMembres[m] || 0) * 10) / 10;
-        const pctM = budM > 0 ? Math.round(consoM / budM * 100) : null;
-        const restM = budM > 0 ? Math.round((budM - consoM) * 10) / 10 : null;
-        const cls = pctM === null ? "" : pctM > 100 ? "retard" : pctM > 80 ? "warn" : "ok";
-        html += `<tr><td>${m}</td><td style="text-align:right;font-weight:700;">${consoM}h</td><td style="text-align:right;color:#7A7A7A;">${budM ? budM + "h" : "—"}</td><td style="text-align:right;" class="${cls}">${restM !== null ? restM + "h" : "—"}</td><td style="text-align:right;" class="${cls}">${pctM !== null ? pctM + "%" : "—"}</td></tr>`;
-      }
-      if (budgetPool > 0) {
-        html += `<tr style="color:#7A7A7A;font-style:italic;"><td>Pool équipe (non assigné)</td><td></td><td style="text-align:right;">${budgetPool}h</td><td></td><td></td></tr>`;
-      }
-      html += `<tr class="total-row"><td>TOTAL</td><td style="text-align:right;">${Math.round(consoTotal * 10) / 10}h</td><td style="text-align:right;">${budgetTotal ? budgetTotal + "h" : "—"}</td><td style="text-align:right;" class="${pct !== null && pct > 100 ? "retard" : ""}">${restant !== null ? restant + "h" : "—"}</td><td style="text-align:right;">${pct !== null ? pct + "%" : "—"}</td></tr>`;
-      html += `</tbody></table>`;
-    }
-    html += `<div class="footer">High Point Manager v${VERSION} — High Point Structures</div></body></html>`;
-    const w = window.open("", "_blank", "width=900,height=700");
-    if (!w) {
-      alert("Autorisez les popups.");
-      return;
-    }
-    w.document.write(html);
-    w.document.close();
-    setTimeout(() => {
-      w.focus();
-      w.print();
-    }, 600);
-  };
-  const moisDispo = [...new Set((timesheets?.rows || []).map(r => r.mois).filter(Boolean))].sort();
-  const [moisRapport, setMoisRapport] = useState("");
   const imports = [...new Set((timesheets?.rows || []).filter(t => t.type === "import").map(t => `${t.membre}|${t.mois}`))];
   return React.createElement("div", {
     style: {
@@ -21202,40 +21115,7 @@ function ImportExcelHeures({
       display: "flex",
       gap: 8
     }
-  }, React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6,
-      alignItems: "center"
-    }
-  }, React.createElement("select", {
-    value: moisRapport,
-    onChange: e => setMoisRapport(e.target.value),
-    style: {
-      padding: "5px 8px",
-      borderRadius: 4,
-      border: "1px solid #DDD",
-      fontSize: 11,
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, React.createElement("option", {
-    value: ""
-  }, "Tous les mois"), moisDispo.map(m => React.createElement("option", {
-    key: m
-  }, m))), React.createElement("button", {
-    onClick: () => genRapportHeures(moisRapport),
-    style: {
-      padding: "5px 12px",
-      borderRadius: 4,
-      border: "1px solid #1A5DAB",
-      background: "#EBF3FF",
-      cursor: "pointer",
-      fontSize: 11,
-      fontFamily: "'DM Sans',sans-serif",
-      color: "#1A5DAB",
-      fontWeight: 600
-    }
-  }, "📊 Rapport PDF")), React.createElement("button", {
+  }, React.createElement("button", {
     onClick: () => setOpen(v => !v),
     style: {
       padding: "5px 12px",
@@ -21748,8 +21628,16 @@ function Equipes({
 }) {
   const [open, setOpen] = useState(false);
   const [expandedHeuresMembre, setExpandedHeuresMembre] = useState(null);
+  const [moisOverride, setMoisOverride] = useState(null);
   const MOIS_FR_EQ = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
-  const moisActuelEq = MOIS_FR_EQ[new Date().getMonth()];
+  // Par défaut, on affiche le mois des données les plus récemment ajoutées (id le plus élevé) plutôt
+  // que le mois calendaire réel — sinon, si les heures déclarées concernent un autre mois que le mois
+  // en cours (import fait en retard, test hors période...), le total n'apparaît jamais.
+  const tsRowsEq = timesheets?.rows || [];
+  const derniereLigneEq = tsRowsEq.length ? tsRowsEq.reduce((a, b) => (Number(a.id) || 0) > (Number(b.id) || 0) ? a : b) : null;
+  const moisParDefautEq = derniereLigneEq?.mois || MOIS_FR_EQ[new Date().getMonth()];
+  const moisActuelEq = moisOverride || moisParDefautEq;
+  const moisDispoEq = [...new Set(tsRowsEq.map(t => t.mois).filter(Boolean))];
   const [form, setForm] = useState(EM);
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -22007,7 +21895,19 @@ function Equipes({
       borderLeft: "3px solid #CC2222",
       paddingLeft: 8
     }
-  }, "Équipe (", sheet.rows.length, ")"), React.createElement(Btn, {
+  }, "Équipe (", sheet.rows.length, ")"), moisDispoEq.length > 0 && React.createElement("select", {
+    value: moisActuelEq,
+    onChange: e => setMoisOverride(e.target.value),
+    title: "Mois affiché pour le total d'heures de chaque membre",
+    style: {
+      padding: "5px 8px",
+      borderRadius: 4,
+      border: "1px solid #DDD",
+      fontSize: 11,
+      fontFamily: "'DM Sans',sans-serif",
+      marginLeft: 10
+    }
+  }, moisDispoEq.map(m => React.createElement("option", { key: m, value: m }, m))), React.createElement(Btn, {
     primary: true,
     onClick: () => {
       setEditing(null);
@@ -25746,7 +25646,7 @@ function Commandes({
       }).join("");
       return `<div style="margin-bottom:20px"><div style="background:${s.couleur};color:#fff;font-weight:700;font-size:9.5pt;padding:6px 10px;border-radius:4px 4px 0 0;display:flex;justify-content:space-between;align-items:center"><span>${s.titre.toUpperCase()} \u2014 ${s.items.length} commande(s)</span><span>${fmt2(total)} \u20ac</span></div><table style="width:100%;border-collapse:collapse;border:0.5px solid #DDD;border-top:none"><thead><tr style="background:#F5F5F5"><th style="padding:5px 8px;font-size:8pt;text-align:left;border-bottom:1px solid #DDD">D\xe9signation</th><th style="padding:5px 8px;font-size:8pt;text-align:right;border-bottom:1px solid #DDD">Qt\xe9</th><th style="padding:5px 8px;font-size:8pt;text-align:right;border-bottom:1px solid #DDD">PU \u20ac</th><th style="padding:5px 8px;font-size:8pt;text-align:right;border-bottom:1px solid #DDD">Total \u20ac</th><th style="padding:5px 8px;font-size:8pt;text-align:left;border-bottom:1px solid #DDD">Fournisseur</th><th style="padding:5px 8px;font-size:8pt;text-align:left;border-bottom:1px solid #DDD">Projet / Tag</th></tr></thead><tbody>${rows}</tbody><tfoot><tr style="background:#F9F9F9;border-top:1.5px solid #CCC"><td colspan="3" style="padding:6px 8px;font-size:8.5pt;font-weight:700;color:${s.couleur}">SOUS-TOTAL ${s.titre.toUpperCase()}</td><td style="padding:6px 8px;font-size:9pt;font-weight:700;text-align:right;color:${s.couleur}">${fmt2(total)} \u20ac</td><td colspan="2"></td></tr></tfoot></table></div>`;
     };
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Export commandes \u2014 High Point Structures</title><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Arial,sans-serif;color:#1C1C1C;font-size:10pt;padding:20px 24px;}@media print{@page{margin:14mm 12mm;size:A4 landscape;}body{padding:0;}}</style></head><body><div style="display:flex;align-items:center;gap:16px;padding-bottom:12px;border-bottom:3px solid #CC2222;margin-bottom:16px"><img src="${LOGO_B64}" style="height:36px;object-fit:contain;"/><div style="margin-left:auto;text-align:right"><div style="font-size:14pt;font-weight:700">Export commandes</div><div style="font-size:9pt;color:#7A7A7A">G\xe9n\xe9r\xe9 le ${new Date().toLocaleDateString("fr-FR")}</div>${filtresActifs.length ? `<div style="font-size:8.5pt;color:#CC2222;margin-top:2px">Filtres\u00a0: ${filtresActifs.join(" \u00b7 ")}</div>` : ""}</div></div>${sections.map(lignesSection).join("")}<div style="margin-top:12px;padding:10px 14px;background:#1C1C1C;border-radius:4px;display:flex;justify-content:space-between;align-items:center"><span style="color:#fff;font-weight:700;font-size:10pt;letter-spacing:.04em">TOTAL G\xc9N\xc9RAL (${[...encours,...attenteFacture,...historique].length} commandes)</span><span style="color:#CC2222;font-weight:900;font-size:14pt">${fmt2(totalGeneral)} \u20ac</span></div></body></html>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Export commandes \u2014 High Point Structures</title><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'DM Sans',Arial,sans-serif;color:#1C1C1C;font-size:10pt;padding:20px 24px;}@media print{@page{margin:14mm 12mm;size:A4 landscape;}body{padding:0;}}</style></head><body><div style="display:flex;align-items:center;gap:16px;padding-bottom:12px;border-bottom:3px solid #CC2222;margin-bottom:16px"><img src="${LOGO_B64}" style="height:46px;object-fit:contain;"/><div style="margin-left:auto;text-align:right"><div style="font-size:14pt;font-weight:700">Export commandes</div><div style="font-size:9pt;color:#7A7A7A">G\xe9n\xe9r\xe9 le ${new Date().toLocaleDateString("fr-FR")}</div>${filtresActifs.length ? `<div style="font-size:8.5pt;color:#CC2222;margin-top:2px">Filtres\u00a0: ${filtresActifs.join(" \u00b7 ")}</div>` : ""}</div></div>${sections.map(lignesSection).join("")}<div style="margin-top:12px;padding:10px 14px;background:#F2F0ED;border-left:3px solid #CC2222;border-radius:4px;display:flex;justify-content:space-between;align-items:center"><span style="color:#1C1C1C;font-weight:700;font-size:10pt;letter-spacing:.04em">TOTAL G\xc9N\xc9RAL (${[...encours,...attenteFacture,...historique].length} commandes)</span><span style="color:#CC2222;font-weight:900;font-size:14pt">${fmt2(totalGeneral)} \u20ac</span></div></body></html>`;
     const w = window.open("", "_blank");
     w.document.write(html);
     w.document.close();
@@ -28021,27 +27921,30 @@ function AppContent({
     atelierChantier: atelierChantier,
     missionsBE: missionsBE,
     suiviFab: suiviFab
-  }), panel === "atelier" && React.createElement(MissionModule, {
-    moduleType: "atelier",
-    sheet: atelierChantierView,
-    projects: projetsView,
-    team: team,
-    stocks: stocksView,
-    events: eventsView,
-    orders: ordersView,
-    fournisseurs: fournisseurs,
-    etapes: etapes,
-    suiviFab: suiviFab,
-    templates: templates,
-    journal: journalAtelier,
-    user: user,
-    timesheets: timesheets,
-    budgetHeures: budgetHeures,
+  }), panel === "atelier" && React.createElement(AtelierWrapper, {
     isMobile: isMobile,
-    atelierChantierAll: atelierChantier,
-    missionsBEAll: missionsBE,
-    metre: metre,
-    conges: conges
+    missionProps: {
+      moduleType: "atelier",
+      sheet: atelierChantierView,
+      projects: projetsView,
+      team: team,
+      stocks: stocksView,
+      events: eventsView,
+      orders: ordersView,
+      fournisseurs: fournisseurs,
+      etapes: etapes,
+      suiviFab: suiviFab,
+      templates: templates,
+      journal: journalAtelier,
+      user: user,
+      timesheets: timesheets,
+      budgetHeures: budgetHeures,
+      isMobile: isMobile,
+      atelierChantierAll: atelierChantier,
+      missionsBEAll: missionsBE,
+      metre: metre,
+      conges: conges
+    }
   }), panel === "chantier" && React.createElement(ChantierWrapper, {
     camions: camions,
     kilometrage: kilometrage,
