@@ -700,6 +700,21 @@ function isMissionBlocked(mission,atelierChantierRows,missionsBERows,metreRows){
   });
   return missionBlockee||materiauBloque;
 }
+// Réessaie une opération asynchrone en cas d'échec transitoire (réseau, timeout GAS) avant d'abandonner
+// pour de bon — utilisé pour les écritures répétées et sensibles (ex. import d'heures avec de nombreuses
+// lignes quotidiennes) où un seul aléa réseau ne doit pas faire échouer tout le lot.
+async function avecRetry(fn, tentatives = 3, delaiMs = 800) {
+  let derniereErreur;
+  for (let i = 0; i < tentatives; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      derniereErreur = e;
+      if (i < tentatives - 1) await new Promise(r => setTimeout(r, delaiMs * (i + 1)));
+    }
+  }
+  throw derniereErreur;
+}
 </script>
 <script>
 const {
@@ -709,7 +724,7 @@ const {
   useRef
 } = React;
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.39";
+const VERSION = "v4.7.41";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -1157,7 +1172,12 @@ function SidePanel({
       padding: 14,
       alignSelf: "flex-start",
       position: "sticky",
-      top: 14
+      top: 14,
+      // Barre de défilement propre au panneau plutôt que de dépendre de celle de toute la page —
+      // sans ça, un panneau plus long que l'écran obligeait à faire défiler tout le site pour en
+      // atteindre le bas.
+      maxHeight: "calc(100vh - 28px)",
+      overflowY: "auto"
     }
   }, React.createElement("div", {
     style: {
@@ -8624,6 +8644,8 @@ function Prestataires({
         padding: 24,
         width: 400,
         maxWidth: "90vw",
+        maxHeight: "90vh",
+        overflowY: "auto",
         boxShadow: "0 8px 32px rgba(0,0,0,0.18)"
       }
     }, React.createElement("div", {
@@ -9550,7 +9572,8 @@ function PhaseItem({
   allLignes,
   journal,
   user,
-  mission
+  mission,
+  etapes
 }) {
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -9722,7 +9745,18 @@ function PhaseItem({
   }, "Annuler"), React.createElement("button", {
     onClick: async () => {
       const newNb = Number(editForm.nb_unites) || 0;
+      const famDeplacee = ph.famille, phaseAvantRenommage = ph.phase;
+      const renommage = editForm.famille !== famDeplacee || editForm.phase !== phaseAvantRenommage;
       try {
+        // Avant de renommer, on s'assure que le lien vers l'étape correspondante repose sur son ID
+        // stable plutôt que sur la correspondance texte famille|||phase — sinon, un renommage casse
+        // ce lien (l'ancienne étape reste introuvable sous le nouveau nom, et une nouvelle étape sans
+        // ordre explicite est recréée à la volée, ce qui la fait apparaître en fin de liste).
+        let etapeLiee = null;
+        if (renommage && etapes) {
+          etapeLiee = trouverEtapeLieePhase(ph.ops, etapes.rows, mission.id);
+          if (etapeLiee) await assurerLienEtapeId(ph.ops, etapeLiee.id, suiviFab);
+        }
         for (const op of editOps) {
           if (op._delete && op.id) {
             await suiviFab.remove(op.id);
@@ -9746,7 +9780,10 @@ function PhaseItem({
               nb_unites: newNb,
               type_unite: editForm.type_unite,
               operation: op.operation,
-              valeurs: JSON.stringify(vals)
+              valeurs: JSON.stringify(vals),
+              // "l" vient des props (non rafraîchies après l'auto-guérison ci-dessus) — on force la
+              // valeur fraîche plutôt que de laisser le spread écraser le lien qu'on vient de réparer.
+              etape_id: etapeLiee ? etapeLiee.id : l.etape_id
             });
           } else if (!op._delete && !op.id && (op.operation || "").trim()) {
             await suiviFab.add({
@@ -9766,6 +9803,13 @@ function PhaseItem({
           const orig = ph.ops.find(x => x.id === op.id);
           return orig?.operation || "?";
         });
+        if (renommage && etapeLiee) {
+          await etapes.update(etapeLiee.id, {
+            ...etapeLiee,
+            titre: `${editForm.famille} — ${editForm.phase}`,
+            note: `fab:${editForm.famille}|||${editForm.phase}`
+          });
+        }
         let logDetail = `[${mission?.description || "?"}] ✎ Phase modifiée : ${editForm.famille} / ${editForm.phase}`;
         if (editForm.deadline !== ph.deadline) logDetail += ` · deadline ${ph.deadline || "—"}→${editForm.deadline || "—"}`;
         if (newNb !== ph.nb_unites) logDetail += ` · unités ${ph.nb_unites}→${newNb}`;
@@ -10702,7 +10746,8 @@ function SuiviFabComponent({
       allLignes: lignes,
       journal: journal,
       user: user,
-      mission: mission
+      mission: mission,
+      etapes: etapes
     }));
   })())), onglet === "grille" && React.createElement("div", null, !lignes.length && React.createElement("div", {
     style: {
@@ -12402,6 +12447,8 @@ function GanttView({
       borderRadius: 12,
       padding: 28,
       width: 360,
+      maxHeight: "90vh",
+      overflowY: "auto",
       boxShadow: "0 8px 32px rgba(0,0,0,0.2)"
     }
   }, React.createElement("div", {
@@ -13113,6 +13160,33 @@ function MissionModule({
       if (!e.data || e.data.type !== "hp-tool-resize") return;
       if (iframeRefFP.current && e.source !== iframeRefFP.current.contentWindow) return;
       setIframeHeightFP(Math.max(300, Math.ceil(e.data.height) + 4));
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+  // ── Onglet "Soudure ETFE" (atelier uniquement) — outil indépendant déposé dans outils/, même
+  // convention d'iframe que Fiches de prod (postMessage "hp-tool-resize" pour la hauteur).
+  const [iframeSrcSoudure, setIframeSrcSoudure] = useState("");
+  const [iframeHeightSoudure, setIframeHeightSoudure] = useState(500);
+  const iframeRefSoudure = useRef(null);
+  useEffect(() => {
+    if (moduleType !== "atelier") return;
+    let alive = true;
+    (async () => {
+      try {
+        const auth = await ensureAuth();
+        if (!alive) return;
+        const params = new URLSearchParams({ mode: "atelier", email: auth.email, token: auth.token, gas: GAS_URL });
+        setIframeSrcSoudure("outils/soudure-etfe.html?" + params.toString());
+      } catch (e) { if (alive) setIframeSrcSoudure(""); }
+    })();
+    return () => { alive = false; };
+  }, [moduleType]);
+  useEffect(() => {
+    const onMsg = e => {
+      if (!e.data || e.data.type !== "hp-tool-resize") return;
+      if (iframeRefSoudure.current && e.source !== iframeRefSoudure.current.contentWindow) return;
+      setIframeHeightSoudure(Math.max(300, Math.ceil(e.data.height) + 4));
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
@@ -14857,7 +14931,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
       borderRadius: 6,
       overflow: "hidden"
     }
-  }, [["liste", "≡ Liste"], ["planning", "▦ Vue planning"], ...(moduleType === "atelier" ? [["fichesProd", "📄 Fiches de prod"]] : [])].map(([v, l]) => React.createElement("button", {
+  }, [["liste", "≡ Liste"], ["planning", "▦ Vue planning"], ...(moduleType === "atelier" ? [["fichesProd", "📄 Fiches de prod"], ["soudureEtfe", "🔥 Soudure ETFE"]] : [])].map(([v, l]) => React.createElement("button", {
     key: v,
     onClick: () => setVue(v),
     style: {
@@ -14888,7 +14962,7 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
   }, "📋 Nouvelles missions → Planificateur Général"), !isMobile && moduleType === "atelier" && React.createElement(Btn, {
     onClick: () => genRapportHebdo(),
     "data-rapport-hebdo": "1"
-  }, "📊 Rapport hebdo"))), !missionSelected && alertesAll.length > 0 && React.createElement("div", {
+  }, "📊 Rapport hebdo"))), !missionSelected && vue === "liste" && user?.role !== "atelier" && alertesAll.length > 0 && React.createElement("div", {
     style: {
       marginBottom: 14
     }
@@ -15324,6 +15398,14 @@ Voulez-vous quand même lier ${qtyCmd} pièces ?`)) return;
       ref: iframeRefFP,
       src: iframeSrcFP,
       style: { width: "100%", height: iframeHeightFP, border: "none", display: "block", overflow: "hidden" },
+      scrolling: "no"
+    })
+  ), vue === "soudureEtfe" && moduleType === "atelier" && React.createElement("div", null,
+    !iframeSrcSoudure && React.createElement("div", { style: { fontSize: 13, color: "#7A7A7A", padding: 20, textAlign: "center" } }, "Chargement…"),
+    iframeSrcSoudure && React.createElement("iframe", {
+      ref: iframeRefSoudure,
+      src: iframeSrcSoudure,
+      style: { width: "100%", height: iframeHeightSoudure, border: "none", display: "block", overflow: "hidden" },
       scrolling: "no"
     })
   ));
@@ -16026,7 +16108,9 @@ function MetreProjet({
       borderRadius: 12,
       padding: 22,
       width: 440,
-      maxWidth: "92vw"
+      maxWidth: "92vw",
+      maxHeight: "90vh",
+      overflowY: "auto"
     }
   }, React.createElement("div", {
     style: {
@@ -20858,14 +20942,28 @@ function ImportExcelHeures({
       } catch (e) {}
       const nomsExcel = [...new Set(lignes.map(l => l.projet))];
       const newMap = {};
+      const newSplitMap = {};
+      const listeProjets = projets?.rows || [];
       for (const nom of nomsExcel) {
+        // Détection multi-projets : si le texte brut Excel contient plusieurs noms de projets connus
+        // (ex. "ALCOV / Byzance"), on les reconnaît tous plutôt qu'un seul, et on pré-configure le
+        // split à parts égales — l'utilisateur n'a alors plus qu'à confirmer, pas à tout ressaisir.
+        const normNom = normProjet(nom);
+        const detectes = listeProjets.filter(p => p.name && normNom.includes(normProjet(p.name)));
+        if (detectes.length >= 2) {
+          const detectesUniques = detectes.slice(0, 5); // plafond à 5 projets, comme le split manuel
+          const pctEqual = Math.round(100 / detectesUniques.length);
+          newMap[nom] = detectesUniques[0].name;
+          newSplitMap[nom] = { extras: detectesUniques.slice(1).map(p => ({ proj: p.name, pct: pctEqual })) };
+          continue;
+        }
         if (mapping[normProjet(nom)]) {
           newMap[nom] = mapping[normProjet(nom)];
           continue;
         }
         let best = "",
           bestScore = 0;
-        for (const p of projets?.rows || []) {
+        for (const p of listeProjets) {
           const score = similarite(nom, p.name || "");
           if (score > bestScore && score > 0.5) {
             bestScore = score;
@@ -20875,19 +20973,11 @@ function ImportExcelHeures({
         newMap[nom] = best;
       }
       setMatchMap(newMap);
+      setSplitMap(newSplitMap);
       setParsedLignes(lignes);
       setUploadMois(moisSelectionne);
-      const hExcel = {};
-      for (const l of lignes) {
-        const proj = newMap[l.projet] || l.projet;
-        hExcel[proj] = (hExcel[proj] || 0) + l.heures;
-      }
       const estim = calcEstimHeuresAtelier((team?.rows || []).find(t => t.nom === uploadMembre) ? null : null, moisSelectionne);
-      const finals = {};
-      for (const [proj, h] of Object.entries(hExcel)) {
-        finals[proj] = Math.round(h * 10) / 10;
-      }
-      setHeuresFinales(finals);
+      setHeuresFinales(recalcHeuresTout(newMap, newSplitMap, {}, lignes));
       setUploadState("matching");
     } catch (err) {
       alert("Erreur parsing : " + err.message);
@@ -20927,12 +21017,8 @@ function ImportExcelHeures({
           parProjet[part.proj].totalExcel += part.heures;
         }
       }
-      // IMPORTANT : on écrit d'abord toutes les NOUVELLES lignes, et on ne supprime les anciennes
-      // qu'une fois l'écriture intégralement réussie. Si une erreur survient pendant l'écriture
-      // (réseau, crash, timeout GAS), les anciennes heures restent intactes au lieu d'être perdues —
-      // avant, la suppression avait lieu EN PREMIER, donc le moindre pépin pendant la ré-écriture
-      // effaçait les heures du mois sans les remplacer correctement.
-      const nouvellesLignesAjoutees = [];
+      // Construit la liste COMPLÈTE des nouvelles lignes à écrire, sans encore rien envoyer.
+      const nouvellesLignes = [];
       for (const [proj, data] of Object.entries(parProjet)) {
         if (!data.entries.length) continue;
         const pObj = (projets?.rows || []).find(p => normL(p.name) === normL(proj));
@@ -20945,7 +21031,7 @@ function ImportExcelHeures({
         for (const entry of data.entries) {
           const heuresAjustees = Math.round(entry.heures * ratio * 100) / 100;
           if (heuresAjustees <= 0) continue;
-          const cree = await timesheets.add({
+          nouvellesLignes.push({
             membre: uploadMembre,
             date: entry.date,
             projet: proj,
@@ -20956,8 +21042,22 @@ function ImportExcelHeures({
             rd: entry.rd ? "oui" : "",
             projet_id: pObj ? String(pObj.id) : ""
           });
-          nouvellesLignesAjoutees.push(cree);
         }
+      }
+      // IMPORTANT : un SEUL envoi groupé pour TOUTES les lignes du mois, au lieu d'un appel réseau
+      // par jour/projet — c'était la vraie cause des lenteurs et plantages : un mois complet pouvait
+      // déclencher des dizaines d'allers-retours séquentiels, chacun exposé au délai de 35s. Un seul
+      // envoi = un seul risque au lieu de dizaines, et c'est aussi nettement plus rapide.
+      // On écrit d'abord les NOUVELLES lignes, et on ne supprime les anciennes qu'une fois l'écriture
+      // intégralement réussie — si ça échoue malgré tout, les anciennes heures restent intactes.
+      const nouvellesLignesAjoutees = nouvellesLignes.length
+        ? await avecRetry(async () => {
+            const r = await gasPost({ action: "addBatch", key: "timesheets", data: JSON.stringify(nouvellesLignes) });
+            return r.data || [];
+          })
+        : [];
+      if (nouvellesLignesAjoutees.length) {
+        timesheets.setRows(prev => [...prev, ...nouvellesLignesAjoutees]);
       }
       // Maintenant que la ré-écriture est confirmée réussie, on peut supprimer en toute sécurité
       // les anciennes lignes "import" de ce membre/mois (celles d'AVANT cette nouvelle importation).
@@ -22446,6 +22546,8 @@ function Fournisseurs({
       padding: 24,
       width: 400,
       maxWidth: "90vw",
+      maxHeight: "90vh",
+      overflowY: "auto",
       boxShadow: "0 8px 32px rgba(0,0,0,0.18)"
     }
   }, React.createElement("div", {
@@ -24347,6 +24449,8 @@ function ModuleDevis({
       borderRadius: 10,
       padding: 24,
       width: 400,
+      maxHeight: "90vh",
+      overflowY: "auto",
       boxShadow: "0 8px 32px rgba(0,0,0,0.18)"
     }
   }, React.createElement("div", {
