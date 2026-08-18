@@ -715,6 +715,19 @@ async function avecRetry(fn, tentatives = 3, delaiMs = 800) {
   }
   throw derniereErreur;
 }
+// Ajoute N jours OUVRÉS (hors samedi/dimanche) à une date — miroir client de ajouterJoursOuvres_ côté
+// GAS, utilisé pour calculer la date de relance par défaut d'une tâche "en attente de retour".
+function ajouterJoursOuvresJS(dateDepart, nbJours) {
+  const d = new Date((dateDepart || TODAY) + "T00:00:00");
+  let ajoutes = 0;
+  while (ajoutes < nbJours) {
+    d.setDate(d.getDate() + 1);
+    const jourSemaine = d.getDay();
+    if (jourSemaine !== 0 && jourSemaine !== 6) ajoutes++;
+  }
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 </script>
 <script>
 const {
@@ -744,7 +757,7 @@ function useBusyAction() {
   return [busyKey, runBusy];
 }
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.48";
+const VERSION = "v4.7.51";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -3508,7 +3521,8 @@ function Dashboard({
     const dans7j = (() => {
       const d = new Date(TODAY + "T00:00:00");
       d.setDate(d.getDate() + 7);
-      return d.toISOString().split("T")[0];
+      const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
     })();
     const allM = (sheets.atelierChantier?.rows || []).filter(m => m.statut !== "terminé");
     const allP = (sheets.prestMissions?.rows || []).filter(m => m.statut !== "terminé");
@@ -3541,7 +3555,7 @@ function Dashboard({
       style: {
         color: nbRetard > 0 ? "#CC2222" : alertes.length ? "#CC8800" : "#3A3A3A"
       }
-    }, "🚨 Deadlines missions", nbRetard > 0 ? ` — ${nbRetard} en retard` : alertes.length ? " — à venir" : ""), !alertes.length ? React.createElement("div", {
+    }, "🚨 Jalons & deadlines missions", nbRetard > 0 ? ` — ${nbRetard} en retard` : alertes.length ? " — à venir" : ""), !alertes.length ? React.createElement("div", {
       style: {
         fontSize: 12,
         color: "#2A7A2A",
@@ -3601,7 +3615,48 @@ function Dashboard({
         textAlign: "center"
       }
     }, "+", alertes.length - 8, " autres"));
-  })())), React.createElement("div", {
+  })()), (() => {
+    const attentes = tasks.rows.filter(t => t.type === "attente" && !isDone(t)).sort((a, b) => toISO(a.due || "").localeCompare(toISO(b.due || "")));
+    if (!attentes.length) return null;
+    const nbRetardAttente = attentes.filter(t => toISO(t.due) < TODAY).length;
+    return React.createElement(Bd, {
+      style: {
+        borderColor: nbRetardAttente > 0 ? "#FFCCCC" : "#DDDDDD",
+        background: nbRetardAttente > 0 ? "#FFF8F8" : "#FAFAFA",
+        marginTop: 10
+      }
+    }, React.createElement(SecTitle, {
+      style: {
+        color: nbRetardAttente > 0 ? "#CC2222" : "#3A3A3A"
+      }
+    }, "🕐 Sujets en attente de retour — ", attentes.length, nbRetardAttente > 0 ? ` (dont ${nbRetardAttente} en retard de relance)` : ""),
+    attentes.slice(0, 6).map((t, i) => {
+      const enRetard = toISO(t.due) < TODAY;
+      return React.createElement("div", {
+        key: t.id,
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "5px 0",
+          borderBottom: "0.5px solid #F5F5F5"
+        }
+      },
+        React.createElement("div", {
+          style: { width: 8, height: 8, borderRadius: "50%", background: enRetard ? "#CC2222" : "#1A5DAB", flexShrink: 0 }
+        }),
+        React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+          React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: "#1C1C1C" } }, t.text),
+          React.createElement("div", { style: { fontSize: 10.5, color: "#7A7A7A" } },
+            "🕐 ", t.contact, " · relance ", enRetard ? "en retard depuis le " : "prévue le ", fmt(t.due),
+            Number(t.nbRelances) > 0 ? ` · déjà relancé ${t.nbRelances}x` : "")
+        )
+      );
+    }),
+    attentes.length > 6 && React.createElement("div", {
+      style: { fontSize: 11, color: "#7A7A7A", marginTop: 6, textAlign: "center" }
+    }, "+", attentes.length - 6, " autres"));
+  })()), React.createElement("div", {
     style: {
       marginTop: 16
     }
@@ -4540,16 +4595,20 @@ function ModuleCR({
       disabled: saving,
       onClick: async () => {
         const actions = actionsForm.filter(a => a.texte.trim());
-        await saveCR({
-          type: "interne",
-          titre: form.titre,
-          date: form.date,
-          participants: form.participants,
-          contenu: form.contenu,
-          actions: JSON.stringify(actions),
-          evenement_id: form.evenement_id || ""
-        });
-        await saveActionsAsTasks(actions);
+        try {
+          await saveCR({
+            type: "interne",
+            titre: form.titre,
+            date: form.date,
+            participants: form.participants,
+            contenu: form.contenu,
+            actions: JSON.stringify(actions),
+            evenement_id: form.evenement_id || ""
+          });
+          await saveActionsAsTasks(actions);
+        } catch (e) {
+          alert("Échec de la création des tâches associées : " + (e?.message || e) + "\n\nLe compte-rendu a bien été enregistré — tu peux ajouter les tâches manuellement si besoin.");
+        }
       },
       style: {
         padding: "7px 16px",
@@ -15595,7 +15654,14 @@ const ET = {
   text: "",
   projet: "",
   due: "",
-  responsable: ""
+  responsable: "",
+  type: "tache",
+  contact: "",
+  canal: "email",
+  dateEnvoi: "",
+  delaiRelance: 5,
+  dateRelance: "",
+  nbRelances: 0
 };
 const MEMBER_COLORS = {
   "Jeffrey Diaz": {
@@ -16360,6 +16426,7 @@ function Taches({
   projects,
   team,
   user,
+  cr = null,
   standalone = true
 }) {
   const [open, setOpen] = useState(false);
@@ -16370,11 +16437,62 @@ function Taches({
   const [filterProjet, setFilterProjet] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [busyRecup, runBusyRecup] = useBusyAction();
   const f = (k, v) => setForm(x => ({
     ...x,
     [k]: v
   }));
   const isDone = t => t.done === true || t.done === "TRUE";
+  // Récupération des tâches CR manquantes (correctif rétroactif) : certains comptes-rendus enregistrés
+  // avant le correctif du bug de création silencieuse n'ont jamais généré leurs tâches associées — le
+  // CR lui-même a bien été enregistré (avec son champ "actions" intact), seule la tâche dérivée a échoué.
+  // On relit tous les CR et on recrée uniquement les tâches manquantes (jamais de doublon pour celles
+  // qui existent déjà).
+  async function recupererTachesCR() {
+    if (!cr) return;
+    let creees = 0, dejaExistantes = 0;
+    const membresRecup = (team?.rows || []).filter(t => t.statut !== "inactif");
+    const matchResponsableRecup = raw => {
+      const n = String(raw || "").trim().toLowerCase();
+      if (!n) return "";
+      let m = membresRecup.find(x => String(x.nom || "").trim().toLowerCase() === n);
+      if (m) return m.nom;
+      m = membresRecup.find(x => {
+        const mn = String(x.nom || "").trim().toLowerCase();
+        return mn && (mn.includes(n) || n.includes(mn) || mn.split(" ")[0] === n.split(" ")[0]);
+      });
+      return m ? m.nom : "";
+    };
+    for (const c of cr.rows || []) {
+      let actions = [];
+      try {
+        actions = JSON.parse(c.actions || "[]");
+      } catch (e) { continue; }
+      if (!actions.length) continue;
+      const projObj = (projects?.rows || []).find(p => String(p.id) === String(c.projet_id));
+      const nomProjet = projObj?.name || "";
+      for (const a of actions) {
+        if (!a.texte) continue;
+        const texteAttendu = `[CR] ${a.texte}`;
+        const existe = (sheet.rows || []).some(t => t.text === texteAttendu && String(t.projet || "") === String(nomProjet));
+        if (existe) {
+          dejaExistantes++;
+          continue;
+        }
+        await sheet.add({
+          text: texteAttendu,
+          projet: nomProjet,
+          due: a.echeance || "",
+          done: false,
+          responsable: matchResponsableRecup(a.responsable)
+        });
+        creees++;
+      }
+    }
+    alert(creees > 0
+      ? `✓ ${creees} tâche(s) manquante(s) récupérée(s).${dejaExistantes > 0 ? ` (${dejaExistantes} existaient déjà et n'ont pas été dupliquées.)` : ""}`
+      : `Aucune tâche manquante trouvée — tout était déjà à jour.${dejaExistantes > 0 ? ` (${dejaExistantes} vérifiées.)` : ""}`);
+  }
   const membres = (team?.rows || []).filter(t => {
     const r = (t.role || "").toLowerCase();
     return r.includes("ingénieur") || r.includes("ingenieur") || r.includes("chef");
@@ -16384,11 +16502,25 @@ function Taches({
       setErr("Description obligatoire.");
       return;
     }
+    if (form.type === "attente" && !form.contact.trim()) {
+      setErr("Le contact attendu est obligatoire pour un sujet en attente de retour.");
+      return;
+    }
     setSaving(true);
     setErr("");
     try {
+      const estAttente = form.type === "attente";
+      const dateEnvoi = estAttente ? (form.dateEnvoi || TODAY) : "";
+      // Pour une tâche "en attente", la date de relance calculée sert aussi de champ "due" — ça
+      // permet de réutiliser directement le tri/coloration par urgence déjà en place, sans dupliquer
+      // cette logique pour un second type de date.
+      const dateRelance = estAttente ? ajouterJoursOuvresJS(dateEnvoi, Number(form.delaiRelance) || 5) : "";
       const item = {
         ...form,
+        dateEnvoi,
+        dateRelance,
+        due: estAttente ? dateRelance : form.due,
+        nbRelances: editing ? form.nbRelances : 0,
         done: editing ? isDone(sheet.rows.find(t => Number(t.id) === Number(editing)) || {}) : false
       };
       if (editing) {
@@ -16402,6 +16534,16 @@ function Taches({
       setErr(e.message);
     }
     setSaving(false);
+  }
+  async function relancer(t) {
+    const nbRelances = (Number(t.nbRelances) || 0) + 1;
+    const nouvelleDateRelance = ajouterJoursOuvresJS(TODAY, Number(t.delaiRelance) || 5);
+    await sheet.update(t.id, {
+      ...t,
+      nbRelances,
+      dateRelance: nouvelleDateRelance,
+      due: nouvelleDateRelance
+    });
   }
   async function toggle(t) {
     const nowDone = !isDone(t);
@@ -16448,6 +16590,33 @@ function Taches({
       setEditing(null);
     }
   }, React.createElement(FG, {
+    label: "Type de sujet"
+  }, React.createElement("div", {
+    style: { display: "flex", gap: 6 }
+  },
+    React.createElement("button", {
+      type: "button",
+      onClick: () => f("type", "tache"),
+      style: {
+        flex: 1, padding: "8px 6px", borderRadius: 6, cursor: "pointer", fontSize: 12,
+        fontFamily: "'DM Sans',sans-serif", fontWeight: form.type !== "attente" ? 700 : 400,
+        border: form.type !== "attente" ? "1.5px solid #CC2222" : "1px solid #DDDDDD",
+        background: form.type !== "attente" ? "#FFF0F0" : "#fff",
+        color: form.type !== "attente" ? "#CC2222" : "#7A7A7A"
+      }
+    }, "📌 Tâche"),
+    React.createElement("button", {
+      type: "button",
+      onClick: () => f("type", "attente"),
+      style: {
+        flex: 1, padding: "8px 6px", borderRadius: 6, cursor: "pointer", fontSize: 12,
+        fontFamily: "'DM Sans',sans-serif", fontWeight: form.type === "attente" ? 700 : 400,
+        border: form.type === "attente" ? "1.5px solid #1A5DAB" : "1px solid #DDDDDD",
+        background: form.type === "attente" ? "#EBF3FF" : "#fff",
+        color: form.type === "attente" ? "#1A5DAB" : "#7A7A7A"
+      }
+    }, "🕐 En attente de retour")
+  )), React.createElement(FG, {
     label: "Description *"
   }, React.createElement(Inp, {
     value: form.text,
@@ -16463,7 +16632,39 @@ function Taches({
   }, "— Non assigné —"), membres.map(m => React.createElement("option", {
     key: m.id,
     value: m.nom
-  }, m.nom)))), React.createElement(FG, {
+  }, m.nom)))), form.type === "attente" ? React.createElement(React.Fragment, null,
+    React.createElement(FG, {
+      label: "Contact / personne attendue *"
+    }, React.createElement(Inp, {
+      value: form.contact,
+      onChange: e => f("contact", e.target.value),
+      placeholder: "Ex: Jean Dupont (architecte MOE)"
+    })),
+    React.createElement("div", {
+      style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }
+    },
+      React.createElement(FG, { label: "Canal" }, React.createElement(Sel, {
+        value: form.canal || "email",
+        onChange: e => f("canal", e.target.value)
+      }, ["email", "téléphone", "autre"].map(c => React.createElement("option", { key: c, value: c }, c)))),
+      React.createElement(FG, { label: "Date d'envoi" }, React.createElement(Inp, {
+        type: "date",
+        value: form.dateEnvoi || TODAY,
+        onChange: e => f("dateEnvoi", e.target.value)
+      }))
+    ),
+    React.createElement(FG, {
+      label: "Délai avant relance (jours ouvrés)"
+    }, React.createElement(Inp, {
+      type: "number",
+      value: form.delaiRelance,
+      onChange: e => f("delaiRelance", e.target.value),
+      placeholder: "5"
+    })),
+    React.createElement("div", {
+      style: { fontSize: 11, color: "#7A7A7A", marginTop: -4, marginBottom: 8 }
+    }, "📅 Date de relance calculée automatiquement : ", ajouterJoursOuvresJS(form.dateEnvoi || TODAY, Number(form.delaiRelance) || 5))
+  ) : React.createElement(FG, {
     label: "Échéance"
   }, React.createElement(Inp, {
     type: "date",
@@ -16593,7 +16794,10 @@ function Taches({
       color: "#CC2222",
       fontWeight: 700
     }
-  }, filtered.filter(t => !isDone(t)).length), "/", filtered.length)), React.createElement(Btn, {
+  }, filtered.filter(t => !isDone(t)).length), "/", filtered.length)), cr && React.createElement(Btn, {
+    onClick: recupererTachesCR,
+    title: "Relit tous les comptes-rendus et recrée les tâches qui n'auraient pas été créées correctement (aucun doublon pour celles qui existent déjà)"
+  }, "🔄 Récupérer les tâches CR manquantes"), React.createElement(Btn, {
     primary: true,
     onClick: () => {
       setEditing(null);
@@ -16699,18 +16903,37 @@ function Taches({
         color: urg === "critique" ? "#CC2222" : urg === "high" ? "#E65100" : "#7A7A7A",
         fontWeight: urg === "critique" || urg === "high" ? 700 : 400
       }
-    }, "🗓 ", dueLbl))), React.createElement(Badge, {
+    }, "🗓 ", dueLbl), t.type === "attente" && React.createElement("span", {
+      style: {
+        background: "#EBF3FF",
+        color: "#1A5DAB",
+        borderRadius: 4,
+        padding: "1px 6px",
+        fontSize: 10.5,
+        fontWeight: 600
+      }
+    }, "🕐 ", t.contact, t.canal ? ` (${t.canal})` : "", Number(t.nbRelances) > 0 ? ` · ${t.nbRelances} relance${t.nbRelances > 1 ? "s" : ""}` : ""))), React.createElement(Badge, {
       label: u.lbl,
       bg: u.bg,
       color: u.tx
-    }), React.createElement("button", {
+    }), t.type === "attente" && !done && React.createElement(Btn, {
+      small: true,
+      onClick: () => relancer(t)
+    }, "🔄 Relancer"), React.createElement("button", {
       onClick: () => {
         setEditing(t.id);
         setForm({
           text: t.text,
           projet: t.projet || "",
           due: toISO(t.due) || "",
-          responsable: t.responsable || ""
+          responsable: t.responsable || "",
+          type: t.type || "tache",
+          contact: t.contact || "",
+          canal: t.canal || "email",
+          dateEnvoi: toISO(t.dateEnvoi) || TODAY,
+          delaiRelance: t.delaiRelance || 5,
+          dateRelance: toISO(t.dateRelance) || "",
+          nbRelances: Number(t.nbRelances) || 0
         });
         setErr("");
         setOpen(true);
@@ -16726,16 +16949,10 @@ function Taches({
         fontFamily: "'DM Sans',sans-serif",
         flexShrink: 0
       }
-    }, "Modifier"), React.createElement("button", {
-      onClick: () => sheet.remove(t.id),
-      style: {
-        background: "none",
-        border: "none",
-        cursor: "pointer",
-        fontSize: 12,
-        color: "#7A7A7A",
-        flexShrink: 0
-      }
+    }, "Modifier"), React.createElement(Btn, {
+      small: true,
+      danger: true,
+      onClick: () => sheet.remove(t.id)
     }, "✕"));
   })));
 }
@@ -19238,6 +19455,7 @@ function BureauEtudes({
     projects: projects,
     team: team,
     user: user,
+    cr: cr,
     standalone: false
   }), onglet === "calendrier" && React.createElement(Calendrier, {
     sheet: events,
@@ -20574,12 +20792,23 @@ function Calendrier({
         });
         for (const a of actions) {
           if (!a.texte) continue;
+          const membresC = (team?.rows || []).filter(t => t.statut !== "inactif");
+          const nRaw = String(a.responsable || "").trim().toLowerCase();
+          let respMatch = "";
+          if (nRaw) {
+            const exact = membresC.find(x => String(x.nom || "").trim().toLowerCase() === nRaw);
+            const partiel = exact || membresC.find(x => {
+              const mn = String(x.nom || "").trim().toLowerCase();
+              return mn && (mn.includes(nRaw) || nRaw.includes(mn) || mn.split(" ")[0] === nRaw.split(" ")[0]);
+            });
+            respMatch = partiel ? partiel.nom : "";
+          }
           await tasks.add({
             text: `[CR] ${a.texte}`,
             projet,
             due: a.echeance || "",
             done: false,
-            responsable: a.responsable || ""
+            responsable: respMatch
           });
         }
         setCrModal(null);
@@ -21890,7 +22119,7 @@ function Equipes({
   // affecté, triées par ordre décroissant (les plus chargés en premier).
   const getMembresMissionEq = m => typeof m.membres === "string" ? m.membres.split(",").map(s => s.trim()).filter(Boolean) : Array.isArray(m.membres) ? m.membres : [];
   const missionsActivesToutes = [
-    ...(atelierChantier?.rows || []).map(m => ({ ...m, _origine: "Atelier" })),
+    ...(atelierChantier?.rows || []).map(m => ({ ...m, _origine: m.type === "chantier" ? "Chantier" : "Atelier" })),
     ...(missionsBE?.rows || []).map(m => ({ ...m, _origine: "Bureau d'Études" }))
   ].filter(m => m.statut !== "terminé");
   const chargeParMembre = sheet.rows.map(membre => {
@@ -21899,16 +22128,32 @@ function Equipes({
   }).sort((a, b) => b.nb - a.nb);
   const [open, setOpen] = useState(false);
   const [expandedHeuresMembre, setExpandedHeuresMembre] = useState(null);
-  const [moisOverride, setMoisOverride] = useState(null);
+  const [periodeOverride, setPeriodeOverride] = useState(null); // { mois, annee } ou null (= auto)
   const MOIS_FR_EQ = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
-  // Par défaut, on affiche le mois des données les plus récemment ajoutées (id le plus élevé) plutôt
-  // que le mois calendaire réel — sinon, si les heures déclarées concernent un autre mois que le mois
-  // en cours (import fait en retard, test hors période...), le total n'apparaît jamais.
+  // Le champ "mois" est stocké sans année (contrainte historique) — on déduit l'année de chaque ligne
+  // à partir de sa date réelle (toujours présente, au format YYYY-MM-DD), pour ne jamais mélanger deux
+  // années différentes qui partageraient le même nom de mois (ex. Juillet 2025 et Juillet 2026).
   const tsRowsEq = timesheets?.rows || [];
-  const derniereLigneEq = tsRowsEq.length ? tsRowsEq.reduce((a, b) => (Number(a.id) || 0) > (Number(b.id) || 0) ? a : b) : null;
-  const moisParDefautEq = derniereLigneEq?.mois || MOIS_FR_EQ[new Date().getMonth()];
-  const moisActuelEq = moisOverride || moisParDefautEq;
-  const moisDispoEq = [...new Set(tsRowsEq.map(t => t.mois).filter(Boolean))];
+  const anneeDeLigne = t => {
+    const iso = toISO(t.date || "");
+    return iso ? Number(iso.slice(0, 4)) : new Date().getFullYear();
+  };
+  const periodesDispoEq = (() => {
+    const vues = new Map();
+    for (const t of tsRowsEq) {
+      if (!t.mois) continue;
+      const annee = anneeDeLigne(t);
+      const cle = `${t.mois}|${annee}`;
+      if (!vues.has(cle)) vues.set(cle, { mois: t.mois, annee, id: Math.max(0, ...tsRowsEq.filter(x => x.mois === t.mois && anneeDeLigne(x) === annee).map(x => Number(x.id) || 0)) });
+    }
+    return [...vues.values()].sort((a, b) => b.annee - a.annee || MOIS_FR_EQ.indexOf(b.mois) - MOIS_FR_EQ.indexOf(a.mois));
+  })();
+  const periodeParDefautEq = periodesDispoEq.length
+    ? periodesDispoEq.reduce((a, b) => a.id > b.id ? a : b)
+    : { mois: MOIS_FR_EQ[new Date().getMonth()], annee: new Date().getFullYear() };
+  const periodeActuelleEq = periodeOverride || periodeParDefautEq;
+  const moisActuelEq = periodeActuelleEq.mois;
+  const anneeActuelleEq = periodeActuelleEq.annee;
   const [form, setForm] = useState(EM);
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -22205,8 +22450,8 @@ function Equipes({
             React.createElement("span", {
               style: {
                 fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4,
-                background: m._origine === "Atelier" ? "#FFF8EC" : "#EBF3FF",
-                color: m._origine === "Atelier" ? "#CC8800" : "#1A5DAB"
+                background: m._origine === "Atelier" ? "#FFF8EC" : m._origine === "Chantier" ? "#F0FFF0" : "#EBF3FF",
+                color: m._origine === "Atelier" ? "#CC8800" : m._origine === "Chantier" ? "#2A7A2A" : "#1A5DAB"
               }
             }, m._origine),
             React.createElement("span", null, m.description || m.projet || "Mission sans titre")
@@ -22230,19 +22475,7 @@ function Equipes({
       borderLeft: "3px solid #CC2222",
       paddingLeft: 8
     }
-  }, "Équipe (", sheet.rows.length, ")"), moisDispoEq.length > 0 && React.createElement("select", {
-    value: moisActuelEq,
-    onChange: e => setMoisOverride(e.target.value),
-    title: "Mois affiché pour le total d'heures de chaque membre",
-    style: {
-      padding: "5px 8px",
-      borderRadius: 4,
-      border: "1px solid #DDD",
-      fontSize: 11,
-      fontFamily: "'DM Sans',sans-serif",
-      marginLeft: 10
-    }
-  }, moisDispoEq.map(m => React.createElement("option", { key: m, value: m }, m))), React.createElement(Btn, {
+  }, "Équipe (", sheet.rows.length, ")"), React.createElement(Btn, {
     primary: true,
     onClick: () => {
       setEditing(null);
@@ -22250,7 +22483,39 @@ function Equipes({
       setErr("");
       setOpen(true);
     }
-  }, "+ Ajouter")), React.createElement("div", {
+  }, "+ Ajouter")), periodesDispoEq.length > 0 && React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 14,
+      padding: "8px 12px",
+      background: "#F9F9F9",
+      borderRadius: 6
+    }
+  },
+    React.createElement("span", {
+      style: { fontSize: 12, color: "#7A7A7A" }
+    }, "📅 Période affichée pour le total d'heures de chaque membre :"),
+    React.createElement("select", {
+      value: `${moisActuelEq}|${anneeActuelleEq}`,
+      onChange: e => {
+        const [mois, annee] = e.target.value.split("|");
+        setPeriodeOverride({ mois, annee: Number(annee) });
+      },
+      style: {
+        padding: "5px 8px",
+        borderRadius: 4,
+        border: "1px solid #DDD",
+        fontSize: 12,
+        fontFamily: "'DM Sans',sans-serif",
+        fontWeight: 600,
+        color: "#1C1C1C"
+      }
+    }, periodesDispoEq.map(p => React.createElement("option", {
+      key: `${p.mois}|${p.annee}`, value: `${p.mois}|${p.annee}`
+    }, p.mois, " ", p.annee)))
+  ), React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -22453,7 +22718,7 @@ function Equipes({
         fontFamily: "'DM Mono',monospace"
       }
     }, m.tel), (() => {
-      const heuresMois = (timesheets?.rows || []).filter(t => t.membre === m.nom && t.mois === moisActuelEq);
+      const heuresMois = (timesheets?.rows || []).filter(t => t.membre === m.nom && t.mois === moisActuelEq && anneeDeLigne(t) === anneeActuelleEq);
       const totalMois = Math.round(heuresMois.reduce((s, t) => s + (Number(t.heures) || 0), 0) * 10) / 10;
       if (!totalMois) return null;
       const estOuvert = expandedHeuresMembre === m.id;
