@@ -723,8 +723,28 @@ const {
   useCallback,
   useRef
 } = React;
+// Hook réutilisable pour donner un retour visuel de chargement à un bouton personnalisé (non construit
+// via Btn/Check) dont l'action est asynchrone — évite l'impression qu'un clic n'a rien fait pendant
+// qu'une action (souvent une suppression, qui n'est jamais optimiste) est en train de s'exécuter.
+// Usage : const [busyKey, runBusy] = useBusyAction();
+//         onClick: () => runBusy(item.id, async () => { await sheet.remove(item.id); })
+//         puis dans le style : opacity: busyKey === item.id ? 0.5 : 1, cursor: busyKey === item.id ? "wait" : "pointer"
+function useBusyAction() {
+  const [busyKey, setBusyKey] = useState(null);
+  const runBusy = async (key, fn) => {
+    setBusyKey(key);
+    try {
+      await fn();
+    } catch (e) {
+      alert("Échec de l'action : " + (e?.message || e) + "\n\nTu peux réessayer, rien n'a été perdu.");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+  return [busyKey, runBusy];
+}
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.44";
+const VERSION = "v4.7.48";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -816,7 +836,7 @@ const ROLES_INTERVENANT = [{
   roles: ["Gros œuvre / Maçonnerie", "Charpente bois", "Charpente métallique", "Couverture / Étanchéité", "Menuiseries extérieures", "Menuiseries intérieures", "Façades / Bardage", "Serrurerie / Métallerie", "Électricité", "Plomberie / CVC", "Isolation / Doublage", "Peinture / Revêtements", "VRD / Terrassement", "Espaces verts", "Autre"]
 }];
 const ALL_ROLES_INTERVENANT = ROLES_INTERVENANT.flatMap(g => g.roles);
-const PROJ_STATUTS = ["en cours", "démarrage", "finition", "retard", "terminé", "en pause"];
+const PROJ_STATUTS = ["en cours", "démarrage", "finition", "retard", "terminé", "en pause", "prospection"];
 const STATUTS_TEAM = ["chantier", "atelier", "bureau", "congé", "déplacement"];
 const EQUIPES = [{
   key: "be",
@@ -914,27 +934,50 @@ const Btn = ({
   small,
   secondary,
   disabled
-}) => React.createElement("button", {
-  onClick: disabled ? undefined : onClick,
-  disabled: !!disabled,
-  style: {
-    padding: small ? "4px 10px" : "7px 14px",
-    borderRadius: 6,
-    fontSize: 13,
-    cursor: disabled ? "default" : "pointer",
-    fontFamily: "'DM Sans',sans-serif",
-    fontWeight: 500,
-    border: danger ? "1px solid #CC2222" : primary ? "1px solid #CC2222" : secondary ? "1px solid #CC2222" : "1px solid #DDDDDD",
-    background: danger ? "#FFF0F0" : primary ? "#CC2222" : "transparent",
-    color: danger ? "#CC2222" : primary ? "#fff" : secondary ? "#CC2222" : "#3A3A3A",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 5,
-    whiteSpace: "nowrap",
-    opacity: disabled ? 0.6 : 1,
-    transition: "opacity .15s"
-  }
-}, children);
+}) => {
+  const [busy, setBusy] = useState(false);
+  const handleClick = async e => {
+    if (!onClick) return;
+    const result = onClick(e);
+    // Si onClick est asynchrone, on affiche un indicateur de chargement et on désactive le bouton le
+    // temps que ça se résolve — un clic sans retour visuel immédiat donne l'impression d'un bug alors
+    // que l'action est simplement en train de charger.
+    if (result && typeof result.then === "function") {
+      setBusy(true);
+      try {
+        await result;
+      } catch (err) {
+        alert("Échec de l'action : " + (err?.message || err) + "\n\nTu peux réessayer, rien n'a été perdu.");
+      } finally {
+        setBusy(false);
+      }
+    }
+  };
+  const estDesactive = !!disabled || busy;
+  return React.createElement("button", {
+    onClick: estDesactive ? undefined : handleClick,
+    disabled: estDesactive,
+    style: {
+      padding: small ? "4px 10px" : "7px 14px",
+      borderRadius: 6,
+      fontSize: 13,
+      cursor: estDesactive ? (busy ? "wait" : "default") : "pointer",
+      fontFamily: "'DM Sans',sans-serif",
+      fontWeight: 500,
+      border: danger ? "1px solid #CC2222" : primary ? "1px solid #CC2222" : secondary ? "1px solid #CC2222" : "1px solid #DDDDDD",
+      background: danger ? "#FFF0F0" : primary ? "#CC2222" : "transparent",
+      color: danger ? "#CC2222" : primary ? "#fff" : secondary ? "#CC2222" : "#3A3A3A",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 5,
+      whiteSpace: "nowrap",
+      opacity: estDesactive ? 0.6 : 1,
+      transition: "opacity .15s"
+    }
+  }, busy && React.createElement("span", {
+    style: { display: "inline-block", animation: "spin 0.7s linear infinite" }
+  }, "⟳"), children);
+};
 const Inp = ({
   value,
   onChange,
@@ -1119,22 +1162,41 @@ function Check({
   label,
   color
 }) {
+  const [busy, setBusy] = useState(false);
   const c = color || "#CC2222";
+  const handleClick = async () => {
+    if (busy) return;
+    const result = onChange();
+    // Si onChange est asynchrone (renvoie une promesse), on affiche un indicateur de chargement le
+    // temps que ça se résolve — sans ça, une action lente (ou qui échoue silencieusement) donne
+    // l'impression qu'un clic n'a rien fait, ce qui ressemble à un bug alors que ça charge simplement.
+    if (result && typeof result.then === "function") {
+      setBusy(true);
+      try {
+        await result;
+      } catch (e) {
+        alert("Échec de l'action : " + (e?.message || e) + "\n\nTu peux réessayer, rien n'a été perdu.");
+      } finally {
+        setBusy(false);
+      }
+    }
+  };
   return React.createElement("label", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 6,
-      cursor: "pointer",
-      userSelect: "none"
+      cursor: busy ? "wait" : "pointer",
+      userSelect: "none",
+      opacity: busy ? 0.65 : 1
     }
   }, React.createElement("div", {
-    onClick: onChange,
+    onClick: handleClick,
     style: {
       width: 16,
       height: 16,
       borderRadius: 3,
-      cursor: "pointer",
+      cursor: busy ? "wait" : "pointer",
       flexShrink: 0,
       border: `1.5px solid ${checked ? c : "#AAAAAA"}`,
       background: checked ? c : "#fff",
@@ -1143,7 +1205,14 @@ function Check({
       justifyContent: "center",
       transition: "all .15s"
     }
-  }, checked && React.createElement("span", {
+  }, busy ? React.createElement("span", {
+    style: {
+      fontSize: 9,
+      color: checked ? "#fff" : c,
+      display: "inline-block",
+      animation: "spin 0.7s linear infinite"
+    }
+  }, "⟳") : checked && React.createElement("span", {
     style: {
       fontSize: 10,
       color: "#fff",
@@ -1155,7 +1224,7 @@ function Check({
       fontSize: 12,
       color: "#3A3A3A"
     }
-  }, label));
+  }, label, busy && " (en cours…)"));
 }
 function SidePanel({
   title,
@@ -4119,18 +4188,23 @@ function ModuleCR({
   const crProjet = (cr?.rows || []).filter(r => r.id && String(r.projet_id) === String(projet?.id)).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   async function saveCR(data) {
     setSaving(true);
-    await cr.add({
-      ...data,
-      projet_id: String(projet.id || "")
-    });
-    setVue("liste");
-    setForm(EC);
-    setActionsForm([{
-      texte: "",
-      responsable: "",
-      echeance: ""
-    }]);
-    setSaving(false);
+    try {
+      await cr.add({
+        ...data,
+        projet_id: String(projet.id || "")
+      });
+      setVue("liste");
+      setForm(EC);
+      setActionsForm([{
+        texte: "",
+        responsable: "",
+        echeance: ""
+      }]);
+    } catch (e) {
+      alert("Échec de l'enregistrement : " + (e?.message || e) + "\n\nTu peux réessayer.");
+    } finally {
+      setSaving(false);
+    }
   }
   async function saveActionsAsTasks(actions) {
     const membres = (team?.rows || []).filter(t => t.statut !== "inactif");
@@ -4672,16 +4746,20 @@ function ModuleCR({
     }, "← Modifier"), React.createElement("button", {
       disabled: saving,
       onClick: async () => {
-        await saveCR({
-          type: "externe",
-          titre: aiPreview.titre,
-          date: aiPreview.date || TODAY,
-          participants: typeof aiPreview.participants === "string" ? aiPreview.participants : (aiPreview.participants || []).join(", "),
-          contenu: aiPreview.contenu || "",
-          actions: JSON.stringify(aiPreview.actions || []),
-          evenement_id: ""
-        });
-        await saveActionsAsTasks(aiPreview.actions || []);
+        try {
+          await saveCR({
+            type: "externe",
+            titre: aiPreview.titre,
+            date: aiPreview.date || TODAY,
+            participants: typeof aiPreview.participants === "string" ? aiPreview.participants : (aiPreview.participants || []).join(", "),
+            contenu: aiPreview.contenu || "",
+            actions: JSON.stringify(aiPreview.actions || []),
+            evenement_id: ""
+          });
+          await saveActionsAsTasks(aiPreview.actions || []);
+        } catch (e) {
+          alert("Échec de la création des tâches : " + (e?.message || e) + "\n\nLe compte-rendu a bien été enregistré — seule la création des tâches associées a échoué, tu peux les ajouter manuellement.");
+        }
       },
       style: {
         padding: "7px 16px",
@@ -4829,6 +4907,7 @@ function SuiviHeuresProjet({
   hideFinances
 }) {
   const normL = s => String(s || "").trim().toLowerCase();
+  const [busyHp, runBusyHp] = useBusyAction();
   const [onglet, setOnglet] = useState("vue");
   const [uploadState, setUploadState] = useState("idle");
   const [parsedLignes, setParsedLignes] = useState([]);
@@ -5015,7 +5094,6 @@ function SuiviHeuresProjet({
       <div class="kpi"><div class="kpi-val" style="color:#CC2222;">${Math.round(totalConsomme * 10) / 10}h</div><div class="kpi-lbl">Heures consommées</div></div>
       <div class="kpi"><div class="kpi-val" style="color:${budgetTotal > 0 ? "#1A5DAB" : "#AAA"};">${budgetTotal > 0 ? budgetTotal + "h" : "—"}</div><div class="kpi-lbl">Budget total${budgetPool > 0 ? ` · dont ${budgetPool}h pool` : ""}</div></div>
       <div class="kpi"><div class="kpi-val" style="color:${couleurPct};">${pct !== null ? pct + "%" : "—"}</div><div class="kpi-lbl">Consommé${restant !== null ? ` · Restant : ${restant}h` : ""}</div></div>
-      ${heuresEstimAtelier > 0 ? `<div class="kpi"><div class="kpi-val" style="color:#CC8800;">~${heuresEstimAtelier}h</div><div class="kpi-lbl">Estimation atelier (coches)</div></div>` : ""}
     </div>`;
     if (pct !== null) {
       html += `<div class="prog-bar"><div class="prog-fill" style="width:${Math.min(100, pct)}%;background:${couleurPct};"></div></div>`;
@@ -5374,24 +5452,29 @@ function SuiviHeuresProjet({
     disabled: savingBudget || !budgetForm.heures,
     onClick: async () => {
       setSavingBudget(true);
-      const existing = budgets.find(b => (b.membre || "") === (budgetForm.membre || ""));
-      if (existing) {
-        await budgetHeures.update(existing.id, {
-          ...existing,
-          heures: Number(budgetForm.heures)
+      try {
+        const existing = budgets.find(b => (b.membre || "") === (budgetForm.membre || ""));
+        if (existing) {
+          await budgetHeures.update(existing.id, {
+            ...existing,
+            heures: Number(budgetForm.heures)
+          });
+        } else {
+          await budgetHeures.add({
+            projet_id: String(projet.id),
+            membre: budgetForm.membre,
+            heures: Number(budgetForm.heures)
+          });
+        }
+        setBudgetForm({
+          membre: "",
+          heures: ""
         });
-      } else {
-        await budgetHeures.add({
-          projet_id: String(projet.id),
-          membre: budgetForm.membre,
-          heures: Number(budgetForm.heures)
-        });
+      } catch (e) {
+        alert("Échec de l'enregistrement : " + (e?.message || e) + "\n\nTu peux réessayer.");
+      } finally {
+        setSavingBudget(false);
       }
-      setBudgetForm({
-        membre: "",
-        heures: ""
-      });
-      setSavingBudget(false);
     },
     style: {
       padding: "7px 14px",
@@ -5430,17 +5513,19 @@ function SuiviHeuresProjet({
       color: "#1A5DAB"
     }
   }, b.heures, "h"), React.createElement("button", {
-    onClick: async () => {
-      if (confirm("Supprimer ce budget ?")) await budgetHeures.remove(b.id);
+    onClick: () => {
+      if (confirm("Supprimer ce budget ?")) runBusyHp("del-" + b.id, () => budgetHeures.remove(b.id));
     },
+    disabled: busyHp === "del-" + b.id,
     style: {
       background: "none",
       border: "none",
-      cursor: "pointer",
+      cursor: busyHp === "del-" + b.id ? "wait" : "pointer",
       fontSize: 12,
-      color: "#CCCCCC"
+      color: "#CCCCCC",
+      opacity: busyHp === "del-" + b.id ? 0.5 : 1
     }
-  }, "✕"))), !budgets.length && React.createElement("div", {
+  }, busyHp === "del-" + b.id ? "⟳" : "✕"))), !budgets.length && React.createElement("div", {
     style: {
       fontSize: 12,
       color: "#AAAAAA",
@@ -5647,6 +5732,7 @@ function Projets({
   events,
   prestMissions,
   atelierChantier,
+  missionsBE,
   team,
   hideFinances = false,
   cr,
@@ -5672,6 +5758,7 @@ function Projets({
   });
   const [savingNote, setSavingNote] = useState(false);
   const [showHistorique, setShowHistorique] = useState(false);
+  const [showProspection, setShowProspection] = useState(true);
   const [editingOrder, setEditingOrder] = useState(null);
   const [orderForm, setOrderForm] = useState({});
   const [nouvelleTacheOpen, setNouvelleTacheOpen] = useState(false);
@@ -5811,8 +5898,9 @@ function Projets({
     const r = (t.role || t.poste || "").toLowerCase();
     return r.includes("ingénieur") || r.includes("ingenieur") || r.includes("engineer") || r.includes("be ") || r.includes("bureau d'études");
   });
-  const actifs = sheet.rows.filter(p => p.statut !== "terminé");
+  const actifs = sheet.rows.filter(p => p.statut !== "terminé" && p.statut !== "prospection");
   const historique = sheet.rows.filter(p => p.statut === "terminé");
+  const prospection = sheet.rows.filter(p => p.statut === "prospection");
   const panel = open && React.createElement(SidePanel, {
     title: editing ? "Modifier le projet" : "Nouveau projet",
     onClose: () => {
@@ -5965,6 +6053,23 @@ function Projets({
     const projTasks = tasks.rows.filter(t => t.projet === p.name);
     const projOrders = orders.rows.filter(o => o.projet === p.name || o.projet === String(p.id));
     const projNotes = notes.rows.filter(n => Number(n.projet_id) === Number(p.id)).sort((a, b) => toISO(b.date).localeCompare(toISO(a.date)));
+    // Journal de notes consolidé (demande utilisateur) : réunit en un seul endroit les notes libres,
+    // les comptes-rendus, et les notes de mission (atelier/chantier/BE/prestataires) — chacune taguée
+    // avec sa source d'origine, triées ensemble par date décroissante.
+    const projCRPourNotes = (cr?.rows || []).filter(r => String(r.projet_id) === String(p.id));
+    const missionsPourNotes = [
+      ...(atelierChantier?.rows || []).filter(m => m.projet === p.name).map(m => ({ ...m, _typeMission: m.type === "atelier" ? "Mission atelier" : "Mission chantier" })),
+      ...(missionsBE?.rows || []).filter(m => m.projet === p.name).map(m => ({ ...m, _typeMission: "Mission BE" })),
+      ...(prestMissions?.rows || []).filter(m => m.projet === p.name || m.projet === String(p.id)).map(m => ({ ...m, _typeMission: "Prestataire" }))
+    ];
+    const notesConsolidees = [
+      ...projNotes.map(n => ({ date: n.date, titre: n.titre || "Note libre", contenu: n.contenu, source: "📝 Note libre", sourceColor: "#7A7A7A", id: "note-" + n.id })),
+      ...projCRPourNotes.map(r => ({ date: r.date, titre: r.titre || "Compte-rendu", contenu: r.contenu, source: "📋 CR", sourceColor: "#1A5DAB", id: "cr-" + r.id })),
+      ...missionsPourNotes.flatMap(m => parseNotesMission(m.notesMission).map((n, i) => ({
+        date: n.date, titre: n.titre || m.description || "Note de mission", contenu: n.contenu,
+        source: `🔧 ${m._typeMission} — ${m.description || "?"}`, sourceColor: "#CC8800", id: `mission-${m.id}-${i}`
+      })))
+    ].filter(n => n.contenu && n.contenu.trim()).sort((a, b) => toISO(b.date || "").localeCompare(toISO(a.date || "")));
     const projEvents = events.rows.filter(e => {
       if (e.projet !== p.name) return false;
       const iso = toISO(e.date);
@@ -6491,7 +6596,7 @@ ${sections}
         borderBottom: "2px solid #EEEEEE",
         marginBottom: 16
       }
-    }, [["infos", "📋 Modules"], ["intervenants", "👥 Intervenants"], ["cr", "📝 CR"], ["heures", "⏱ Suivi heures"], ["taches", "✅ Tâches"], ["metre", "📐 Métré"]].map(([id, lbl]) => React.createElement("button", {
+    }, [["infos", "📋 Modules"], ["intervenants", "👥 Intervenants"], ["cr", "📝 CR"], ["notesConso", "🗂 Notes"], ["heures", "⏱ Suivi heures"], ["taches", "✅ Tâches"], ["metre", "📐 Métré"]].map(([id, lbl]) => React.createElement("button", {
       key: id,
       onClick: () => setOngletDetail(id),
       style: {
@@ -6797,7 +6902,57 @@ ${sections}
       team: team,
       tasks: tasks,
       events: events
-    })), ongletDetail === "heures" && React.createElement(SuiviHeuresProjet, {
+    })), ongletDetail === "notesConso" && React.createElement("div", {
+      style: { marginBottom: 16 }
+    },
+      React.createElement(Bd, {
+        style: { marginBottom: 14 }
+      },
+        React.createElement(SecTitle, null, "+ Ajouter une note"),
+        React.createElement("div", {
+          style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }
+        },
+          React.createElement(FG, { label: "Titre (optionnel)" }, React.createElement(Inp, {
+            value: noteForm.titre,
+            onChange: e => setNoteForm(x => ({ ...x, titre: e.target.value }))
+          }))
+        ),
+        React.createElement(FG, { label: "Contenu" }, React.createElement("textarea", {
+          value: noteForm.contenu,
+          onChange: e => setNoteForm(x => ({ ...x, contenu: e.target.value })),
+          rows: 3,
+          style: { width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #DDDDDD", fontFamily: "'DM Sans',sans-serif", fontSize: 13, resize: "vertical" }
+        })),
+        React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: 8 } },
+          React.createElement(Btn, { primary: true, onClick: () => saveNote(p.id) }, savingNote ? "..." : "+ Ajouter la note")
+        )
+      ),
+      React.createElement("div", {
+        style: { fontSize: 13, fontWeight: 700, color: "#7A7A7A", marginBottom: 10 }
+      }, "Toutes les notes du projet (", notesConsolidees.length, ") — notes libres, CR, missions confondus"),
+      !notesConsolidees.length && React.createElement("div", {
+        style: { fontSize: 13, color: "#AAAAAA", fontStyle: "italic" }
+      }, "Aucune note pour l'instant."),
+      notesConsolidees.map(n => React.createElement(Bd, {
+        key: n.id,
+        style: { marginBottom: 10 }
+      },
+        React.createElement("div", {
+          style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }
+        },
+          React.createElement("span", {
+            style: { fontSize: 11, fontWeight: 700, color: n.sourceColor, background: n.sourceColor + "18", padding: "2px 8px", borderRadius: 10 }
+          }, n.source),
+          React.createElement("span", { style: { fontSize: 11, color: "#AAAAAA" } }, fmt(n.date))
+        ),
+        n.titre && React.createElement("div", {
+          style: { fontSize: 13, fontWeight: 700, color: "#1C1C1C", marginBottom: 3 }
+        }, n.titre),
+        React.createElement("div", {
+          style: { fontSize: 13, color: "#3A3A3A", whiteSpace: "pre-wrap" }
+        }, n.contenu)
+      ))
+    ), ongletDetail === "heures" && React.createElement(SuiviHeuresProjet, {
       projet: p,
       timesheets: timesheets,
       budgetHeures: budgetHeures,
@@ -7555,7 +7710,19 @@ ${sections}
       borderLeft: "3px solid #CC2222",
       paddingLeft: 8
     }
-  }, "Projets actifs (", actifs.length, ")"), historique.length > 0 && React.createElement("button", {
+  }, "Projets actifs (", actifs.length, ")"), prospection.length > 0 && React.createElement("button", {
+    onClick: () => setShowProspection(h => !h),
+    style: {
+      fontSize: 12,
+      color: "#CC8800",
+      background: "#FFF8EC",
+      border: "1px solid #F0D890",
+      borderRadius: 4,
+      padding: "3px 8px",
+      cursor: "pointer",
+      fontFamily: "'DM Sans',sans-serif"
+    }
+  }, showProspection ? "Masquer" : "Voir", " 🔍 prospection (", prospection.length, ")"), historique.length > 0 && React.createElement("button", {
     onClick: () => setShowHistorique(h => !h),
     style: {
       fontSize: 12,
@@ -7787,7 +7954,62 @@ ${sections}
       fontSize: 12,
       color: "#7A7A7A"
     }
-  }, hideFinances ? "•••" : `${Number(p.depense).toLocaleString("fr-FR")} € / ${Number(p.budget).toLocaleString("fr-FR")} € CA`))))));
+  }, hideFinances ? "•••" : `${Number(p.depense).toLocaleString("fr-FR")} € / ${Number(p.budget).toLocaleString("fr-FR")} € CA`))))), showProspection && prospection.length > 0 && React.createElement("div", {
+    style: {
+      marginTop: 16
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#CC8800",
+      borderLeft: "3px solid #CC8800",
+      paddingLeft: 8,
+      marginBottom: 10
+    }
+  }, "🔍 Prospection — projets pas encore gagnés (", prospection.length, ")"), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10
+    }
+  }, prospection.map(p => React.createElement("div", {
+    key: p.id,
+    onClick: () => openDetail(p.id),
+    style: {
+      background: "#FFFDF7",
+      border: "0.5px solid #F0D890",
+      borderRadius: 10,
+      padding: 14,
+      cursor: "pointer"
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      marginBottom: 6
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: "#1C1C1C"
+    }
+  }, p.name), p.client && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#7A7A7A"
+    }
+  }, p.client)), React.createElement(Badge, {
+    label: "Prospection",
+    bg: "#FFF8EC",
+    color: "#CC8800"
+  })), p.budget > 0 && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#7A7A7A"
+    }
+  }, hideFinances ? "•••" : `Budget visé : ${Number(p.budget).toLocaleString("fr-FR")} €`))))));
 }
 const EPREST = {
   nom: "",
@@ -9579,6 +9801,7 @@ function PhaseItem({
   etapes
 }) {
   const [editing, setEditing] = useState(false);
+  const [busySf, runBusySf] = useBusyAction();
   const [editForm, setEditForm] = useState({
     famille: ph.famille,
     phase: ph.phase,
@@ -9911,20 +10134,24 @@ function PhaseItem({
       color: "#3A3A3A"
     }
   }, "Mod."), React.createElement("button", {
-    onClick: async () => {
+    onClick: () => {
       if (confirm(`Supprimer la phase "${ph.phase}" et toutes ses opérations ?`)) {
-        for (const op of ph.ops) await suiviFab.remove(op.id);
-        await logAction(journal, user, `[${mission?.description || "?"}] − Phase supprimée : ${ph.famille} / ${ph.phase} (${ph.ops.length} opération(s))`, mission?.projet || "");
+        runBusySf("del-phase-" + ph.famille + "-" + ph.phase, async () => {
+          for (const op of ph.ops) await suiviFab.remove(op.id);
+          await logAction(journal, user, `[${mission?.description || "?"}] − Phase supprimée : ${ph.famille} / ${ph.phase} (${ph.ops.length} opération(s))`, mission?.projet || "");
+        });
       }
     },
+    disabled: busySf === "del-phase-" + ph.famille + "-" + ph.phase,
     style: {
       background: "none",
       border: "none",
-      cursor: "pointer",
+      cursor: busySf === "del-phase-" + ph.famille + "-" + ph.phase ? "wait" : "pointer",
       fontSize: 12,
-      color: "#CCCCCC"
+      color: "#CCCCCC",
+      opacity: busySf === "del-phase-" + ph.famille + "-" + ph.phase ? 0.5 : 1
     }
-  }, "✕")), React.createElement("div", {
+  }, busySf === "del-phase-" + ph.famille + "-" + ph.phase ? "⟳" : "✕")), React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#7A7A7A"
@@ -9943,6 +10170,7 @@ function SuiviFabComponent({
 }) {
   const [onglet, setOnglet] = useState("grille");
   const [saving, setSaving] = useState(false);
+  const [busyTpl, runBusyTpl] = useBusyAction();
   const [templateNom, setTemplateNom] = useState("");
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [newPhaseForm, setNewPhaseForm] = useState({
@@ -9996,43 +10224,44 @@ function SuiviFabComponent({
     grouped[fam][ph].push(l);
   }
   async function toggleUnite(ligne, idx) {
-    const vals = [];
     try {
-      vals.push(...JSON.parse(ligne.valeurs || "[]"));
-    } catch (e) {}
-    while (vals.length < Number(ligne.nb_unites)) vals.push(0);
-    const newVal = vals[idx] === 1 ? 0 : 1;
-    vals[idx] = newVal;
-    let historique = [];
-    try {
-      historique = JSON.parse(ligne.historique_coches || "[]");
-    } catch (e) {}
-    const horodatage = horodatageLocal();
-    if (newVal === 1) {
-      historique.push({
-        idx,
-        who: user?.nom || "?",
-        when: horodatage
+      const vals = [];
+      try {
+        vals.push(...JSON.parse(ligne.valeurs || "[]"));
+      } catch (e) {}
+      while (vals.length < Number(ligne.nb_unites)) vals.push(0);
+      const newVal = vals[idx] === 1 ? 0 : 1;
+      vals[idx] = newVal;
+      let historique = [];
+      try {
+        historique = JSON.parse(ligne.historique_coches || "[]");
+      } catch (e) {}
+      const horodatage = horodatageLocal();
+      if (newVal === 1) {
+        historique.push({
+          idx,
+          who: user?.nom || "?",
+          when: horodatage
+        });
+      } else {
+        historique = historique.filter(h => h.idx !== idx);
+      }
+      await suiviFab.update(ligne.id, {
+        ...ligne,
+        valeurs: JSON.stringify(vals),
+        historique_coches: JSON.stringify(historique)
       });
-    } else {
-      historique = historique.filter(h => h.idx !== idx);
-    }
-    await suiviFab.update(ligne.id, {
-      ...ligne,
-      valeurs: JSON.stringify(vals),
-      historique_coches: JSON.stringify(historique)
-    });
-    if (etapes) {
-      const lignesPhase = (suiviFab?.rows || []).filter(r => String(r.mission_id) === String(mission.id) && r.famille === ligne.famille && r.phase === ligne.phase);
-      const phaseTerminee = lignesPhase.every(l => {
-        const v = [];
-        try {
-          v.push(...JSON.parse(l.id === ligne.id ? JSON.stringify(vals) : l.valeurs || "[]"));
-        } catch (e) {}
-        const nb = Number(l.nb_unites) || 0;
-        return v.slice(0, nb).every(x => x === 1) && nb > 0;
-      });
-      const etapeLiee = trouverEtapeLieePhase(lignesPhase, etapes?.rows, mission.id);
+      if (etapes) {
+        const lignesPhase = (suiviFab?.rows || []).filter(r => String(r.mission_id) === String(mission.id) && r.famille === ligne.famille && r.phase === ligne.phase);
+        const phaseTerminee = lignesPhase.every(l => {
+          const v = [];
+          try {
+            v.push(...JSON.parse(l.id === ligne.id ? JSON.stringify(vals) : l.valeurs || "[]"));
+          } catch (e) {}
+          const nb = Number(l.nb_unites) || 0;
+          return v.slice(0, nb).every(x => x === 1) && nb > 0;
+        });
+        const etapeLiee = trouverEtapeLieePhase(lignesPhase, etapes?.rows, mission.id);
       if (etapeLiee) {
         const nouveauStatut = phaseTerminee ? "terminé" : "en cours";
         // Heures calculées automatiquement, avec deux méthodes possibles :
@@ -10111,6 +10340,9 @@ function SuiviFabComponent({
       const action = newVal === 1 ? `[${mission.description}] ✓ Coché ${ligne.famille} / ${ligne.phase} / ${ligne.operation} — unité ${labels[idx]} (${horodatage})` : `[${mission.description}] ✗ Annulation coche ${ligne.famille} / ${ligne.phase} / ${ligne.operation} — unité ${labels[idx]} (${horodatage})`;
       await logAction(journal, user, action, mission.projet || "");
     }
+    } catch (e) {
+      alert("Échec de l'enregistrement : " + (e?.message || e) + "\n\nTu peux réessayer.");
+    }
   }
   async function addPhase() {
     if (!newPhaseForm.famille.trim() || !newPhaseForm.phase.trim()) {
@@ -10184,67 +10416,72 @@ function SuiviFabComponent({
       config = JSON.parse(t.config || "[]");
     } catch (e) {}
     setSaving(true);
-    const lignesParPhase = new Map();
-    const ajouterLigne = (key, ligne) => {
-      if (!lignesParPhase.has(key)) lignesParPhase.set(key, []);
-      lignesParPhase.get(key).push(ligne);
-    };
-    for (const item of config) {
-      if (item.o && Array.isArray(item.o)) {
-        const nb = item.n || 10;
-        const key = `${item.f}|||${item.p}`;
-        for (const operation of item.o) {
+    try {
+      const lignesParPhase = new Map();
+      const ajouterLigne = (key, ligne) => {
+        if (!lignesParPhase.has(key)) lignesParPhase.set(key, []);
+        lignesParPhase.get(key).push(ligne);
+      };
+      for (const item of config) {
+        if (item.o && Array.isArray(item.o)) {
+          const nb = item.n || 10;
+          const key = `${item.f}|||${item.p}`;
+          for (const operation of item.o) {
+            const cree = await suiviFab.add({
+              mission_id: String(mission.id),
+              famille: item.f,
+              phase: item.p,
+              operation,
+              nb_unites: nb,
+              type_unite: item.t || "num",
+              deadline: "",
+              valeurs: JSON.stringify(Array(nb).fill(0))
+            });
+            ajouterLigne(key, cree);
+          }
+        } else {
+          const nb = item.nb_unites || 10;
+          const key = `${item.famille}|||${item.phase}`;
           const cree = await suiviFab.add({
             mission_id: String(mission.id),
-            famille: item.f,
-            phase: item.p,
-            operation,
+            famille: item.famille,
+            phase: item.phase,
+            operation: item.operation,
             nb_unites: nb,
-            type_unite: item.t || "num",
+            type_unite: item.type_unite || "num",
             deadline: "",
             valeurs: JSON.stringify(Array(nb).fill(0))
           });
           ajouterLigne(key, cree);
         }
-      } else {
-        const nb = item.nb_unites || 10;
-        const key = `${item.famille}|||${item.phase}`;
-        const cree = await suiviFab.add({
-          mission_id: String(mission.id),
-          famille: item.famille,
-          phase: item.phase,
-          operation: item.operation,
-          nb_unites: nb,
-          type_unite: item.type_unite || "num",
-          deadline: "",
-          valeurs: JSON.stringify(Array(nb).fill(0))
-        });
-        ajouterLigne(key, cree);
       }
-    }
-    // Une étape liée par phase distincte du template (évite les doublons si plusieurs opérations
-    // partagent la même famille/phase, ex. le format verbeux qui liste une ligne par opération).
-    for (const [key, lignesCreees] of lignesParPhase) {
-      const [fam, ph] = key.split("|||");
-      if (!fam || !ph) continue;
-      let etapeExistante = trouverEtapeLieePhase(lignesCreees, etapes?.rows, mission.id);
-      if (!etapeExistante) {
-        etapeExistante = await etapes.add({
-          mission_id: String(mission.id),
-          module: moduleType,
-          titre: `${fam} — ${ph}`,
-          responsable: "",
-          dateDebut: TODAY,
-          dateFin: "",
-          statut: "à faire",
-          note: `fab:${fam}|||${ph}`
-        });
+      // Une étape liée par phase distincte du template (évite les doublons si plusieurs opérations
+      // partagent la même famille/phase, ex. le format verbeux qui liste une ligne par opération).
+      for (const [key, lignesCreees] of lignesParPhase) {
+        const [fam, ph] = key.split("|||");
+        if (!fam || !ph) continue;
+        let etapeExistante = trouverEtapeLieePhase(lignesCreees, etapes?.rows, mission.id);
+        if (!etapeExistante) {
+          etapeExistante = await etapes.add({
+            mission_id: String(mission.id),
+            module: moduleType,
+            titre: `${fam} — ${ph}`,
+            responsable: "",
+            dateDebut: TODAY,
+            dateFin: "",
+            statut: "à faire",
+            note: `fab:${fam}|||${ph}`
+          });
+        }
+        await assurerLienEtapeId(lignesCreees, etapeExistante.id, suiviFab);
       }
-      await assurerLienEtapeId(lignesCreees, etapeExistante.id, suiviFab);
+      await logAction(journal, user, `[${mission.description}] 📋 Template appliqué : "${t.nom}"`, mission.projet || "");
+      setOnglet("grille");
+    } catch (e) {
+      alert("Échec de l'application du template : " + (e?.message || e) + "\n\nCertaines lignes ont pu être créées avant l'échec — vérifie la grille avant de réessayer.");
+    } finally {
+      setSaving(false);
     }
-    await logAction(journal, user, `[${mission.description}] 📋 Template appliqué : "${t.nom}"`, mission.projet || "");
-    setSaving(false);
-    setOnglet("grille");
   }
   function getEtapeLieePhase(fam, ph) {
     const lignesPhase = lignes.filter(l => l.famille === fam && l.phase === ph);
@@ -10515,19 +10752,21 @@ function SuiviFabComponent({
         fontWeight: 700
       }
     }, "Appliquer"), React.createElement("button", {
-      onClick: async () => {
-        if (confirm("Supprimer ce template ?")) await templates.remove(t.id);
+      onClick: () => {
+        if (confirm("Supprimer ce template ?")) runBusyTpl("del-tpl-" + t.id, () => templates.remove(t.id));
       },
+      disabled: busyTpl === "del-tpl-" + t.id,
       style: {
         padding: "4px 8px",
         borderRadius: 4,
         border: "1px solid #DDD",
         background: "#fff",
-        cursor: "pointer",
+        cursor: busyTpl === "del-tpl-" + t.id ? "wait" : "pointer",
         fontSize: 11,
-        color: "#7A7A7A"
+        color: "#7A7A7A",
+        opacity: busyTpl === "del-tpl-" + t.id ? 0.5 : 1
       }
-    }, "✕"));
+    }, busyTpl === "del-tpl-" + t.id ? "⟳" : "✕"));
   })), lignes.length > 0 && React.createElement("div", {
     style: {
       background: "#F9F9F9",
@@ -11036,6 +11275,7 @@ function MissionDetailPanel({
   });
   const [showAddEtape, setShowAddEtape] = useState(false);
   const [savingEtape, setSavingEtape] = useState(false);
+  const [busyMd, runBusyMd] = useBusyAction();
   const [commentDrafts, setCommentDrafts] = useState({});
   const etapeColor = s => s === "terminé" ? "#2A7A2A" : s === "en cours" ? "#CC2222" : "#7A7A7A";
   const etapes_m = (etapes?.rows || []).filter(r => String(r.mission_id) === String(m.id));
@@ -11248,7 +11488,7 @@ function MissionDetailPanel({
       gap: 6
     }
   }, React.createElement("button", {
-    onClick: async () => {
+    onClick: () => runBusyMd("sync-etapes", async () => {
       let synced = 0;
       let crees = 0;
       const phasesVues = new Set();
@@ -11304,20 +11544,22 @@ function MissionDetailPanel({
       if (crees > 0) msgs.push(`${crees} étape${crees > 1 ? "s" : ""} créée${crees > 1 ? "s" : ""}`);
       if (synced > 0) msgs.push(`${synced} étape${synced > 1 ? "s" : ""} mise${synced > 1 ? "s" : ""} à jour`);
       alert(msgs.length ? msgs.join(" · ") + "." : "Tout est déjà synchronisé.");
-    },
+    }),
+    disabled: busyMd === "sync-etapes",
     title: "Crée les étapes manquantes pour les phases du Suivi et met à jour leur statut",
     style: {
       padding: "5px 12px",
       borderRadius: 4,
       border: "1px solid #DDDDDD",
       background: "#fff",
-      cursor: "pointer",
+      cursor: busyMd === "sync-etapes" ? "wait" : "pointer",
       fontSize: 11,
       fontFamily: "'DM Sans',sans-serif",
       color: "#3A3A3A",
-      fontWeight: 500
+      fontWeight: 500,
+      opacity: busyMd === "sync-etapes" ? 0.5 : 1
     }
-  }, "🔄 Sync"), React.createElement("button", {
+  }, busyMd === "sync-etapes" ? "⟳ Sync…" : "🔄 Sync"), React.createElement("button", {
     onClick: () => setShowAddEtape(v => !v),
     style: {
       padding: "5px 12px",
@@ -11540,35 +11782,40 @@ function MissionDetailPanel({
     onClick: async () => {
       if (!etapeForm.titre.trim()) return;
       setSavingEtape(true);
-      await etapes.add({
-        ...etapeForm,
-        mission_id: String(m.id),
-        module: moduleType
-      });
-      if (etapeForm.dateFin && events) {
-        await events.add({
-          title: `[${moduleType}] ${etapeForm.titre}`,
-          date: etapeForm.dateFin,
-          heure: "",
-          type: "deadline",
-          projet: m.projet || "",
-          note: `etapeId:${m.id}`,
-          dateFin: etapeForm.dateFin
+      try {
+        await etapes.add({
+          ...etapeForm,
+          mission_id: String(m.id),
+          module: moduleType
         });
+        if (etapeForm.dateFin && events) {
+          await events.add({
+            title: `[${moduleType}] ${etapeForm.titre}`,
+            date: etapeForm.dateFin,
+            heure: "",
+            type: "deadline",
+            projet: m.projet || "",
+            note: `etapeId:${m.id}`,
+            dateFin: etapeForm.dateFin
+          });
+        }
+        setShowAddEtape(false);
+        setEtapeForm({
+          titre: "",
+          responsable: "",
+          dateDebut: TODAY,
+          dateFin: "",
+          statut: "à faire",
+          note: "",
+          heures: "",
+          nbPersonnes: "",
+          commentaire: ""
+        });
+      } catch (e) {
+        alert("Échec de l'ajout : " + (e?.message || e) + "\n\nTu peux réessayer.");
+      } finally {
+        setSavingEtape(false);
       }
-      setShowAddEtape(false);
-      setSavingEtape(false);
-      setEtapeForm({
-        titre: "",
-        responsable: "",
-        dateDebut: TODAY,
-        dateFin: "",
-        statut: "à faire",
-        note: "",
-        heures: "",
-        nbPersonnes: "",
-        commentaire: ""
-      });
     },
     style: {
       padding: "5px 12px",
@@ -11685,18 +11932,20 @@ function MissionDetailPanel({
     }, ["à faire", "en cours", "terminé"].map(s => React.createElement("option", {
       key: s
     }, s))), React.createElement("button", {
-      onClick: async () => {
-        if (confirm("Supprimer cette étape ?")) await etapes.remove(e.id);
+      onClick: () => {
+        if (confirm("Supprimer cette étape ?")) runBusyMd("del-etape-" + e.id, () => etapes.remove(e.id));
       },
+      disabled: busyMd === "del-etape-" + e.id,
       style: {
         background: "none",
         border: "none",
-        cursor: "pointer",
+        cursor: busyMd === "del-etape-" + e.id ? "wait" : "pointer",
         fontSize: 16,
         color: "#CCCCCC",
-        padding: "0 4px"
+        padding: "0 4px",
+        opacity: busyMd === "del-etape-" + e.id ? 0.5 : 1
       }
-    }, "✕")), methode && React.createElement("div", {
+    }, busyMd === "del-etape-" + e.id ? "⟳" : "✕")), methode && React.createElement("div", {
       style: {
         display: "inline-flex",
         alignSelf: "flex-start",
@@ -18666,37 +18915,40 @@ function PlanningProjet({
     onClick: async () => {
       if (!milestoneForm.label.trim() || !projetSelId) return;
       setSaving(true);
-      await planningProjet.add({
-        projet_id: projetSelId,
-        projet_nom: projetSel?.name || "",
-        phase_label: "jalons",
-        phase_color: "#CC2222",
-        task_name: milestoneForm.label,
-        task_resp: "",
-        task_start: milestoneForm.date,
-        task_end: milestoneForm.date,
-        task_flag: "jalon",
-        type: "milestone",
-        created_at: TODAY
-      });
-      if (milestoneForm.date && events) {
-        await events.add({
-          title: `◆ ${milestoneForm.label}`,
-          date: milestoneForm.date,
-          heure: "",
-          type: "deadline",
-          projet: projetSel?.name || "",
-          note: `jalon:${projetSelId}`,
-          dateFin: milestoneForm.date
+      try {
+        await planningProjet.add({
+          projet_id: projetSelId,
+          projet_nom: projetSel?.name || "",
+          phase_label: "jalons",
+          phase_color: "#CC2222",
+          task_name: milestoneForm.label,
+          task_resp: "",
+          task_start: milestoneForm.date,
+          task_end: milestoneForm.date,
+          task_flag: "jalon",
+          type: "milestone",
+          created_at: TODAY
         });
+        if (milestoneForm.date && events) {
+          await events.add({
+            title: `◆ ${milestoneForm.label}`,
+            date: milestoneForm.date,
+            heure: "",
+            type: "deadline",
+            projet: projetSel?.name || "",
+            note: `jalon:${projetSelId}`,
+            dateFin: milestoneForm.date
+          });
+        }
+        setMilestoneForm({
+          label: "",
+          date: ""
+        });
+      } finally {
+        setSaving(false);
       }
-      setMilestoneForm({
-        label: "",
-        date: ""
-      });
-      setSaving(false);
     },
-    saving: saving
+    disabled: saving
   }, "+ Jalon"))), phases.length > 0 && React.createElement("div", null, phases.map(ph => React.createElement("div", {
     key: ph.label,
     style: {
@@ -18966,6 +19218,7 @@ function BureauEtudes({
     events: events,
     prestMissions: prestMissions,
     atelierChantier: atelierChantier,
+    missionsBE: missionsBE,
     team: team,
     hideFinances: false,
     cr: cr,
@@ -19264,6 +19517,7 @@ function AtelierWrapper({ missionProps, isMobile }) {
 }
 // ═══ Module Suivi des véhicules (Chantier) — v4.6.33 : rappel relevé km déplacé à l'édition (✎), onglet Sheets renommé Kilometrage → SuiviVehicules (cf. Code.gs setupV333) ═══
 function Kilometrage({ camions, kilometrage, team = null, user = null, isMobile = false }) {
+  const [busyKm, runBusyKm] = useBusyAction();
   const membresActifs = (team && team.rows || []).filter(t => t.statut !== "inactif");
   const parseD = s => { const t = toISO(s); return t ? new Date(t + "T00:00:00") : null; };
   const frDate = s => { const d = parseD(s); return d ? d.toLocaleDateString("fr-FR") : "—"; };
@@ -19529,7 +19783,7 @@ function Kilometrage({ camions, kilometrage, team = null, user = null, isMobile 
                     delta != null ? React.createElement("div", { style: { fontSize: 9.5, color: delta < 0 ? "#CC2222" : "#7A7A7A" } }, delta >= 0 ? "+" : "", fmtKm(delta), " km") : null
                   ),
                   React.createElement("div", { style: { color: "#7A7A7A" } }, details.join(" · ") || "—"),
-                  React.createElement("button", { onClick: async () => { if (confirm("Supprimer cette entrée ?")) await kilometrage.remove(r.id); }, style: { background: "none", border: "none", cursor: "pointer", color: "#CC2222", fontSize: 13 } }, "✕")
+                  React.createElement("button", { onClick: () => { if (confirm("Supprimer cette entrée ?")) runBusyKm("del-" + r.id, () => kilometrage.remove(r.id)); }, disabled: busyKm === "del-" + r.id, style: { background: "none", border: "none", cursor: busyKm === "del-" + r.id ? "wait" : "pointer", color: "#CC2222", fontSize: 13, opacity: busyKm === "del-" + r.id ? 0.5 : 1 } }, busyKm === "del-" + r.id ? "⟳" : "✕")
                 );
               })
             )
@@ -20304,31 +20558,36 @@ function Calendrier({
     disabled: savingCR,
     onClick: async () => {
       setSavingCR(true);
-      const actions = crActionsForm.filter(a => a.texte.trim());
-      const projet = crModal.ev?.projet || "";
-      const projObj = projects.rows.find(p => p.name === projet);
-      await cr.add({
-        projet_id: String(projObj?.id || ""),
-        date: crForm.date,
-        type: "interne",
-        titre: crForm.titre,
-        participants: crForm.participants,
-        contenu: crForm.contenu,
-        actions: JSON.stringify(actions),
-        evenement_id: String(crModal.evId || "")
-      });
-      for (const a of actions) {
-        if (!a.texte) continue;
-        await tasks.add({
-          text: `[CR] ${a.texte}`,
-          projet,
-          due: a.echeance || "",
-          done: false,
-          responsable: a.responsable || ""
+      try {
+        const actions = crActionsForm.filter(a => a.texte.trim());
+        const projet = crModal.ev?.projet || "";
+        const projObj = projects.rows.find(p => p.name === projet);
+        await cr.add({
+          projet_id: String(projObj?.id || ""),
+          date: crForm.date,
+          type: "interne",
+          titre: crForm.titre,
+          participants: crForm.participants,
+          contenu: crForm.contenu,
+          actions: JSON.stringify(actions),
+          evenement_id: String(crModal.evId || "")
         });
+        for (const a of actions) {
+          if (!a.texte) continue;
+          await tasks.add({
+            text: `[CR] ${a.texte}`,
+            projet,
+            due: a.echeance || "",
+            done: false,
+            responsable: a.responsable || ""
+          });
+        }
+        setCrModal(null);
+      } catch (e) {
+        alert("Échec de l'enregistrement : " + (e?.message || e) + "\n\nTu peux réessayer.");
+      } finally {
+        setSavingCR(false);
       }
-      setCrModal(null);
-      setSavingCR(false);
     },
     style: {
       padding: "7px 16px",
@@ -21626,6 +21885,18 @@ function Equipes({
   missionsBE,
   suiviFab
 }) {
+  const [ongletEq, setOngletEq] = useState("liste");
+  // Charge de travail par personne : compte les missions actives (atelier + BE) auxquelles chacun est
+  // affecté, triées par ordre décroissant (les plus chargés en premier).
+  const getMembresMissionEq = m => typeof m.membres === "string" ? m.membres.split(",").map(s => s.trim()).filter(Boolean) : Array.isArray(m.membres) ? m.membres : [];
+  const missionsActivesToutes = [
+    ...(atelierChantier?.rows || []).map(m => ({ ...m, _origine: "Atelier" })),
+    ...(missionsBE?.rows || []).map(m => ({ ...m, _origine: "Bureau d'Études" }))
+  ].filter(m => m.statut !== "terminé");
+  const chargeParMembre = sheet.rows.map(membre => {
+    const missions = missionsActivesToutes.filter(m => getMembresMissionEq(m).includes(membre.nom));
+    return { membre, missions, nb: missions.length };
+  }).sort((a, b) => b.nb - a.nb);
   const [open, setOpen] = useState(false);
   const [expandedHeuresMembre, setExpandedHeuresMembre] = useState(null);
   const [moisOverride, setMoisOverride] = useState(null);
@@ -21878,7 +22149,71 @@ function Equipes({
     saving: congeSaving,
     saveLabel: congeEditing ? "Mettre à jour" : "Ajouter"
   }));
-  return React.createElement(WithPanel, {
+  return React.createElement(React.Fragment, null,
+    React.createElement("div", {
+      style: { display: "flex", gap: 4, borderBottom: "1px solid #EEEEEE", marginBottom: 14 }
+    },
+      React.createElement("button", {
+        onClick: () => setOngletEq("liste"),
+        style: {
+          padding: "8px 16px", border: "none", background: "none", cursor: "pointer",
+          fontSize: 14, fontFamily: "'DM Sans',sans-serif",
+          fontWeight: ongletEq === "liste" ? 700 : 400,
+          color: ongletEq === "liste" ? "#CC2222" : "#7A7A7A",
+          borderBottom: ongletEq === "liste" ? "2.5px solid #CC2222" : "2.5px solid transparent"
+        }
+      }, "👥 Équipe"),
+      React.createElement("button", {
+        onClick: () => setOngletEq("charge"),
+        style: {
+          padding: "8px 16px", border: "none", background: "none", cursor: "pointer",
+          fontSize: 14, fontFamily: "'DM Sans',sans-serif",
+          fontWeight: ongletEq === "charge" ? 700 : 400,
+          color: ongletEq === "charge" ? "#CC2222" : "#7A7A7A",
+          borderBottom: ongletEq === "charge" ? "2.5px solid #CC2222" : "2.5px solid transparent"
+        }
+      }, "📊 Charge de travail")
+    ),
+    ongletEq === "charge" ? React.createElement("div", null,
+      React.createElement("div", {
+        style: { fontSize: 15, fontWeight: 700, color: "#1C1C1C", borderLeft: "3px solid #CC2222", paddingLeft: 8, marginBottom: 14 }
+      }, "Charge de travail — missions actives par personne"),
+      !chargeParMembre.some(c => c.nb > 0) && React.createElement("div", {
+        style: { fontSize: 13, color: "#7A7A7A", fontStyle: "italic" }
+      }, "Aucune mission active affectée pour l'instant."),
+      chargeParMembre.filter(c => c.nb > 0).map(c => React.createElement("div", {
+        key: c.membre.id,
+        style: { background: "#fff", border: "0.5px solid #DDDDDD", borderRadius: 10, padding: 14, marginBottom: 10 }
+      },
+        React.createElement("div", {
+          style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: c.nb > 0 ? 8 : 0 }
+        },
+          React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#1C1C1C" } }, c.membre.nom),
+          React.createElement("div", {
+            style: {
+              fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 12,
+              background: c.nb >= 4 ? "#FFF0F0" : c.nb >= 2 ? "#FFF8EC" : "#F0FFF0",
+              color: c.nb >= 4 ? "#CC2222" : c.nb >= 2 ? "#CC8800" : "#2A7A2A"
+            }
+          }, c.nb, " mission", c.nb > 1 ? "s" : "")
+        ),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
+          c.missions.map(m => React.createElement("div", {
+            key: m.id,
+            style: { fontSize: 12, color: "#3A3A3A", display: "flex", gap: 8, alignItems: "center" }
+          },
+            React.createElement("span", {
+              style: {
+                fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4,
+                background: m._origine === "Atelier" ? "#FFF8EC" : "#EBF3FF",
+                color: m._origine === "Atelier" ? "#CC8800" : "#1A5DAB"
+              }
+            }, m._origine),
+            React.createElement("span", null, m.description || m.projet || "Mission sans titre")
+          ))
+        )
+      ))
+    ) : React.createElement(WithPanel, {
     panel: panel || congePanel
   }, React.createElement("div", {
     style: {
@@ -22304,7 +22639,7 @@ function Equipes({
     team: sheet,
     budgetHeures: budgetHeures,
     suiviFab: suiviFab
-  }));
+  })));
 }
 const EF = {
   nom: "",
@@ -25133,6 +25468,7 @@ function Commandes({
   hideFinances = false
 }) {
   const [onglet, setOnglet] = useState("commandes");
+  const [busyCmd, runBusyCmd] = useBusyAction();
   // Rafraîchissement à l'ouverture de l'onglet uniquement — pas de sondage en arrière-plan.
   useEffect(() => {
     sheet.reload();
@@ -25155,7 +25491,8 @@ function Commandes({
   const [aiFile, setAiFile] = useState(null);
   const [pendingDocFile, setPendingDocFile] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
-  const [newFourn, setNewFourn] = useState(false);
+  const [newFournForm, setNewFournForm] = useState(null); // null = pas de fournisseur à créer ; objet = formulaire ouvert
+  const [savingNewFourn, setSavingNewFourn] = useState(false);
   const [aiApplying, setAiApplying] = useState(false);
   const f = (k, v) => setForm(x => ({
     ...x,
@@ -25310,23 +25647,22 @@ function Commandes({
       setAiLoading(false);
     }
   }
+  async function saveNewFourn() {
+    if (!newFournForm.nom.trim()) return;
+    setSavingNewFourn(true);
+    try {
+      await fournisseurs.add({ ...newFournForm });
+      setNewFournForm(null);
+    } catch (e) {
+      alert("Échec de la création du fournisseur : " + (e?.message || e) + "\n\nTu peux réessayer.");
+    } finally {
+      setSavingNewFourn(false);
+    }
+  }
   async function applyAiPreview() {
     if (!aiPreview || aiApplying) return;
     setAiApplying(true);
     try {
-      if (newFourn && aiPreview.formData.fourn) {
-        const existe = fournisseurs.rows.some(f => f.nom.trim().toLowerCase() === aiPreview.formData.fourn.trim().toLowerCase());
-        if (!existe) {
-          await fournisseurs.add({
-            nom: aiPreview.formData.fourn,
-            specialite: "",
-            contact: "",
-            tel: "",
-            adresse: "",
-            note: "Créé automatiquement depuis l'import IA"
-          });
-        }
-      }
       setForm({
         ...EO,
         ...aiPreview.formData
@@ -25461,7 +25797,12 @@ function Commandes({
     const lieu = cmd.lieuLivraison || "La Rochelle";
     const lieuLabel = lieu === "Chantier" ? "Chantier" : "La Rochelle";
     const titre = `Livraison — ${cmd.article} (${lieuLabel})`;
-    const evExist = events.rows.find(e => e.type === "livraison" && (e.title === titre || e.title === `Livraison — ${cmd.article}` || e.title === `Livraison — ${cmd.article} (La Rochelle)` || e.title === `Livraison — ${cmd.article} (Chantier)`));
+    // Recherche prioritaire par commande_id (référence stable) — la comparaison de titre en repli
+    // ne sert que pour les événements créés avant l'ajout de cette colonne ; elle est fragile car le
+    // titre peut être reconstruit différemment selon le moment de l'appel (voir REGLES.md, règle sur
+    // la cohérence des données synchronisées).
+    const evExist = (cmd.id && events.rows.find(e => e.type === "livraison" && String(e.commande_id || "") === String(cmd.id)))
+      || events.rows.find(e => e.type === "livraison" && !e.commande_id && (e.title === titre || e.title === `Livraison — ${cmd.article}` || e.title === `Livraison — ${cmd.article} (La Rochelle)` || e.title === `Livraison — ${cmd.article} (Chantier)`));
     const evData = {
       title: titre,
       date: dateLiv,
@@ -25469,7 +25810,8 @@ function Commandes({
       type: "livraison",
       projet: cmd.projet || "",
       note: `${cmd.fourn}${cmd.ref ? ` · ${cmd.ref}` : ""}${cmd.projet ? ` · ${cmd.projet}` : ""}`,
-      dateFin: ""
+      dateFin: "",
+      commande_id: cmd.id ? String(cmd.id) : ""
     };
     let evRow;
     if (evExist) {
@@ -25536,13 +25878,14 @@ function Commandes({
         cat: l0.cat || form.cat || "",
         lignes: lignesJSON
       };
+      let idCommande = editing;
       if (editing) {
         const original = sheet.rows.find(o => String(o.id) === String(editing));
         if (original?.dateLivraison && !form.dateLivraison && events) {
           // La date confirmée a été retirée (commande repassée en "à confirmer") : l'événement de
           // livraison existant n'a plus lieu d'être — on le retire du calendrier local ET de Google
           // Agenda, sinon l'atelier continuerait de voir une date de livraison qui n'est plus valide.
-          const evLivr = events.rows.find(e => e.type === "livraison" && (e.title || "").includes(original.article || getLignes(original)[0]?.article || "") && toISO(e.date) === toISO(original.dateLivraison));
+          const evLivr = events.rows.find(e => e.type === "livraison" && (String(e.commande_id || "") === String(original.id) || (!e.commande_id && (e.title || "").includes(original.article || getLignes(original)[0]?.article || ""))) && toISO(e.date) === toISO(original.dateLivraison));
           if (evLivr) {
             if (evLivr.gcalEventId) { try { await gasDeleteGCal(evLivr.gcalEventId); } catch (e) { console.warn("Suppression Google Agenda échouée :", e); } }
             await events.remove(evLivr.id);
@@ -25550,16 +25893,24 @@ function Commandes({
         }
         await sheet.update(editing, data);
       } else {
-        await sheet.add({
+        const cree = await sheet.add({
           ...data,
           recue: false,
           factureCompta: false
         });
+        idCommande = cree?.id;
       }
       if (form.dateLivraison) {
+        // IMPORTANT : on utilise ici la même représentation de l'article que celle stockée dans la
+        // ligne (data.article — "N articles — premier article" pour une commande multi-articles),
+        // pas juste le premier article seul. Sinon, le titre généré ici (à la création) ne correspond
+        // plus à celui que toggleRecue régénère plus tard (à partir de la valeur stockée) — la
+        // recherche de l'événement existant échoue alors systématiquement, et un second événement en
+        // double est créé au lieu de mettre à jour le premier.
         await syncEvenementLivraison({
           ...form,
-          article: l0.article
+          id: idCommande,
+          article: data.article
         }, form.dateLivraison);
       }
       if (editing && isBool(form.recue)) {
@@ -26117,29 +26468,20 @@ function Commandes({
       color: "#7A7A7A",
       marginBottom: 8
     }
-  }, "Ce fournisseur n'existe pas encore dans ta base. Veux-tu le créer automatiquement ?"), React.createElement("div", {
+  }, "Ce fournisseur n'existe pas encore dans ta base."), React.createElement("button", {
+    onClick: () => setNewFournForm({ nom: aiPreview.formData.fourn, specialite: "", note: 3, contact: "", delai: "", tel: "", adresse: "" }),
     style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8
+      padding: "6px 12px",
+      borderRadius: 4,
+      border: "1px solid #CC8800",
+      background: "#fff",
+      cursor: "pointer",
+      fontSize: 11,
+      fontFamily: "'DM Sans',sans-serif",
+      color: "#CC8800",
+      fontWeight: 600
     }
-  }, React.createElement("input", {
-    type: "checkbox",
-    checked: newFourn,
-    onChange: e => setNewFourn(e.target.checked),
-    id: "new-fourn-check",
-    style: {
-      accentColor: "#CC8800",
-      cursor: "pointer"
-    }
-  }), React.createElement("label", {
-    htmlFor: "new-fourn-check",
-    style: {
-      fontSize: 12,
-      color: "#1C1C1C",
-      cursor: "pointer"
-    }
-  }, "Créer \"", aiPreview.formData.fourn, "\" dans le module Fournisseurs"))), React.createElement(Bd, {
+  }, "📋 Renseigner et créer \"", aiPreview.formData.fourn, "\"")), React.createElement(Bd, {
     style: {
       marginBottom: 10
     }
@@ -26826,37 +27168,41 @@ function Commandes({
       flexShrink: 0
     }
   }, "Modifier"), React.createElement("button", {
-    onClick: async () => {
+    onClick: () => {
       if (!confirm(`Supprimer "${o.article || getLignes(o)[0]?.article}" de l'historique ?\n\nLes quantités seront retirées du stock.`)) return;
-      const lignes = getLignes(o);
-      for (const l of lignes) {
-        if (!l.article) continue;
-        const sx = stocks.rows.find(x => normRef(x.ref) === normRef(l.article));
-        if (sx) {
-          await stocks.update(sx.id, {
-            ...sx,
-            qty: Math.max(0, Number(sx.qty) - (+l.qty || 0))
-          });
+      runBusyCmd("del-" + o.id, async () => {
+        const lignes = getLignes(o);
+        for (const l of lignes) {
+          if (!l.article) continue;
+          const sx = stocks.rows.find(x => normRef(x.ref) === normRef(l.article));
+          if (sx) {
+            await stocks.update(sx.id, {
+              ...sx,
+              qty: Math.max(0, Number(sx.qty) - (+l.qty || 0))
+            });
+          }
         }
-      }
-      if (o.dateLivraison && events) {
-        const evLivr = events.rows.find(e => e.type === "livraison" && (e.title || "").includes(o.article || getLignes(o)[0]?.article || "") && toISO(e.date) === toISO(o.dateLivraison));
-        if (evLivr) {
-          if (evLivr.gcalEventId) { try { await gasDeleteGCal(evLivr.gcalEventId); } catch (e) { console.warn("Suppression Google Agenda échouée :", e); } }
-          await events.remove(evLivr.id);
+        if (o.dateLivraison && events) {
+          const evLivr = events.rows.find(e => e.type === "livraison" && (e.title || "").includes(o.article || getLignes(o)[0]?.article || "") && toISO(e.date) === toISO(o.dateLivraison));
+          if (evLivr) {
+            if (evLivr.gcalEventId) { try { await gasDeleteGCal(evLivr.gcalEventId); } catch (e) { console.warn("Suppression Google Agenda échouée :", e); } }
+            await events.remove(evLivr.id);
+          }
         }
-      }
-      await sheet.remove(o.id);
+        await sheet.remove(o.id);
+      });
     },
+    disabled: busyCmd === "del-" + o.id,
     style: {
       background: "none",
       border: "none",
-      cursor: "pointer",
+      cursor: busyCmd === "del-" + o.id ? "wait" : "pointer",
       fontSize: 12,
       color: "#CC2222",
-      flexShrink: 0
+      flexShrink: 0,
+      opacity: busyCmd === "del-" + o.id ? 0.5 : 1
     }
-  }, "✕"))), !showAllHisto && historique.length > 5 && React.createElement("div", {
+  }, busyCmd === "del-" + o.id ? "⟳" : "✕"))), !showAllHisto && historique.length > 5 && React.createElement("div", {
     onClick: () => setShowAllHisto(true),
     style: {
       textAlign: "center",
@@ -26878,7 +27224,104 @@ function Commandes({
       borderTop: "0.5px solid #EEEEEE",
       marginTop: 4
     }
-  }, "↑ Réduire"))));
+  }, "↑ Réduire")), newFournForm && React.createElement("div", {
+    style: {
+      position: "fixed",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: "rgba(0,0,0,0.4)",
+      zIndex: 300,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, React.createElement("div", {
+    style: {
+      background: "#fff",
+      borderRadius: 10,
+      padding: 22,
+      width: 380,
+      maxWidth: "90vw",
+      maxHeight: "90vh",
+      overflowY: "auto",
+      boxShadow: "0 8px 32px rgba(0,0,0,0.18)"
+    }
+  }, React.createElement("div", {
+    style: { fontSize: 14, fontWeight: 700, marginBottom: 14, color: "#1C1C1C" }
+  }, "Nouveau fournisseur"),
+  React.createElement(FG, { label: "Nom *" }, React.createElement(Inp, {
+    value: newFournForm.nom,
+    onChange: e => setNewFournForm(f => ({ ...f, nom: e.target.value })),
+    placeholder: "Ex: Nowofol GmbH"
+  })),
+  React.createElement(FG, { label: "Spécialité" }, React.createElement(Inp, {
+    value: newFournForm.specialite,
+    onChange: e => setNewFournForm(f => ({ ...f, specialite: e.target.value })),
+    placeholder: "Ex: Films ETFE"
+  })),
+  React.createElement(FG, { label: "Délai de livraison" }, React.createElement(Inp, {
+    value: newFournForm.delai,
+    onChange: e => setNewFournForm(f => ({ ...f, delai: e.target.value })),
+    placeholder: "Ex: 3-5 jours"
+  })),
+  React.createElement(FG, { label: "Email / contact" }, React.createElement(Inp, {
+    value: newFournForm.contact,
+    onChange: e => setNewFournForm(f => ({ ...f, contact: e.target.value })),
+    placeholder: "info@..."
+  })),
+  React.createElement(FG, { label: "Téléphone" }, React.createElement(Inp, {
+    value: newFournForm.tel,
+    onChange: e => setNewFournForm(f => ({ ...f, tel: e.target.value }))
+  })),
+  React.createElement(FG, { label: "Adresse" }, React.createElement(Inp, {
+    value: newFournForm.adresse,
+    onChange: e => setNewFournForm(f => ({ ...f, adresse: e.target.value })),
+    placeholder: "Optionnel"
+  })),
+  React.createElement(FG, {
+    label: `Évaluation : ${"★".repeat(+newFournForm.note || 0) + "☆".repeat(5 - (+newFournForm.note || 0))}`
+  }, React.createElement("input", {
+    type: "range",
+    min: "1",
+    max: "5",
+    value: newFournForm.note,
+    onChange: e => setNewFournForm(f => ({ ...f, note: e.target.value })),
+    style: { width: "100%", accentColor: "#CC2222" }
+  })),
+  React.createElement("div", {
+    style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }
+  },
+  React.createElement("button", {
+    onClick: () => setNewFournForm(null),
+    disabled: savingNewFourn,
+    style: {
+      padding: "7px 14px",
+      borderRadius: 4,
+      border: "1px solid #DDD",
+      background: "#fff",
+      cursor: "pointer",
+      fontSize: 12,
+      fontFamily: "'DM Sans',sans-serif"
+    }
+  }, "Annuler"),
+  React.createElement("button", {
+    onClick: saveNewFourn,
+    disabled: savingNewFourn || !newFournForm.nom.trim(),
+    style: {
+      padding: "7px 16px",
+      borderRadius: 4,
+      border: "none",
+      background: "#CC2222",
+      cursor: "pointer",
+      fontSize: 12,
+      fontFamily: "'DM Sans',sans-serif",
+      color: "#fff",
+      fontWeight: 700,
+      opacity: savingNewFourn || !newFournForm.nom.trim() ? 0.6 : 1
+    }
+  }, savingNewFourn ? "..." : "Créer le fournisseur"))))));
 }
 const USERS = [{
   pin: "17",
