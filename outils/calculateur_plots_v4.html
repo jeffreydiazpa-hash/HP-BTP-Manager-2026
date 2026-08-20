@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calculateur de plots — High Point Structures</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --hp-red:#CC2222;--hp-dark:#1C1C1C;--hp-gray:#3A3A3A;--hp-mid:#7A7A7A;
+  --hp-light:#F2F0ED;--hp-white:#FFFFFF;--hp-green:#2A7A2A;--hp-border:#DDDDDD;--hp-alt:#F9F9F9;
+}
+body{font-family:'DM Sans',sans-serif;background:var(--hp-light);color:var(--hp-dark);min-height:100vh;font-size:14px}
+
+.hp-header{background:var(--hp-white);border-bottom:1.5px solid var(--hp-red);padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
+.hp-logo{display:flex;align-items:center;gap:10px}
+.hp-logo-mark{background:var(--hp-red);color:white;font-weight:700;font-size:13px;padding:6px 10px;border-radius:4px 12px 4px 12px}
+.hp-logo-text .name{font-weight:700;font-size:15px;color:var(--hp-dark)}
+.hp-logo-text .sub{font-size:10px;color:var(--hp-mid)}
+.hp-header-right{text-align:right;font-size:11px;color:var(--hp-mid)}
+
+.container{max-width:1140px;margin:0 auto;padding:24px 20px}
+.tool-title{font-size:22px;font-weight:700;color:var(--hp-dark);letter-spacing:-0.015em;margin-bottom:4px}
+.tool-ref{font-family:'DM Mono',monospace;font-size:11px;color:var(--hp-red);margin-bottom:18px}
+
+/* RÈGLES */
+.rules-block{background:var(--hp-white);border:0.5px solid var(--hp-border);border-radius:10px;border-left:3px solid var(--hp-red);padding:16px 20px;margin-bottom:20px}
+.rules-block h2{font-size:13px;font-weight:700;color:var(--hp-dark);border-left:3px solid var(--hp-red);padding-left:8px;margin-bottom:12px}
+.rules-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.rule-item{background:var(--hp-alt);border-radius:6px;padding:12px 14px;border:0.5px solid var(--hp-border)}
+.rule-item h3{font-size:11px;font-weight:700;color:var(--hp-red);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px}
+.rule-item p{font-size:12px;color:var(--hp-gray);line-height:1.55}
+.rule-item code{font-family:'DM Mono',monospace;font-size:11px;background:var(--hp-light);padding:1px 5px;border-radius:3px;color:var(--hp-dark)}
+
+/* SÉQUENCE VISUELLE */
+.seq-row{display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap}
+.seq-item{display:flex;align-items:center;gap:5px;background:var(--hp-white);border:0.5px solid var(--hp-border);border-radius:4px;padding:4px 9px;font-size:11px;font-weight:500}
+.seq-dot{width:8px;height:8px;border-radius:2px}
+.seq-arrow{color:var(--hp-mid);font-size:12px}
+
+.grid{display:grid;grid-template-columns:320px 1fr;gap:20px;align-items:start}
+
+.card{background:var(--hp-white);border:0.5px solid var(--hp-border);border-radius:10px;overflow:hidden}
+.card-header{padding:13px 16px;border-bottom:0.5px solid var(--hp-border)}
+.card-header h2{font-size:13px;font-weight:700;color:var(--hp-dark);border-left:3px solid var(--hp-red);padding-left:8px}
+.card-body{padding:16px}
+
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;font-weight:500;color:var(--hp-gray);margin-bottom:5px}
+.field-row{display:flex;align-items:center;gap:6px}
+.field input[type=number]{width:100%;border:1px solid var(--hp-border);border-radius:6px;padding:9px 12px;font-family:'DM Sans',sans-serif;font-size:14px;color:var(--hp-dark);outline:none;transition:border-color .15s;background:var(--hp-white)}
+.field input[type=number]:focus{border-color:var(--hp-red)}
+.unit{font-size:12px;color:var(--hp-mid);white-space:nowrap}
+
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:0.5px solid var(--hp-border);margin-top:4px}
+.toggle-label{font-size:12px;color:var(--hp-gray);font-weight:500}
+.toggle{position:relative;width:40px;height:22px;cursor:pointer}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;inset:0;background:#DDD;border-radius:22px;transition:.2s}
+.toggle-slider:before{content:'';position:absolute;width:16px;height:16px;left:3px;top:3px;background:white;border-radius:50%;transition:.2s}
+.toggle input:checked+.toggle-slider{background:var(--hp-red)}
+.toggle input:checked+.toggle-slider:before{transform:translateX(18px)}
+
+.btn-primary{background:var(--hp-red);color:white;border:none;border-radius:6px;padding:11px 20px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer;width:100%;transition:background .15s,transform .1s}
+.btn-primary:hover{background:#aa1c1c}
+.btn-primary:active{transform:scale(.98)}
+
+.results-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:280px;color:var(--hp-mid);gap:10px;font-size:13px}
+
+.results-header{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:0.5px solid var(--hp-border)}
+.results-header h2{font-size:13px;font-weight:700;color:var(--hp-dark);border-left:3px solid var(--hp-red);padding-left:8px}
+.badge{background:var(--hp-red);color:white;font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px;font-family:'DM Mono',monospace}
+.badge-ok{background:var(--hp-green)}
+
+.sol-list{padding:12px}
+.sol-card{border:0.5px solid var(--hp-border);border-radius:8px;margin-bottom:10px;overflow:hidden;transition:border-color .15s,box-shadow .15s}
+.sol-card:hover{border-color:#BBB;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.sol-card-header{display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--hp-alt);border-bottom:0.5px solid var(--hp-border)}
+.sol-num{font-family:'DM Mono',monospace;font-size:10px;color:var(--hp-mid);background:var(--hp-white);border:0.5px solid var(--hp-border);border-radius:3px;padding:2px 7px}
+.sol-height{font-family:'DM Mono',monospace;font-size:14px;font-weight:700;color:var(--hp-red)}
+.sol-diff{font-size:11px;color:var(--hp-mid);font-family:'DM Mono',monospace}
+.sol-exact{color:var(--hp-green);font-weight:600}
+.sol-pieces{margin-left:auto;font-size:11px;color:var(--hp-mid)}
+
+.sol-body{display:grid;grid-template-columns:1fr 210px}
+.sol-draw{padding:14px;border-right:0.5px solid var(--hp-border)}
+.sol-detail{padding:14px;display:flex;flex-direction:column}
+.detail-label{font-size:10px;font-weight:700;color:var(--hp-mid);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px}
+.layer-item{display:flex;align-items:center;gap:7px;margin-bottom:5px;font-size:12px;color:var(--hp-dark)}
+.layer-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+.layer-ref{font-family:'DM Mono',monospace;font-size:10px;color:var(--hp-mid);display:block}
+.layer-sep{font-size:10px;color:var(--hp-mid);padding:2px 0 4px 15px;font-style:italic}
+
+.btn-use{background:var(--hp-green);color:white;border:none;border-radius:6px;padding:8px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;cursor:pointer;width:100%;margin-top:auto;padding-top:10px;transition:background .15s}
+.btn-use:hover{background:#1e6020}
+
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100;opacity:0;pointer-events:none;transition:opacity .2s}
+.modal-overlay.show{opacity:1;pointer-events:all}
+.modal{background:var(--hp-white);border-radius:10px;padding:24px;width:400px;max-width:90vw;border-top:3px solid var(--hp-red)}
+.modal h3{font-size:15px;font-weight:700;color:var(--hp-dark);margin-bottom:16px;border-left:3px solid var(--hp-red);padding-left:8px}
+.modal-field{margin-bottom:12px}
+.modal-field label{display:block;font-size:11px;font-weight:600;color:var(--hp-gray);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em}
+.modal-field input,.modal-field textarea{width:100%;border:1px solid var(--hp-border);border-radius:6px;padding:9px 12px;font-family:'DM Sans',sans-serif;font-size:13px;outline:none;transition:border-color .15s;resize:vertical}
+.modal-field input:focus,.modal-field textarea:focus{border-color:var(--hp-red)}
+.modal-btns{display:flex;gap:8px;margin-top:16px}
+.btn-cancel{background:transparent;color:var(--hp-mid);border:1px solid var(--hp-border);border-radius:6px;padding:9px 14px;font-family:'DM Sans',sans-serif;font-size:13px;cursor:pointer;flex:1}
+.btn-cancel:hover{border-color:#BBB;color:var(--hp-dark)}
+.btn-confirm{background:var(--hp-green);color:white;border:none;border-radius:6px;padding:9px 14px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;flex:2}
+
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--hp-dark);color:white;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;padding:11px 20px;border-radius:6px;transition:transform .3s;z-index:200;pointer-events:none;border-left:3px solid var(--hp-red)}
+.toast.show{transform:translateX(-50%) translateY(0)}
+.toast.success{border-left-color:var(--hp-green)}
+
+.sync-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.sync-badge{font-family:'DM Mono',monospace;font-size:10px;padding:3px 9px;border-radius:4px;border:1px solid}
+.sync-badge.ok{color:var(--hp-green);border-color:rgba(42,122,42,.3);background:rgba(42,122,42,.07)}
+.sync-badge.loading{color:var(--hp-red);border-color:rgba(204,34,34,.3);background:rgba(204,34,34,.07)}
+.sync-badge.error{color:#CC5500;border-color:rgba(204,85,0,.3);background:rgba(204,85,0,.07)}
+
+.stock-row{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:0.5px solid var(--hp-border);font-size:12px}
+.stock-row:last-child{border-bottom:none}
+.stock-name{color:var(--hp-gray)}
+.stock-qty{font-family:'DM Mono',monospace;font-weight:600;color:var(--hp-dark)}
+.stock-qty.low{color:#CC5500}
+.stock-qty.zero{color:var(--hp-red)}
+</style>
+</head>
+<body>
+
+<div class="hp-header">
+  <div class="hp-logo">
+    <div class="hp-logo-mark">High</div>
+    <div class="hp-logo-text">
+      <div class="name">Point</div>
+      <div class="sub">Architectures Textiles</div>
+    </div>
+  </div>
+  <div class="hp-header-right">
+    www.highpoint-structures.com<br>
+    <a href="mailto:info@highpoint-structures.com" style="color:var(--hp-mid);text-decoration:none">info@highpoint-structures.com</a>
+  </div>
+</div>
+
+<div class="container">
+  <div class="tool-title">Calculateur de plots de calage</div>
+  <div class="tool-ref">Réf. OUTIL-PLOTS-2026 · High Point Structures</div>
+
+  <!-- BLOC RÈGLES -->
+  <div class="rules-block">
+    <h2>Règles de disposition et contraintes</h2>
+    <div class="rules-grid">
+      <div class="rule-item">
+        <h3>Séquence de pose</h3>
+        <p>De bas en haut : <strong>plaques CP</strong> (base 40×40 cm, 30 mm/unité) → <strong>plot réglable</strong> → <strong>réhausses</strong> → <strong>gomme acoustique 3 mm</strong>. L'ordre est impératif.</p>
+        <div class="seq-row">
+          <div class="seq-item"><div class="seq-dot" style="background:#C8A870"></div>CP</div>
+          <span class="seq-arrow">→</span>
+          <div class="seq-item"><div class="seq-dot" style="background:#4A90D9"></div>Plot</div>
+          <span class="seq-arrow">→</span>
+          <div class="seq-item"><div class="seq-dot" style="background:#7B5EA7"></div>Réhausse</div>
+          <span class="seq-arrow">→</span>
+          <div class="seq-item"><div class="seq-dot" style="background:#2A7A2A"></div>Gomme</div>
+        </div>
+      </div>
+      <div class="rule-item">
+        <h3>Limites et contraintes</h3>
+        <p>Hauteur totale maximale : <code>1 000 mm</code>.<br>
+        Réhausse F30 : empilable jusqu'à <code>9 unités</code> maximum.<br>
+        Réhausse F100 : sans limite (contrainte hauteur max).<br>
+        F30 et F100 <strong>peuvent être combinées</strong> sur un même plot. Au moins <code>1 plaque CP</code> obligatoire en base.</p>
+      </div>
+      <div class="rule-item">
+        <h3>Plots et réglage</h3>
+        <p>6 références de plots couvrant <code>23 à 170 mm</code>. Chaque plot est réglable dans sa plage. Le calculateur propose la valeur médiane en priorité mais affiche aussi les valeurs min/max pour optimiser l'ajustement sur site. <strong>1 plot par calage</strong>, <strong>1 gomme acoustique</strong> toujours en sommet.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- PANNEAU GAUCHE -->
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><h2>Paramètres de calcul</h2></div>
+        <div class="card-body">
+          <div class="sync-row">
+            <span class="sync-badge loading" id="sync-badge">⟳ Chargement</span>
+            <button onclick="loadInventory()" style="background:none;border:none;font-size:11px;color:var(--hp-red);cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:600">⟳ Sync stock</button>
+          </div>
+          <div class="field">
+            <label>Hauteur cible à atteindre</label>
+            <div class="field-row">
+              <input type="number" id="target" min="1" max="1000" step="1" placeholder="475">
+              <span class="unit">mm</span>
+            </div>
+          </div>
+          <div class="field">
+            <label>Tolérance ±</label>
+            <div class="field-row">
+              <input type="number" id="tolerance" min="0" max="50" step="1" value="5">
+              <span class="unit">mm</span>
+            </div>
+          </div>
+
+          <div style="margin-top:14px">
+            <button class="btn-primary" onclick="calculate()">▶ Calculer les solutions</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>Stock disponible</h2></div>
+        <div class="card-body" id="stock-panel">
+          <div style="text-align:center;color:var(--hp-mid);font-size:12px;padding:16px">Chargement...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RÉSULTATS -->
+    <div class="card">
+      <div class="results-header">
+        <h2>Solutions</h2>
+        <span id="results-count"></span>
+      </div>
+      <div id="results">
+        <div class="results-placeholder">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" opacity=".3">
+            <rect x="5" y="32" width="30" height="5" rx="1" fill="#C8A870"/>
+            <rect x="10" y="20" width="20" height="10" rx="1" fill="#4A90D9"/>
+            <rect x="14" y="12" width="12" height="7" rx="1" fill="#7B5EA7"/>
+            <rect x="14" y="9" width="12" height="3" rx="1" fill="#2A7A2A"/>
+          </svg>
+          <div>Entrez une hauteur et lancez le calcul</div>
+          <div style="font-size:11px;color:var(--hp-mid)">Hauteur max 1 000 mm · Gomme 3 mm toujours incluse</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h3>Valider l'utilisation</h3>
+    <div class="modal-field"><label>Référence chantier</label><input type="text" id="m-ref" placeholder="Ex: HP-2026-042"></div>
+    <div class="modal-field"><label>Opérateur</label><input type="text" id="m-op" placeholder="Votre nom"></div>
+    <div class="modal-field"><label>Notes</label><textarea id="m-notes" rows="2" placeholder="Optionnel..."></textarea></div>
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeModal()">Annuler</button>
+      <button class="btn-confirm" onclick="confirmUse()">✔ Valider et décompter</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbzG1kEn3OiQt53ZNS4OVApQsPrek8tZ3o7WIXRAUiu7s76iq8HDnid0B43ylnBZ9R7D/exec';
+const CP_THICK = 30; // fixe
+
+const PLOTS = [
+  {id:'SOL-011000',label:'Plot 23–35mm', ref:'SOL-011000',hMin:23,hMax:35, hMid:29},
+  {id:'SOL-008771',label:'Plot 35–50mm', ref:'SOL-008771',hMin:35,hMax:50, hMid:42},
+  {id:'SOL-008773',label:'Plot 50–80mm', ref:'SOL-008773',hMin:50,hMax:80, hMid:65},
+  {id:'SOL-008392',label:'Plot 80–110mm',ref:'SOL-008392',hMin:80,hMax:110,hMid:95},
+  {id:'SOL-008393',label:'Plot 110–140mm',ref:'SOL-008393',hMin:110,hMax:140,hMid:125},
+  {id:'SOL-008394',label:'Plot 140–170mm',ref:'SOL-008394',hMin:140,hMax:170,hMid:155},
+];
+const GOMME = {id:'SOL-008733',label:'Gomme acoustique 3mm',ref:'SOL-008733',h:3};
+const F30   = {id:'SOL-008399',label:'Réhausse F30',ref:'SOL-008399',h:30,maxStack:9};
+const F100  = {id:'SOL-003991',label:'Réhausse F100',ref:'SOL-003991',h:100};
+const CP    = {id:'CP-40X40',label:'Plaque CP 40×40',ref:'CP-40X40'};
+
+let stock = {
+  'SOL-011000':70,'SOL-008771':70,'SOL-008773':70,'SOL-008392':70,
+  'SOL-008393':100,'SOL-008394':400,'SOL-008733':600,'SOL-008399':700,
+  'SOL-003991':500,'CP-40X40':500
+};
+let pendingSolution = null;
+
+// Couleurs et largeurs relatives
+// CP = 100% largeur, Plot = 50%, Réhausses+Gomme = 25%
+const LAYER_CFG = {
+  cp:    {fill:'#C8A870',stroke:'#A08050',widthPct:1.0},
+  plot:  {fill:'#4A90D9',stroke:'#2A60A9',widthPct:0.5},
+  f30:   {fill:'#7B5EA7',stroke:'#5B3E87',widthPct:0.25},
+  f100:  {fill:'#3E6EA7',stroke:'#1E4E87',widthPct:0.25},
+  gomme: {fill:'#2A7A2A',stroke:'#1A5A1A',widthPct:0.25},
+};
+
+async function loadInventory(){
+  setSyncBadge('loading','⟳ Chargement...');
+  try{
+    const res=await fetch(GAS_URL);
+    const data=await res.json();
+    if(data.status==='ok'&&data.stock) stock={...stock,...data.stock};
+    setSyncBadge('ok','✔ Synchronisé');
+  }catch(e){setSyncBadge('error','⚠ Hors ligne')}
+  renderStock();
+}
+
+function setSyncBadge(s,t){const b=document.getElementById('sync-badge');b.className='sync-badge '+s;b.textContent=t}
+
+function renderStock(){
+  const items=[
+    ...PLOTS.map(p=>({label:p.label,id:p.id})),
+    {label:F30.label,id:F30.id},{label:F100.label,id:F100.id},
+    {label:GOMME.label,id:GOMME.id},{label:'Plaque CP 40×40',id:CP.id},
+  ];
+  document.getElementById('stock-panel').innerHTML=items.map(it=>{
+    const q=stock[it.id]??'?';
+    const cls=q===0?'zero':q<=5?'low':'';
+    return `<div class="stock-row"><span class="stock-name">${it.label}</span><span class="stock-qty ${cls}">×${q}</span></div>`;
+  }).join('');
+}
+
+function calculate(){
+  const target=parseInt(document.getElementById('target').value);
+  const tolerance=parseInt(document.getElementById('tolerance').value)||0;
+
+  const resultsEl=document.getElementById('results');
+  const countEl=document.getElementById('results-count');
+
+  if(!target||target<1){showToast('Entrez une hauteur cible valide');return}
+  if(target>1000){showToast('Hauteur maximale : 1 000 mm');return}
+
+  const minH=target-tolerance, maxH=Math.min(target+tolerance,1000);
+  const GOMME_H=3;
+  const solutions=[];
+
+  PLOTS.forEach(plot=>{
+    if((stock[plot.id]||0)<1) return;
+    if((stock[GOMME.id]||0)<1) return;
+
+    [{h:plot.hMin,lbl:`${plot.hMin}mm (min)`},{h:plot.hMid,lbl:`${plot.hMid}mm (médiane)`},{h:plot.hMax,lbl:`${plot.hMax}mm (max)`}]
+    .forEach(ph=>{
+      const maxCP=Math.min(Math.floor((maxH-ph.h-GOMME_H)/CP_THICK),(stock[CP.id]||0));
+      for(let nCP=1;nCP<=maxCP;nCP++){
+        const baseH=nCP*CP_THICK+ph.h+GOMME_H;
+        if(baseH>maxH) break;
+        const remMin=minH-baseH, remMax=maxH-baseH;
+
+        // Cas 0 : sans réhausse
+        if(baseH>=minH&&baseH<=maxH)
+          solutions.push(makeSol(nCP,plot,ph,GOMME_H,[]));
+
+        if(remMin>0){
+          // F30 seulement
+          const mxF30=Math.min(F30.maxStack,Math.floor(remMax/F30.h),stock[F30.id]||0);
+          for(let n=1;n<=mxF30;n++){
+            const t=baseH+n*F30.h;
+            if(t>=minH&&t<=maxH) solutions.push(makeSol(nCP,plot,ph,GOMME_H,[{...F30,count:n}]));
+          }
+          // F100 seulement
+          const mxF100=Math.min(Math.floor(remMax/F100.h),stock[F100.id]||0);
+          for(let n=1;n<=mxF100;n++){
+            const t=baseH+n*F100.h;
+            if(t>maxH) break;
+            if(t>=minH) solutions.push(makeSol(nCP,plot,ph,GOMME_H,[{...F100,count:n}]));
+          }
+          // F100 + F30 combinées (toujours autorisé)
+          for(let n100=1;n100<=Math.min(Math.floor(remMax/F100.h),stock[F100.id]||0);n100++){
+            const rem2=remMax-n100*F100.h;
+            if(rem2<0) break;
+            for(let n30=1;n30<=Math.min(F30.maxStack,Math.floor(rem2/F30.h),stock[F30.id]||0);n30++){
+              const t=baseH+n100*F100.h+n30*F30.h;
+              if(t>maxH) break;
+              if(t>=minH) solutions.push(makeSol(nCP,plot,ph,GOMME_H,[{...F100,count:n100},{...F30,count:n30}]));
+            }
+          }
+
+        }
+      }
+    });
+  });
+
+  // Dédoublonnage
+  const seen=new Set();
+  const unique=solutions.filter(s=>{
+    const k=`${s.plot.id}:${s.plotH}:${s.nCP}:${s.rehausses.map(r=>r.id+r.count).join(',')}`;
+    if(seen.has(k)) return false; seen.add(k); return true;
+  });
+
+  // Tri
+  unique.sort((a,b)=>{
+    const da=Math.abs(a.total-target),db=Math.abs(b.total-target);
+    if(da!==db) return da-db;
+    const am=a.plotH===a.plot.hMid?0:1,bm=b.plotH===b.plot.hMid?0:1;
+    if(am!==bm) return am-bm;
+    return a.pieces-b.pieces;
+  });
+
+  const top=unique.slice(0,12);
+
+  if(!top.length){
+    countEl.innerHTML='';
+    resultsEl.innerHTML=`<div class="results-placeholder">
+      <div style="font-size:32px;opacity:.3">⊘</div>
+      <div>Aucune solution pour ${target} mm ± ${tolerance} mm</div>
+      <div style="font-size:11px;color:var(--hp-mid)">Vérifiez le stock ou élargissez la tolérance</div>
+    </div>`;
+    return;
+  }
+
+  countEl.innerHTML=`<span class="badge badge-ok">${top.length} solution${top.length>1?'s':''}</span>`;
+  resultsEl.innerHTML=`<div class="sol-list">${top.map((s,i)=>renderSol(s,i,target)).join('')}</div>`;
+}
+
+function makeSol(nCP,plot,ph,gommeH,rehausses){
+  const rehTotal=rehausses.reduce((s,r)=>s+r.h*r.count,0);
+  const total=nCP*CP_THICK+ph.h+rehTotal+gommeH;
+  return {plot,plotH:ph.h,plotLabel:ph.lbl,nCP,rehausses,gommeH,total,
+    pieces:nCP+1+rehausses.reduce((s,r)=>s+r.count,0)+1};
+}
+
+function renderSol(sol,idx,target){
+  const diff=sol.total-target;
+  const diffStr=diff===0?'= exact':(diff>0?`+${diff}`:`${diff}`)+' mm';
+  const isExact=diff===0;
+
+  // Couches bas → haut (pour le SVG)
+  const layers=[];
+  for(let i=0;i<sol.nCP;i++) layers.push({type:'cp',h:CP_THICK,label:`Plaque CP 40×40 — ${CP_THICK}mm`,ref:CP.ref});
+  layers.push({type:'plot',h:sol.plotH,label:`${sol.plot.label} — ${sol.plotLabel}`,ref:sol.plot.ref});
+  sol.rehausses.forEach(r=>{
+    for(let i=0;i<r.count;i++) layers.push({type:r.id===F30.id?'f30':'f100',h:r.h,label:`${r.label} — ${r.h}mm`,ref:r.ref});
+  });
+  layers.push({type:'gomme',h:sol.gommeH,label:`Gomme acoustique — ${sol.gommeH}mm`,ref:GOMME.ref});
+
+  // SVG : même unité de scale pour toutes les couches
+  const W=260,DH=210,MB=14,MT=10;
+  const totalHmm=layers.reduce((s,l)=>s+l.h,0);
+  const avail=DH-MB-MT;
+  const scale=Math.min(avail/totalHmm,3.5);
+  const totalPx=Math.round(totalHmm*scale);
+  const startY=DH-MB-totalPx;
+  const PW_MAX=140; // largeur max = CP
+
+  let svg='',y=startY+totalPx;
+  layers.forEach(layer=>{
+    const cfg=LAYER_CFG[layer.type]||LAYER_CFG.cp;
+    const lh=Math.max(Math.round(layer.h*scale),3);
+    const pw=Math.round(PW_MAX*cfg.widthPct);
+    const rx=(PW_MAX-pw)/2+20; // centré dans la zone, décalé de 20 pour laisser place à la cote
+    y-=lh;
+    svg+=`
+      <rect x="${rx}" y="${y}" width="${pw}" height="${lh}"
+        fill="${cfg.fill}" stroke="${cfg.stroke}" stroke-width="0.5" rx="1"/>
+      <rect x="${rx}" y="${y}" width="${pw}" height="${Math.min(2,lh-1)}"
+        fill="rgba(255,255,255,.25)" rx="1"/>`;
+    if(lh>=13){
+      svg+=`<text x="${rx+pw/2}" y="${y+lh/2}" font-family="DM Sans,sans-serif" font-size="8.5"
+        fill="rgba(255,255,255,.95)" text-anchor="middle" dominant-baseline="central" font-weight="500">${layer.h}mm</text>`;
+    } else if(lh>=4){
+      svg+=`<text x="${rx+pw+4}" y="${y+lh/2}" font-family="DM Mono,monospace" font-size="8"
+        fill="var(--hp-mid)" dominant-baseline="central">${layer.h}mm</text>`;
+    }
+  });
+
+  // Sol
+  svg+=`<rect x="16" y="${startY+totalPx+1}" width="${PW_MAX+8}" height="3" fill="var(--hp-border)" rx="1"/>`;
+
+  // Cote totale
+  const ax=PW_MAX+40;
+  svg+=`
+    <line x1="${ax}" y1="${startY+totalPx}" x2="${ax}" y2="${startY}"
+      stroke="var(--hp-red)" stroke-width="1.2"
+      marker-start="url(#ad${idx})" marker-end="url(#au${idx})"/>
+    <text x="${ax+6}" y="${startY+totalPx/2}" font-family="DM Mono,monospace" font-size="10"
+      fill="var(--hp-red)" dominant-baseline="central" font-weight="600">${sol.total}</text>`;
+
+  // Liste haut → bas (inverse du dessin)
+  const layersTopDown=[...layers].reverse();
+  const listRows=layersTopDown.map(l=>{
+    const cfg=LAYER_CFG[l.type]||LAYER_CFG.cp;
+    return `<div class="layer-item">
+      <div class="layer-dot" style="background:${cfg.fill};border:1px solid ${cfg.stroke}"></div>
+      <div>
+        <span>${l.label}</span>
+        <span class="layer-ref">${l.ref}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  const solData=encodeURIComponent(JSON.stringify(sol));
+  return `<div class="sol-card">
+    <div class="sol-card-header">
+      <span class="sol-num">#${idx+1}</span>
+      <span class="sol-height">${sol.total} mm</span>
+      <span class="sol-diff ${isExact?'sol-exact':''}">(${diffStr})</span>
+      <span class="sol-pieces">${sol.pieces} éléments</span>
+    </div>
+    <div class="sol-body">
+      <div class="sol-draw">
+        <svg width="100%" viewBox="0 0 ${W} ${DH}" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="au${idx}" viewBox="0 0 10 10" refX="5" refY="2" markerWidth="4" markerHeight="4" orient="auto">
+              <path d="M1 7L5 2L9 7" fill="none" stroke="var(--hp-red)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+            <marker id="ad${idx}" viewBox="0 0 10 10" refX="5" refY="8" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+              <path d="M1 3L5 8L9 3" fill="none" stroke="var(--hp-red)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          ${svg}
+        </svg>
+      </div>
+      <div class="sol-detail">
+        <div class="detail-label">Composition (haut → bas)</div>
+        ${listRows}
+        <button class="btn-use" onclick="openModal('${solData}')">✔ Valider cette solution</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function openModal(d){pendingSolution=JSON.parse(decodeURIComponent(d));document.getElementById('modal').classList.add('show')}
+function closeModal(){document.getElementById('modal').classList.remove('show');pendingSolution=null}
+
+async function confirmUse(){
+  if(!pendingSolution) return;
+  const ref=document.getElementById('m-ref').value.trim();
+  const op=document.getElementById('m-op').value.trim();
+  const notes=document.getElementById('m-notes').value.trim();
+  const pieces=[];
+  if(pendingSolution.nCP>0) pieces.push({id:CP.id,label:CP.label,qty_used:pendingSolution.nCP});
+  pieces.push({id:pendingSolution.plot.id,label:pendingSolution.plot.label,qty_used:1});
+  pendingSolution.rehausses.forEach(r=>pieces.push({id:r.id,label:r.label,qty_used:r.count}));
+  pieces.push({id:GOMME.id,label:GOMME.label,qty_used:1});
+  const payload={action:'use_calage',ref,op,notes,
+    h_cible:parseInt(document.getElementById('target').value),
+    h_reelle:pendingSolution.total,pieces};
+  closeModal();
+  setSyncBadge('loading','⟳ Envoi...');
+  try{
+    await fetch(GAS_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    showToast('Calage enregistré — stock mis à jour',true);
+    setTimeout(loadInventory,1200);
+  }catch(e){setSyncBadge('error','⚠ Erreur');showToast('Erreur lors de l\'envoi')}
+}
+
+function showToast(msg,success){
+  const t=document.getElementById('toast');
+  t.textContent=msg;
+  t.className='toast'+(success?' success':'')+' show';
+  setTimeout(()=>t.className='toast',3000);
+}
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&document.activeElement.id==='target') calculate();
+  if(e.key==='Escape') closeModal();
+});
+
+loadInventory();
+</script>
+</body>
+</html>
