@@ -770,7 +770,7 @@ function useBusyAction() {
   return [busyKey, runBusy];
 }
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.56";
+const VERSION = "v4.7.59";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -9961,13 +9961,17 @@ function PhaseItem({
     type: "number",
     value: editForm.nb_unites,
     onChange: e => ef("nb_unites", +e.target.value || 10),
+    disabled: editForm.type_unite === "demarrage_finition",
     min: "1",
     max: "100"
   })), React.createElement(FG, {
     label: "Type"
   }, React.createElement("select", {
     value: editForm.type_unite,
-    onChange: e => ef("type_unite", e.target.value),
+    onChange: e => {
+      ef("type_unite", e.target.value);
+      if (e.target.value === "demarrage_finition") ef("nb_unites", 2);
+    },
     style: {
       width: "100%",
       padding: "7px 10px",
@@ -9980,7 +9984,9 @@ function PhaseItem({
     value: "num"
   }, "Numérique"), React.createElement("option", {
     value: "alpha"
-  }, "Alphabétique")))), React.createElement("div", {
+  }, "Alphabétique"), React.createElement("option", {
+    value: "demarrage_finition"
+  }, "🔖 Démarrage / Finalisation (mesure le temps de travail)")))), React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
@@ -11389,6 +11395,100 @@ function MissionDetailPanel({
     const aFinalisation = lignesPh.some(l => normOpLocal(l.operation) === "finalisation");
     return aDemarrage && aFinalisation ? "bornes" : "jour";
   }
+  // Détail enrichi pour l'onglet Heures : dates/heures réelles (déduites des coches démarrage/
+  // finalisation quand la méthode est "bornes"), et qui a réalisé le travail (noms extraits de
+  // l'historique des coches, toutes personnes ayant coché au moins une case de la phase).
+  function detailHeures(e) {
+    let lignesPh = lignesFab.filter(l => String(l.etape_id || "") === String(e.id));
+    if (!lignesPh.length) {
+      const note = String(e.note || "");
+      if (note.startsWith("fab:")) {
+        const [fam, ph] = note.slice(4).split("|||");
+        lignesPh = lignesFab.filter(l => l.famille === fam && l.phase === ph);
+      }
+    }
+    if (!lignesPh.length) return { dateDebutReelle: null, dateFinReelle: null, personnes: [] };
+    const parseHist = l => { try { return JSON.parse(l.historique_coches || "[]"); } catch (err) { return []; } };
+    const toutesLesCoches = lignesPh.flatMap(parseHist);
+    const personnes = [...new Set(toutesLesCoches.map(h => h.who).filter(Boolean))];
+    const methode = methodeHeures(e);
+    let dateDebutReelle = null, dateFinReelle = null;
+    if (methode === "bornes") {
+      const ligneUnite = lignesPh.find(l => l.type_unite === "demarrage_finition");
+      const coches0 = ligneUnite ? parseHist(ligneUnite).filter(h => h.idx === 0) : parseHist(lignesPh.find(l => normOpLocal(l.operation) === "demarrage") || {});
+      const coches1 = ligneUnite ? parseHist(ligneUnite).filter(h => h.idx === 1) : parseHist(lignesPh.find(l => normOpLocal(l.operation) === "finalisation") || {});
+      const whensD = coches0.map(h => h.when).filter(Boolean).sort();
+      const whensF = coches1.map(h => h.when).filter(Boolean).sort();
+      dateDebutReelle = whensD[0] || null;
+      dateFinReelle = whensF[whensF.length - 1] || null;
+    } else if (toutesLesCoches.length) {
+      const whens = toutesLesCoches.map(h => h.when).filter(Boolean).sort();
+      dateDebutReelle = whens[0] || null;
+      dateFinReelle = whens[whens.length - 1] || null;
+    }
+    return { dateDebutReelle, dateFinReelle, personnes };
+  }
+  function genRapportMissionHeures() {
+    const etapesTriees = etapesAvecHeuresReelles.slice().sort((a, b) => {
+      const na = a.ordre !== undefined && a.ordre !== "" ? Number(a.ordre) : Infinity;
+      const nb = b.ordre !== undefined && b.ordre !== "" ? Number(b.ordre) : Infinity;
+      return na - nb;
+    });
+    let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      @page{size:A4;margin:12mm 14mm;}
+      *{box-sizing:border-box;margin:0;padding:0;}
+      body{font-family:'DM Sans',Arial,sans-serif;font-size:9pt;color:#1C1C1C;background:#F2F0ED;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+      .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding:10px 14px;background:#fff;border-radius:8px;border-bottom:3px solid #CC2222;}
+      .hdr img{height:46px;}
+      .t1{font-size:14pt;font-weight:800;color:#1C1C1C;}
+      .t2{font-size:7.5pt;color:#7A7A7A;margin-top:2px;}
+      h2{font-size:11pt;font-weight:800;border-left:3px solid #CC2222;padding-left:8px;margin:14px 0 8px;color:#1C1C1C;}
+      table{border-collapse:collapse;width:100%;font-size:8.5pt;margin-bottom:10px;background:#fff;border-radius:8px;overflow:hidden;border:0.5px solid #EEEEEE;}
+      th{background:#F2F0ED;color:#1C1C1C;padding:6px 10px;text-align:left;font-weight:700;}
+      td{padding:6px 10px;border-bottom:0.5px solid #EEEEEE;}
+      tr:last-child td{border-bottom:none;}
+      .total-row td{font-weight:800;background:#F2F0ED!important;border-top:1px solid #DDD;}
+      .kpis{display:flex;gap:0;margin-bottom:12px;background:#fff;border-radius:8px;overflow:hidden;border:0.5px solid #EEEEEE;}
+      .kpi{flex:1;padding:9px 14px;border-right:1px solid #EEEEEE;}
+      .kpi:last-child{border-right:none;}
+      .kpi-val{font-size:18pt;font-weight:800;line-height:1;}
+      .kpi-lbl{font-size:7pt;color:#7A7A7A;margin-top:3px;}
+      .meth{font-size:7pt;font-weight:700;padding:1px 6px;border-radius:4px;}
+      .meth-bornes{background:#EBF3FF;color:#1A5DAB;}
+      .meth-jour{background:#FFF8EC;color:#CC8800;}
+      .footer{font-size:6.5pt;color:#AAAAAA;margin-top:10px;text-align:right;border-top:0.5px solid #DDDDDD;padding-top:6px;}
+    </style></head><body>
+    <div class="hdr"><img src="${LOGO_B64}"/><div style="flex:1;margin-left:12px;">
+      <div class="t1">Suivi des heures — ${m.description || "Mission"}</div>
+      <div class="t2">${m.projet ? m.projet + " · " : ""}Généré le ${new Date().toLocaleDateString("fr-FR", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</div>
+    </div></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-val" style="color:#2A7A2A;">${Math.round(totalHeuresEtapes * 10) / 10}h</div><div class="kpi-lbl">Heures réelles totales</div></div>
+      <div class="kpi"><div class="kpi-val" style="color:#1A5DAB;">${etapesAvecHeuresReelles.length}</div><div class="kpi-lbl">Étapes chiffrées</div></div>
+      <div class="kpi"><div class="kpi-val" style="color:#3A3A3A;">${etapes_m.length}</div><div class="kpi-lbl">Étapes au total</div></div>
+    </div>
+    <h2>Détail par étape (ordre du Suivi montage)</h2>
+    <table><thead><tr><th>Étape</th><th>Dates</th><th>Méthode</th><th>Qui</th><th style="text-align:right;">Personnes</th><th style="text-align:right;">Heures</th></tr></thead><tbody>`;
+    for (const e of etapesTriees) {
+      const detail = detailHeures(e);
+      const methode = methodeHeures(e);
+      const dates = detail.dateDebutReelle ? `${detail.dateDebutReelle}${detail.dateFinReelle && detail.dateFinReelle !== detail.dateDebutReelle ? " → " + detail.dateFinReelle : ""}` : (e.dateDebut || e.dateFin ? `${e.dateDebut || "?"} → ${e.dateFin || "?"}` : "—");
+      html += `<tr><td>${e.titre}</td><td style="font-size:7.5pt;color:#7A7A7A;white-space:nowrap;">${dates}</td><td>${methode ? `<span class="meth meth-${methode}">${methode === "bornes" ? "Démarr./Final." : "Par jour"}</span>` : "—"}</td><td style="font-size:7.5pt;color:#7A7A7A;">${detail.personnes.length ? detail.personnes.join(", ") : "—"}</td><td style="text-align:right;">${e.nbPersonnes || "—"}</td><td style="text-align:right;font-weight:700;color:#2A7A2A;">${Math.round(Number(e.heures) * 10) / 10}h</td></tr>`;
+    }
+    html += `<tr class="total-row"><td colspan="5">TOTAL</td><td style="text-align:right;">${Math.round(totalHeuresEtapes * 10) / 10}h</td></tr></tbody></table>
+    <div class="footer">High Point Manager v${VERSION} — High Point Structures</div></body></html>`;
+    const w = window.open("", "_blank", "width=900,height=700");
+    if (!w) {
+      alert("Autorise les popups.");
+      return;
+    }
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => {
+      w.focus();
+      w.print();
+    }, 600);
+  }
   // Nettoyage rétroactif (correctif du bug déjà signalé) : une étape créée automatiquement depuis une
   // phase du Suivi (note commençant par "fab:") mais dont AUCUNE ligne actuelle du Suivi ne pointe plus
   // vers elle (ni par etape_id, ni par correspondance famille/phase) est orpheline — la phase d'origine
@@ -11980,7 +12080,22 @@ function MissionDetailPanel({
       color: "#7A7A7A",
       marginBottom: 10
     }
-  }, utiliserHeuresReelles ? "Heures réelles mesurées sur les étapes liées au Suivi (démarrage/finalisation ou calcul par jour), complétées à la main pour les étapes sans phase liée." : "Estimation : 7h/jour d'activité, partagées entre missions si coches simultanées."), React.createElement("div", {
+  }, utiliserHeuresReelles ? "Heures réelles mesurées sur les étapes liées au Suivi (démarrage/finalisation ou calcul par jour), complétées à la main pour les étapes sans phase liée." : "Estimation : 7h/jour d'activité, partagées entre missions si coches simultanées."), utiliserHeuresReelles && React.createElement("div", {
+    style: { display: "flex", justifyContent: "flex-end", marginBottom: 10 }
+  }, React.createElement("button", {
+    onClick: genRapportMissionHeures,
+    style: {
+      padding: "6px 14px",
+      borderRadius: 4,
+      border: "1px solid #1A5DAB",
+      background: "#EBF3FF",
+      cursor: "pointer",
+      fontSize: 11,
+      fontFamily: "'DM Sans',sans-serif",
+      color: "#1A5DAB",
+      fontWeight: 600
+    }
+  }, "📄 Export PDF — rapport d'heures")), React.createElement("div", {
     style: {
       display: "flex",
       gap: 10,
@@ -12046,6 +12161,24 @@ function MissionDetailPanel({
   }, "Étape"), React.createElement("th", {
     style: {
       padding: "5px 8px",
+      textAlign: "left",
+      fontWeight: 700
+    }
+  }, "Dates"), React.createElement("th", {
+    style: {
+      padding: "5px 8px",
+      textAlign: "center",
+      fontWeight: 700
+    }
+  }, "Méthode"), React.createElement("th", {
+    style: {
+      padding: "5px 8px",
+      textAlign: "left",
+      fontWeight: 700
+    }
+  }, "Qui"), React.createElement("th", {
+    style: {
+      padding: "5px 8px",
       textAlign: "right",
       fontWeight: 700
     }
@@ -12059,7 +12192,10 @@ function MissionDetailPanel({
     const na = a.ordre !== undefined && a.ordre !== "" ? Number(a.ordre) : Infinity;
     const nb = b.ordre !== undefined && b.ordre !== "" ? Number(b.ordre) : Infinity;
     return na - nb;
-  }).map(e => React.createElement("tr", {
+  }).map(e => {
+    const detail = detailHeures(e);
+    const methode = methodeHeures(e);
+    return React.createElement("tr", {
     key: e.id,
     style: {
       borderBottom: "0.5px solid #EEE"
@@ -12069,6 +12205,33 @@ function MissionDetailPanel({
       padding: "4px 8px"
     }
   }, e.titre), React.createElement("td", {
+    style: {
+      padding: "4px 8px",
+      color: "#7A7A7A",
+      fontSize: 10.5,
+      whiteSpace: "nowrap"
+    }
+  }, detail.dateDebutReelle ? `${detail.dateDebutReelle}${detail.dateFinReelle && detail.dateFinReelle !== detail.dateDebutReelle ? " → " + detail.dateFinReelle : ""}` : (e.dateDebut || e.dateFin ? `${e.dateDebut || "?"} → ${e.dateFin || "?"}` : "—")), React.createElement("td", {
+    style: {
+      padding: "4px 8px",
+      textAlign: "center"
+    }
+  }, methode && React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 600,
+      padding: "1px 6px",
+      borderRadius: 4,
+      background: methode === "bornes" ? "#EBF3FF" : "#FFF8EC",
+      color: methode === "bornes" ? "#1A5DAB" : "#CC8800"
+    }
+  }, methode === "bornes" ? "Démarr./Final." : "Par jour")), React.createElement("td", {
+    style: {
+      padding: "4px 8px",
+      color: "#7A7A7A",
+      fontSize: 10.5
+    }
+  }, detail.personnes.length ? detail.personnes.join(", ") : "—"), React.createElement("td", {
     style: {
       padding: "4px 8px",
       textAlign: "right",
@@ -12081,7 +12244,8 @@ function MissionDetailPanel({
       textAlign: "right",
       color: "#7A7A7A"
     }
-  }, e.nbPersonnes || "—"))), React.createElement("tr", {
+  }, e.nbPersonnes || "—"));
+  }), React.createElement("tr", {
     key: "total-heures-reelles",
     style: {
       background: "#F2F0ED",
@@ -12092,7 +12256,7 @@ function MissionDetailPanel({
       padding: "4px 8px",
       fontWeight: 700
     }
-  }, "TOTAL"), React.createElement("td", {
+  }, "TOTAL"), React.createElement("td", null), React.createElement("td", null), React.createElement("td", null), React.createElement("td", {
     style: {
       padding: "4px 8px",
       textAlign: "right",
@@ -19249,6 +19413,68 @@ function OutilsBE({ projects, user, isMobile = false, preselect = null, onPresel
         )
   );
 }
+// Vue agrégée "Suivi heures" (module BE) : regroupe les heures calculées sur l'ensemble des missions
+// Chantier d'une part, Atelier d'autre part — jamais projet par projet, mais tous projets confondus,
+// pour avoir une vision globale par type de mission.
+function SuiviHeuresGlobal({ atelierChantier, etapes, projects, hideFinances = false }) {
+  const [typeOuvert, setTypeOuvert] = useState({ chantier: true, atelier: true });
+  const sectionPourType = (type, label, icone, couleur) => {
+    const missionsType = (atelierChantier?.rows || []).filter(m => m.type === type);
+    const lignes = missionsType.map(m => {
+      const etapesM = (etapes?.rows || []).filter(e => String(e.mission_id) === String(m.id) && Number(e.heures) > 0);
+      const total = etapesM.reduce((s, e) => s + (Number(e.heures) || 0), 0);
+      return { mission: m, total: Math.round(total * 10) / 10, nbEtapes: etapesM.length };
+    }).filter(l => l.total > 0).sort((a, b) => b.total - a.total);
+    const totalGlobal = Math.round(lignes.reduce((s, l) => s + l.total, 0) * 10) / 10;
+    const ouvert = typeOuvert[type];
+    return React.createElement(Bd, {
+      style: { marginBottom: 16 }
+    },
+      React.createElement("div", {
+        onClick: () => setTypeOuvert(t => ({ ...t, [type]: !t[type] })),
+        style: { display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }
+      },
+        React.createElement(SecTitle, null, icone, " ", label, " (", missionsType.length, " mission", missionsType.length > 1 ? "s" : "", ")"),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+          React.createElement("span", { style: { fontSize: 16, fontWeight: 800, color: couleur } }, totalGlobal, "h"),
+          React.createElement("span", { style: { fontSize: 12, color: "#7A7A7A" } }, ouvert ? "▴" : "▾")
+        )
+      ),
+      ouvert && (lignes.length === 0
+        ? React.createElement("div", {
+            style: { fontSize: 12, color: "#AAAAAA", fontStyle: "italic", marginTop: 10 }
+          }, "Aucune heure chiffrée pour l'instant sur ces missions.")
+        : React.createElement("table", {
+            style: { width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 10 }
+          },
+            React.createElement("thead", null, React.createElement("tr", {
+              style: { background: "#F9F9F9", borderBottom: "1px solid #DDD" }
+            },
+              React.createElement("th", { style: { padding: "5px 8px", textAlign: "left", fontWeight: 700 } }, "Mission"),
+              React.createElement("th", { style: { padding: "5px 8px", textAlign: "left", fontWeight: 700 } }, "Projet"),
+              React.createElement("th", { style: { padding: "5px 8px", textAlign: "right", fontWeight: 700 } }, "Étapes chiffrées"),
+              React.createElement("th", { style: { padding: "5px 8px", textAlign: "right", fontWeight: 700 } }, "Heures"))),
+            React.createElement("tbody", null,
+              lignes.map(l => React.createElement("tr", {
+                key: l.mission.id,
+                style: { borderBottom: "0.5px solid #EEE" }
+              },
+                React.createElement("td", { style: { padding: "4px 8px" } }, l.mission.description || "Mission sans titre"),
+                React.createElement("td", { style: { padding: "4px 8px", color: "#7A7A7A" } }, l.mission.projet || "—"),
+                React.createElement("td", { style: { padding: "4px 8px", textAlign: "right", color: "#7A7A7A" } }, l.nbEtapes),
+                React.createElement("td", { style: { padding: "4px 8px", textAlign: "right", fontWeight: 700, color: couleur } }, l.total, "h"))),
+              React.createElement("tr", {
+                style: { background: "#F2F0ED", borderTop: "1px solid #DDD" }
+              },
+                React.createElement("td", { style: { padding: "4px 8px", fontWeight: 700 }, colSpan: 3 }, "TOTAL"),
+                React.createElement("td", { style: { padding: "4px 8px", textAlign: "right", fontWeight: 700, color: couleur } }, totalGlobal, "h")))))
+    );
+  };
+  return React.createElement("div", null,
+    sectionPourType("chantier", "Suivi heures Chantier", "🏗️", "#2A7A2A"),
+    sectionPourType("atelier", "Suivi heures Atelier", "🔨", "#CC8800")
+  );
+}
 function BureauEtudes({
   projects,
   tasks,
@@ -19288,6 +19514,9 @@ function BureauEtudes({
   }, {
     id: "missionsBE",
     label: "🗓 Missions BE"
+  }, {
+    id: "suiviHeures",
+    label: "⏱ Suivi heures"
   }, {
     id: "outils",
     label: "🛠 Outils"
@@ -19387,6 +19616,11 @@ function BureauEtudes({
     missionsBEAll: missionsBE,
     metre: metre,
     conges: conges
+  }), onglet === "suiviHeures" && React.createElement(SuiviHeuresGlobal, {
+    atelierChantier: atelierChantier,
+    etapes: etapes,
+    projects: projects,
+    hideFinances: false
   }), onglet === "outils" && React.createElement(OutilsBE, {
     projects: projects,
     user: user,
