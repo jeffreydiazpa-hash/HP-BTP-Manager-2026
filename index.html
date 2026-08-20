@@ -619,7 +619,20 @@ function parseExcelHeures(arrayBuffer, moisFiltre=null){
         dateObj=date1904
           ? new Date(Date.UTC(1904,0,1) + dateRaw*86400000)
           : new Date((dateRaw-25569)*86400000);
-        dateStr=dateObj.toISOString().split("T")[0];
+        // Garde-fou : la métadonnée date1904 du classeur n'est pas toujours fiable selon l'origine
+        // exacte de l'export — si l'année obtenue est trop éloignée de l'année actuelle (plus de 2
+        // ans, ce qui n'a pas de sens pour un import d'heures récentes), on retente avec l'époque
+        // opposée avant d'abandonner. Corrige silencieusement le cas confirmé "Mai 2022" au lieu de
+        // "Mai 2026" causé par une détection d'époque erronée.
+        const anneeActuelle=new Date().getFullYear();
+        if(Math.abs(dateObj.getUTCFullYear()-anneeActuelle)>2){
+          const dateAlt=date1904
+            ? new Date((dateRaw-25569)*86400000)
+            : new Date(Date.UTC(1904,0,1) + dateRaw*86400000);
+          if(Math.abs(dateAlt.getUTCFullYear()-anneeActuelle)<=2) dateObj=dateAlt;
+        }
+        const y=dateObj.getUTCFullYear(), mo=String(dateObj.getUTCMonth()+1).padStart(2,"0"), d=String(dateObj.getUTCDate()).padStart(2,"0");
+        dateStr=`${y}-${mo}-${d}`;
       }catch(e){continue;}
       // Ignore les samedis (6) et dimanches (0) — aucune heure ne doit y être déclarée
       if(dateObj&&(dateObj.getUTCDay()===0||dateObj.getUTCDay()===6))continue;
@@ -757,7 +770,7 @@ function useBusyAction() {
   return [busyKey, runBusy];
 }
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.51";
+const VERSION = "v4.7.53";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -3618,19 +3631,39 @@ function Dashboard({
   })()), (() => {
     const attentes = tasks.rows.filter(t => t.type === "attente" && !isDone(t)).sort((a, b) => toISO(a.due || "").localeCompare(toISO(b.due || "")));
     if (!attentes.length) return null;
-    const nbRetardAttente = attentes.filter(t => toISO(t.due) < TODAY).length;
+    const estReponseRecue = t => t.reponseRecue === true || t.reponseRecue === "TRUE";
+    const reponsesRecues = attentes.filter(estReponseRecue);
+    const encoreEnAttente = attentes.filter(t => !estReponseRecue(t));
+    const nbRetardAttente = encoreEnAttente.filter(t => toISO(t.due) < TODAY).length;
     return React.createElement(Bd, {
       style: {
-        borderColor: nbRetardAttente > 0 ? "#FFCCCC" : "#DDDDDD",
-        background: nbRetardAttente > 0 ? "#FFF8F8" : "#FAFAFA",
+        borderColor: reponsesRecues.length > 0 ? "#B8E0B8" : nbRetardAttente > 0 ? "#FFCCCC" : "#DDDDDD",
+        background: reponsesRecues.length > 0 ? "#F5FBF5" : nbRetardAttente > 0 ? "#FFF8F8" : "#FAFAFA",
         marginTop: 10
       }
-    }, React.createElement(SecTitle, {
+    },
+    reponsesRecues.length > 0 && React.createElement(React.Fragment, null,
+      React.createElement(SecTitle, {
+        style: { color: "#2A7A2A" }
+      }, "🔔 Réponses reçues à examiner — ", reponsesRecues.length),
+      reponsesRecues.map(t => React.createElement("div", {
+        key: t.id,
+        style: { display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "0.5px solid #F5F5F5" }
+      },
+        React.createElement("div", { style: { width: 8, height: 8, borderRadius: "50%", background: "#2A7A2A", flexShrink: 0 } }),
+        React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+          React.createElement("div", { style: { fontSize: 11, fontWeight: 600, color: "#1C1C1C" } }, t.text),
+          React.createElement("div", { style: { fontSize: 10.5, color: "#7A7A7A" } }, "🔔 ", t.contact, " a répondu — à toi de vérifier et clôturer si réglé")
+        )
+      )),
+      encoreEnAttente.length > 0 && React.createElement("div", { style: { height: 10 } })
+    ),
+    encoreEnAttente.length > 0 && React.createElement(SecTitle, {
       style: {
         color: nbRetardAttente > 0 ? "#CC2222" : "#3A3A3A"
       }
-    }, "🕐 Sujets en attente de retour — ", attentes.length, nbRetardAttente > 0 ? ` (dont ${nbRetardAttente} en retard de relance)` : ""),
-    attentes.slice(0, 6).map((t, i) => {
+    }, "🕐 Sujets en attente de retour — ", encoreEnAttente.length, nbRetardAttente > 0 ? ` (dont ${nbRetardAttente} en retard de relance)` : ""),
+    encoreEnAttente.slice(0, 6).map((t, i) => {
       const enRetard = toISO(t.due) < TODAY;
       return React.createElement("div", {
         key: t.id,
@@ -3653,9 +3686,9 @@ function Dashboard({
         )
       );
     }),
-    attentes.length > 6 && React.createElement("div", {
+    encoreEnAttente.length > 6 && React.createElement("div", {
       style: { fontSize: 11, color: "#7A7A7A", marginTop: 6, textAlign: "center" }
-    }, "+", attentes.length - 6, " autres"));
+    }, "+", encoreEnAttente.length - 6, " autres"));
   })()), React.createElement("div", {
     style: {
       marginTop: 16
@@ -16903,7 +16936,16 @@ function Taches({
         color: urg === "critique" ? "#CC2222" : urg === "high" ? "#E65100" : "#7A7A7A",
         fontWeight: urg === "critique" || urg === "high" ? 700 : 400
       }
-    }, "🗓 ", dueLbl), t.type === "attente" && React.createElement("span", {
+    }, "🗓 ", dueLbl), t.type === "attente" && (t.reponseRecue === true || t.reponseRecue === "TRUE") && React.createElement("span", {
+      style: {
+        background: "#EAF7EA",
+        color: "#2A7A2A",
+        borderRadius: 4,
+        padding: "1px 6px",
+        fontSize: 10.5,
+        fontWeight: 700
+      }
+    }, "🔔 Réponse reçue — à examiner"), t.type === "attente" && React.createElement("span", {
       style: {
         background: "#EBF3FF",
         color: "#1A5DAB",
@@ -16916,7 +16958,7 @@ function Taches({
       label: u.lbl,
       bg: u.bg,
       color: u.tx
-    }), t.type === "attente" && !done && React.createElement(Btn, {
+    }), t.type === "attente" && !done && !(t.reponseRecue === true || t.reponseRecue === "TRUE") && React.createElement(Btn, {
       small: true,
       onClick: () => relancer(t)
     }, "🔄 Relancer"), React.createElement("button", {
@@ -19628,6 +19670,31 @@ function FormulairesModule({ formulaires, projets, team, user = null, isMobile =
 
 function ChantierWrapper({ missionProps, camions, kilometrage, formulaires, team, user, isMobile }) {
   const [sub, setSub] = useState("missions");
+  const [iframeSrcOutils, setIframeSrcOutils] = useState("");
+  const [iframeHeightOutils, setIframeHeightOutils] = useState(500);
+  const iframeRefOutils = useRef(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const auth = await ensureAuth();
+        if (!alive) return;
+        const params = new URLSearchParams({ mode: "chantier", email: auth.email, token: auth.token, gas: GAS_URL });
+        setIframeSrcOutils("outils/calculateur-plots.html?" + params.toString());
+      } catch (e) { if (alive) setIframeSrcOutils(""); }
+    })();
+    return () => { alive = false; };
+  }, []);
+  useEffect(() => {
+    const onMsg = e => {
+      if (!e.data || e.data.type !== "hp-tool-resize") return;
+      if (iframeRefOutils.current && e.source === iframeRefOutils.current.contentWindow) {
+        setIframeHeightOutils(Math.max(300, Math.ceil(e.data.height) + 4));
+      }
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
   const tab = (id, label) => React.createElement("button", {
     key: id,
     onClick: () => setSub(id),
@@ -19647,11 +19714,21 @@ function ChantierWrapper({ missionProps, camions, kilometrage, formulaires, team
     React.createElement("div", { style: { display: "flex", gap: 4, borderBottom: "1px solid #EEEEEE", marginBottom: 16, flexWrap: "wrap" } },
       tab("missions", "Missions chantier"),
       tab("kilometrage", "🚚 Véhicules"),
-      tab("formulaire", "📝 Formulaire")
+      tab("formulaire", "📝 Formulaire"),
+      tab("outils", "🛠 Outils")
     ),
     sub === "missions" && React.createElement(MissionModule, missionProps),
     sub === "kilometrage" && React.createElement(Kilometrage, { camions: camions, kilometrage: kilometrage, team: team, user: user, isMobile: isMobile }),
-    sub === "formulaire" && React.createElement(FormulairesModule, { formulaires: formulaires, projets: missionProps.projects, team: team, user: user, isMobile: isMobile })
+    sub === "formulaire" && React.createElement(FormulairesModule, { formulaires: formulaires, projets: missionProps.projects, team: team, user: user, isMobile: isMobile }),
+    sub === "outils" && React.createElement("div", { style: { background: "#F2F0ED", borderRadius: 8, padding: 4 } },
+      !iframeSrcOutils && React.createElement("div", { style: { fontSize: 13, color: "#7A7A7A", padding: 20, textAlign: "center" } }, "Chargement…"),
+      iframeSrcOutils && React.createElement("iframe", {
+        ref: iframeRefOutils,
+        src: iframeSrcOutils,
+        style: { width: "100%", height: iframeHeightOutils, border: "none", display: "block", overflow: "hidden" },
+        scrolling: "no"
+      })
+    )
   );
 }
 // ═══ Équivalent Atelier de ChantierWrapper — même structure, même style d'onglets (soulignement
