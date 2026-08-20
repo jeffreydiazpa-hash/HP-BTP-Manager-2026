@@ -770,7 +770,7 @@ function useBusyAction() {
   return [busyKey, runBusy];
 }
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.55";
+const VERSION = "v4.7.56";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -10596,7 +10596,10 @@ function SuiviFabComponent({
     // Chaque famille reçoit donc un bloc dédié dans l'espace des ordres (famille triée alphabétiquement
     // × 1000 + position dans la famille), ce qui élimine les collisions tout en gardant les familles
     // groupées de façon prévisible.
-    const famillesTriees = [...new Set(lignes.map(l => l.famille))].sort();
+    // Ordre des familles = ordre de première apparition dans les lignes du Suivi (PAS alphabétique) —
+    // doit correspondre exactement à la façon dont la grille elle-même regroupe (voir `grouped` un peu
+    // plus bas dans ce fichier), sinon l'ordre écrit ici ne correspondrait pas à ce que la grille montre.
+    const famillesTriees = [...new Set(lignes.map(l => l.famille))];
     const famIndex = Math.max(0, famillesTriees.indexOf(fam));
     for (let i = 0; i < arr.length; i++) {
       const ph = arr[i];
@@ -11601,12 +11604,24 @@ function MissionDetailPanel({
     onClick: () => runBusyMd("sync-etapes", async () => {
       let synced = 0;
       let crees = 0;
+      let ordresRepares = 0;
       const phasesVues = new Set();
       const norme = s => String(s || "").trim().toLowerCase();
+      // Ordre à écrire = même convention que la grille du Suivi (familles et phases dans leur ordre de
+      // première apparition, PAS alphabétique) — c'est ce qui garantit que "Étapes & jalons" affiche
+      // toujours exactement ce que "Suivi montage" montre, y compris pour les phases jamais réordonnées
+      // manuellement (dont l'ordre n'aurait sinon jamais été écrit du tout).
+      const famillesVues = [];
+      const compteurParFamille = {};
       for (const l of lignesFab) {
         const keyGroup = `${l.famille}|||${l.phase}`;
         if (phasesVues.has(keyGroup)) continue;
         phasesVues.add(keyGroup);
+        if (!famillesVues.includes(l.famille)) famillesVues.push(l.famille);
+        const famIdx = famillesVues.indexOf(l.famille);
+        const posDansFamille = compteurParFamille[l.famille] || 0;
+        compteurParFamille[l.famille] = posDansFamille + 1;
+        const ordreGlobal = famIdx * 1000 + posDansFamille;
         const lignesPhase = lignesFab.filter(x => x.famille === l.famille && x.phase === l.phase);
         const phaseTerminee = lignesPhase.every(x => {
           const nb = Number(x.nb_unites) || 0;
@@ -11634,25 +11649,30 @@ function MissionDetailPanel({
             dateDebut: TODAY,
             dateFin: "",
             statut: phaseTerminee ? "terminé" : auMoinsUneCoche ? "en cours" : "à faire",
-            note: key
+            note: key,
+            ordre: ordreGlobal
           });
           await assurerLienEtapeId(lignesPhase, etapeCreee.id, suiviFab);
           crees++;
         } else {
           await assurerLienEtapeId(lignesPhase, etapeLiee.id, suiviFab);
           const nouveauStatut = phaseTerminee ? "terminé" : auMoinsUneCoche ? "en cours" : etapeLiee.statut;
-          if (etapeLiee.statut !== nouveauStatut) {
+          const ordreActuel = etapeLiee.ordre !== undefined && etapeLiee.ordre !== "" ? Number(etapeLiee.ordre) : null;
+          if (etapeLiee.statut !== nouveauStatut || ordreActuel !== ordreGlobal) {
             await etapes.update(etapeLiee.id, {
               ...etapeLiee,
-              statut: nouveauStatut
+              statut: nouveauStatut,
+              ordre: ordreGlobal
             });
-            synced++;
+            if (etapeLiee.statut !== nouveauStatut) synced++;
+            if (ordreActuel !== ordreGlobal) ordresRepares++;
           }
         }
       }
       const msgs = [];
       if (crees > 0) msgs.push(`${crees} étape${crees > 1 ? "s" : ""} créée${crees > 1 ? "s" : ""}`);
       if (synced > 0) msgs.push(`${synced} étape${synced > 1 ? "s" : ""} mise${synced > 1 ? "s" : ""} à jour`);
+      if (ordresRepares > 0) msgs.push(`${ordresRepares} ordre${ordresRepares > 1 ? "s" : ""} d'affichage réparé${ordresRepares > 1 ? "s" : ""}`);
       alert(msgs.length ? msgs.join(" · ") + "." : "Tout est déjà synchronisé.");
     }),
     disabled: busyMd === "sync-etapes",
