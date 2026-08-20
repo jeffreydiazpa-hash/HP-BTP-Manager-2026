@@ -770,7 +770,7 @@ function useBusyAction() {
   return [busyKey, runBusy];
 }
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwvO39WibGHMWE_d1F_eGOOp0YGuOKozkqKyhaosLpXjVaJRUwSlVZK1rJ4C96fGldy/exec";
-const VERSION = "v4.7.53";
+const VERSION = "v4.7.55";
 let _authEmail = null;
 let _authToken = null;
 let _tokenExpiry = 0;
@@ -10227,10 +10227,16 @@ function PhaseItem({
     }
   }, "Mod."), React.createElement("button", {
     onClick: () => {
-      if (confirm(`Supprimer la phase "${ph.phase}" et toutes ses opérations ?`)) {
+      if (confirm(`Supprimer la phase "${ph.phase}" et toutes ses opérations ?\n\nL'étape liée sur "Étapes & jalons" sera aussi supprimée (sinon elle resterait orpheline, sans plus aucune donnée derrière).`)) {
         runBusySf("del-phase-" + ph.famille + "-" + ph.phase, async () => {
+          // Correctif important : supprimer aussi l'étape liée (si elle existe) — sinon elle reste
+          // orpheline sur "Étapes & jalons" indéfiniment, figée sur son dernier statut connu, avec
+          // un recalcul d'heures qui échoue puisque les coches dont elle dépendait n'existent plus.
+          // C'est la cause exacte des signalements répétés "l'onglet étapes ne se met pas à jour".
+          const etapeLiee = etapes ? trouverEtapeLieePhase(ph.ops, etapes.rows, mission.id) : null;
           for (const op of ph.ops) await suiviFab.remove(op.id);
-          await logAction(journal, user, `[${mission?.description || "?"}] − Phase supprimée : ${ph.famille} / ${ph.phase} (${ph.ops.length} opération(s))`, mission?.projet || "");
+          if (etapeLiee) await etapes.remove(etapeLiee.id);
+          await logAction(journal, user, `[${mission?.description || "?"}] − Phase supprimée : ${ph.famille} / ${ph.phase} (${ph.ops.length} opération(s))${etapeLiee ? " + étape liée supprimée" : ""}`, mission?.projet || "");
         });
       }
     },
@@ -11354,19 +11360,6 @@ function MissionDetailPanel({
   getMembres,
   sheet
 }) {
-  const [etapeForm, setEtapeForm] = useState({
-    titre: "",
-    responsable: "",
-    dateDebut: TODAY,
-    dateFin: "",
-    statut: "à faire",
-    note: "",
-    heures: "",
-    nbPersonnes: "",
-    commentaire: ""
-  });
-  const [showAddEtape, setShowAddEtape] = useState(false);
-  const [savingEtape, setSavingEtape] = useState(false);
   const [busyMd, runBusyMd] = useBusyAction();
   const [commentDrafts, setCommentDrafts] = useState({});
   const etapeColor = s => s === "terminé" ? "#2A7A2A" : s === "en cours" ? "#CC2222" : "#7A7A7A";
@@ -11392,6 +11385,31 @@ function MissionDetailPanel({
     const aDemarrage = lignesPh.some(l => normOpLocal(l.operation) === "demarrage");
     const aFinalisation = lignesPh.some(l => normOpLocal(l.operation) === "finalisation");
     return aDemarrage && aFinalisation ? "bornes" : "jour";
+  }
+  // Nettoyage rétroactif (correctif du bug déjà signalé) : une étape créée automatiquement depuis une
+  // phase du Suivi (note commençant par "fab:") mais dont AUCUNE ligne actuelle du Suivi ne pointe plus
+  // vers elle (ni par etape_id, ni par correspondance famille/phase) est orpheline — la phase d'origine
+  // a été supprimée sur "Suivi montage" sans jamais nettoyer cette étape, qui reste figée sur son
+  // dernier statut connu avec un recalcul d'heures impossible.
+  function estOrpheline(e) {
+    const note = String(e.note || "");
+    if (!note.startsWith("fab:")) return false;
+    let lignesPh = lignesFab.filter(l => String(l.etape_id || "") === String(e.id));
+    if (!lignesPh.length) {
+      const [fam, ph] = note.slice(4).split("|||");
+      lignesPh = lignesFab.filter(l => l.famille === fam && l.phase === ph);
+    }
+    return lignesPh.length === 0;
+  }
+  async function nettoyerEtapesOrphelines() {
+    const orphelines = etapes_m.filter(estOrpheline);
+    if (!orphelines.length) {
+      alert("Aucune étape orpheline trouvée pour cette mission — tout est à jour.");
+      return;
+    }
+    if (!confirm(`${orphelines.length} étape(s) orpheline(s) trouvée(s) (liée(s) à une phase du Suivi qui n'existe plus) :\n\n${orphelines.map(e => "• " + e.titre).join("\n")}\n\nLes supprimer ?`)) return;
+    for (const e of orphelines) await etapes.remove(e.id);
+    alert(`${orphelines.length} étape(s) orpheline(s) supprimée(s).`);
   }
   const avancementFab = (() => {
     if (!lignesFab.length) return null;
@@ -11652,19 +11670,22 @@ function MissionDetailPanel({
       opacity: busyMd === "sync-etapes" ? 0.5 : 1
     }
   }, busyMd === "sync-etapes" ? "⟳ Sync…" : "🔄 Sync"), React.createElement("button", {
-    onClick: () => setShowAddEtape(v => !v),
+    onClick: () => runBusyMd("nettoyer-orphelines", nettoyerEtapesOrphelines),
+    disabled: busyMd === "nettoyer-orphelines",
+    title: "Supprime les étapes liées à une phase du Suivi qui a été supprimée depuis (restent orphelines sinon)",
     style: {
       padding: "5px 12px",
       borderRadius: 4,
-      border: "none",
-      background: "#CC2222",
-      cursor: "pointer",
+      border: "1px solid #DDDDDD",
+      background: "#fff",
+      cursor: busyMd === "nettoyer-orphelines" ? "wait" : "pointer",
       fontSize: 11,
       fontFamily: "'DM Sans',sans-serif",
-      color: "#fff",
-      fontWeight: 700
+      color: "#3A3A3A",
+      fontWeight: 500,
+      opacity: busyMd === "nettoyer-orphelines" ? 0.5 : 1
     }
-  }, "+ Étape"))), React.createElement("div", {
+  }, busyMd === "nettoyer-orphelines" ? "⟳ Nettoyage…" : "🧹 Nettoyer les orphelines"))), React.createElement("div", {
     style: {
       display: "flex",
       gap: 16,
@@ -11724,203 +11745,7 @@ function MissionDetailPanel({
       marginBottom: 10,
       fontSize: 12
     }
-  }, React.createElement("span", null, React.createElement("b", { style: { color: "#CC6600" } }, Math.round(totalHeuresEtapes * 10) / 10, "h"), " passées au total"), React.createElement("span", { style: { color: "#7A7A7A" } }, nbEtapesAvecHeures, " / ", etapes_m.length, " étape", etapes_m.length > 1 ? "s" : "", " chiffrée", nbEtapesAvecHeures > 1 ? "s" : "")), showAddEtape && React.createElement("div", {
-    style: {
-      background: "#F9F9F9",
-      borderRadius: 8,
-      padding: "12px",
-      marginBottom: 12,
-      border: "0.5px solid #EEEEEE"
-    }
-  }, React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr",
-      gap: 8,
-      marginBottom: 8
-    }
-  }, React.createElement(FG, {
-    label: "Titre"
-  }, React.createElement(Inp, {
-    value: etapeForm.titre,
-    onChange: e => setEtapeForm(f => ({
-      ...f,
-      titre: e.target.value
-    })),
-    placeholder: "Ex: Découpe des pièces"
-  })), React.createElement(FG, {
-    label: "Responsable"
-  }, React.createElement("select", {
-    value: etapeForm.responsable,
-    onChange: e => setEtapeForm(f => ({
-      ...f,
-      responsable: e.target.value
-    })),
-    style: {
-      width: "100%",
-      padding: "7px 10px",
-      borderRadius: 6,
-      border: "1px solid #DDD",
-      fontSize: 12,
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, React.createElement("option", {
-    value: ""
-  }, "— Choisir —"), membres.map(nom => React.createElement("option", {
-    key: nom
-  }, nom))))), React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr 1fr",
-      gap: 8,
-      marginBottom: 8
-    }
-  }, React.createElement(FG, {
-    label: "Début"
-  }, React.createElement(Inp, {
-    type: "date",
-    value: etapeForm.dateDebut,
-    onChange: e => setEtapeForm(f => ({
-      ...f,
-      dateDebut: e.target.value
-    }))
-  })), React.createElement(FG, {
-    label: "Deadline"
-  }, React.createElement(Inp, {
-    type: "date",
-    value: etapeForm.dateFin,
-    min: etapeForm.dateDebut || undefined,
-    onChange: e => setEtapeForm(f => ({
-      ...f,
-      dateFin: e.target.value
-    }))
-  })), React.createElement(FG, {
-    label: "Statut"
-  }, React.createElement("select", {
-    value: etapeForm.statut,
-    onChange: e => setEtapeForm(f => ({
-      ...f,
-      statut: e.target.value
-    })),
-    style: {
-      width: "100%",
-      padding: "7px 10px",
-      borderRadius: 6,
-      border: "1px solid #DDD",
-      fontSize: 12,
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, ["à faire", "en cours", "terminé"].map(s => React.createElement("option", {
-    key: s
-  }, s))))), React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr 2fr",
-      gap: 8,
-      marginBottom: 8
-    }
-  }, React.createElement(FG, {
-    label: "Nb personnes"
-  }, React.createElement(Inp, {
-    type: "number",
-    min: 0,
-    step: 1,
-    value: etapeForm.nbPersonnes,
-    onChange: e => setEtapeForm(f => ({
-      ...f,
-      nbPersonnes: e.target.value
-    })),
-    placeholder: "Ex: 3"
-  })), React.createElement(FG, {
-    label: "Heures passées"
-  }, React.createElement(Inp, {
-    type: "number",
-    min: 0,
-    step: 0.5,
-    value: etapeForm.heures,
-    onChange: e => setEtapeForm(f => ({
-      ...f,
-      heures: e.target.value
-    })),
-    placeholder: "Ex: 14"
-  })), React.createElement(FG, {
-    label: "Commentaire"
-  }, React.createElement(Inp, {
-    value: etapeForm.commentaire,
-    onChange: e => setEtapeForm(f => ({
-      ...f,
-      commentaire: e.target.value
-    })),
-    placeholder: "Ex: vent fort le matin, retard"
-  }))), React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      justifyContent: "flex-end"
-    }
-  }, React.createElement("button", {
-    onClick: () => setShowAddEtape(false),
-    style: {
-      padding: "5px 12px",
-      borderRadius: 4,
-      border: "1px solid #DDD",
-      background: "#fff",
-      cursor: "pointer",
-      fontSize: 11,
-      fontFamily: "'DM Sans',sans-serif"
-    }
-  }, "Annuler"), React.createElement("button", {
-    disabled: savingEtape,
-    onClick: async () => {
-      if (!etapeForm.titre.trim()) return;
-      setSavingEtape(true);
-      try {
-        await etapes.add({
-          ...etapeForm,
-          mission_id: String(m.id),
-          module: moduleType
-        });
-        if (etapeForm.dateFin && events) {
-          await events.add({
-            title: `[${moduleType}] ${etapeForm.titre}`,
-            date: etapeForm.dateFin,
-            heure: "",
-            type: "deadline",
-            projet: m.projet || "",
-            note: `etapeId:${m.id}`,
-            dateFin: etapeForm.dateFin
-          });
-        }
-        setShowAddEtape(false);
-        setEtapeForm({
-          titre: "",
-          responsable: "",
-          dateDebut: TODAY,
-          dateFin: "",
-          statut: "à faire",
-          note: "",
-          heures: "",
-          nbPersonnes: "",
-          commentaire: ""
-        });
-      } catch (e) {
-        alert("Échec de l'ajout : " + (e?.message || e) + "\n\nTu peux réessayer.");
-      } finally {
-        setSavingEtape(false);
-      }
-    },
-    style: {
-      padding: "5px 12px",
-      borderRadius: 4,
-      border: "none",
-      background: "#CC2222",
-      cursor: "pointer",
-      fontSize: 11,
-      fontFamily: "'DM Sans',sans-serif",
-      color: "#fff",
-      fontWeight: 700
-    }
-  }, savingEtape ? "..." : "Ajouter"))), !etapes_m.length && React.createElement("div", {
+  }, React.createElement("span", null, React.createElement("b", { style: { color: "#CC6600" } }, Math.round(totalHeuresEtapes * 10) / 10, "h"), " passées au total"), React.createElement("span", { style: { color: "#7A7A7A" } }, nbEtapesAvecHeures, " / ", etapes_m.length, " étape", etapes_m.length > 1 ? "s" : "", " chiffrée", nbEtapesAvecHeures > 1 ? "s" : "")), !etapes_m.length && React.createElement("div", {
     style: {
       fontSize: 13,
       color: "#7A7A7A",
@@ -12210,7 +12035,11 @@ function MissionDetailPanel({
       textAlign: "right",
       fontWeight: 700
     }
-  }, "Personnes"))), React.createElement("tbody", null, etapesAvecHeuresReelles.slice().sort((a, b) => (Number(b.heures) || 0) - (Number(a.heures) || 0)).map(e => React.createElement("tr", {
+  }, "Personnes"))), React.createElement("tbody", null, etapesAvecHeuresReelles.slice().sort((a, b) => {
+    const na = a.ordre !== undefined && a.ordre !== "" ? Number(a.ordre) : Infinity;
+    const nb = b.ordre !== undefined && b.ordre !== "" ? Number(b.ordre) : Infinity;
+    return na - nb;
+  }).map(e => React.createElement("tr", {
     key: e.id,
     style: {
       borderBottom: "0.5px solid #EEE"
