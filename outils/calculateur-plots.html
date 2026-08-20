@@ -108,7 +108,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--hp-light);color:var(--hp-
 .btn-cancel:hover{border-color:#BBB;color:var(--hp-dark)}
 .btn-confirm{background:var(--hp-green);color:white;border:none;border-radius:6px;padding:9px 14px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;flex:2}
 
-.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--hp-dark);color:white;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;padding:11px 20px;border-radius:6px;transition:transform .3s;z-index:200;pointer-events:none;border-left:3px solid var(--hp-red)}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--hp-white);color:var(--hp-dark);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;padding:11px 20px;border-radius:6px;transition:transform .3s;z-index:200;pointer-events:none;border-left:3px solid var(--hp-red);box-shadow:0 4px 16px rgba(0,0,0,0.12)}
 .toast.show{transform:translateX(-50%) translateY(0)}
 .toast.success{border-left-color:var(--hp-green)}
 
@@ -253,7 +253,37 @@ body{font-family:'DM Sans',sans-serif;background:var(--hp-light);color:var(--hp-
 <div class="toast" id="toast"></div>
 
 <script>
+// ── Contexte d'authentification transmis par le site (mode/email/token/gas dans l'URL) ──
+const CTX = (() => {
+  const p = new URLSearchParams(location.search);
+  return { mode: p.get("mode") || "", email: p.get("email") || "", token: p.get("token") || "", gas: p.get("gas") || "" };
+})();
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbzG1kEn3OiQt53ZNS4OVApQsPrek8tZ3o7WIXRAUiu7s76iq8HDnid0B43ylnBZ9R7D/exec';
+// JSONP — même mécanisme que les autres outils intégrés (fiche-prod.html, soudure-etfe.html) : GAS ne
+// supporte pas facilement CORS pour un simple fetch(), donc on passe par une balise <script> pour
+// contourner cette limite.
+function jsonpFetch(params, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    const cbName = "hp_cb_" + Math.random().toString(36).slice(2);
+    const script = document.createElement("script");
+    const cleanup = () => { delete window[cbName]; script.remove(); };
+    const timer = setTimeout(() => { cleanup(); reject(new Error("Délai d'attente dépassé")); }, timeoutMs);
+    window[cbName] = data => { clearTimeout(timer); cleanup(); resolve(data); };
+    const qs = new URLSearchParams({ ...params, callback: cbName }).toString();
+    script.src = GAS_URL + "?" + qs;
+    script.onerror = () => { clearTimeout(timer); cleanup(); reject(new Error("Échec réseau")); };
+    document.body.appendChild(script);
+  });
+}
+// Ajuste automatiquement la hauteur de l'iframe côté site parent (même convention que les autres
+// outils intégrés) — sans ça, l'outil serait affiché avec une hauteur fixe et nécessiterait un
+// double-scroll (page + iframe), inconfortable.
+function signalerHauteur() {
+  window.parent.postMessage({ type: "hp-tool-resize", height: document.documentElement.scrollHeight }, "*");
+}
+window.addEventListener("resize", signalerHauteur);
+new MutationObserver(signalerHauteur).observe(document.body, { childList: true, subtree: true, attributes: true });
+
 const CP_THICK = 30; // fixe
 
 const PLOTS = [
@@ -269,6 +299,8 @@ const F30   = {id:'SOL-008399',label:'Réhausse F30',ref:'SOL-008399',h:30,maxSt
 const F100  = {id:'SOL-003991',label:'Réhausse F100',ref:'SOL-003991',h:100};
 const CP    = {id:'CP-40X40',label:'Plaque CP 40×40',ref:'CP-40X40'};
 
+// Valeurs de repli si la synchronisation échoue (hors ligne, contexte non authentifié) — reflètent la
+// commande ALCOV déjà passée, pour que l'outil reste utilisable même sans connexion au site.
 let stock = {
   'SOL-011000':70,'SOL-008771':70,'SOL-008773':70,'SOL-008392':70,
   'SOL-008393':100,'SOL-008394':400,'SOL-008733':600,'SOL-008399':700,
@@ -287,12 +319,18 @@ const LAYER_CFG = {
 };
 
 async function loadInventory(){
+  if (!CTX.email || !CTX.token) { setSyncBadge('error','⚠ Hors ligne (valeurs par défaut)'); renderStock(); return; }
   setSyncBadge('loading','⟳ Chargement...');
   try{
-    const res=await fetch(GAS_URL);
-    const data=await res.json();
-    if(data.status==='ok'&&data.stock) stock={...stock,...data.stock};
-    setSyncBadge('ok','✔ Synchronisé');
+    const data = await jsonpFetch({ action: "get", key: "stocks", email: CTX.email, token: CTX.token });
+    if (data.ok && Array.isArray(data.data)) {
+      const parRef = {};
+      for (const row of data.data) if (row.ref) parRef[row.ref] = Number(row.qty) || 0;
+      stock = { ...stock, ...parRef };
+      setSyncBadge('ok','✔ Synchronisé');
+    } else {
+      setSyncBadge('error','⚠ Hors ligne');
+    }
   }catch(e){setSyncBadge('error','⚠ Hors ligne')}
   renderStock();
 }
